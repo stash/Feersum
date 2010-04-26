@@ -47,14 +47,15 @@ sub new {
     return $INSTANCE;
 }
 
-sub DESTROY {
-}
-
 sub use_socket {
     my ($self, $sock) = @_;
     $self->{socket} = $sock;
     my $fd = fileno($sock);
-    Socialtext::EvHttp::accept_on_socket($fd);
+    $self->accept_on_fd($fd);
+}
+
+sub DIED {
+    warn "DIED: $@";
 }
 
 1;

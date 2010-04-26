@@ -1,0 +1,9 @@
+struct http_client * T_HTTP_CLIENT
+
+INPUT
+T_HTTP_CLIENT
+    $var = sv_2http_client($arg);
+
+OUTPUT
+T_HTTP_CLIENT
+   $arg = http_client_2sv($var);

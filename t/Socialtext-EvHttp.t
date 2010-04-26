@@ -5,10 +5,11 @@
 
 # change 'tests => 1' to 'tests => last_test_to_print';
 
-use Test::More tests => 2;
+use Test::More tests => 10;
 use Test::Exception;
 use blib;
 use Carp ();
+use Guard;
 $SIG{__DIE__} = \&Carp::confess;
 
 BEGIN { use_ok('Socialtext::EvHttp') };
@@ -30,21 +31,46 @@ lives_ok {
     $evh->use_socket($socket);
 } 'assigned socket';
 
+dies_ok {
+    $evh->request_handler('foo');
+} "can't assign regular scalar";
+
+my $cb;
+{
+    my $g = guard { pass "cv recycled"; };
+    $cb = sub { $g; fail "old callback" }
+}
+
+lives_ok {
+    $evh->request_handler($cb);
+} "can assign code block";
+
+undef $cb;
+pass "after undef cb";
+
+$cb = sub {
+    pass "called back!";
+    my $r = shift;
+    isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
+    eval {
+        $r->send_response("200 OK", ['Content-Type' => 'text/plain'], 'Baz!');
+    }; warn $@ if $@;
+};
+
+lives_ok {
+    $evh->request_handler($cb);
+} "can assign another code block";
+
 use AnyEvent::HTTP;
 use XXX;
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/', timeout => 1, sub {
+my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 1, sub {
     WWW($_[1]);
     warn "CLIENT GOT: ".$_[0];
     $cv->end;
 };
 
 $cv->recv;
-
-#########################
-
-# Insert your test code below, the Test::More module is use()ed here so read
-# its man page ( perldoc Test::More ) for help writing this test script.
 

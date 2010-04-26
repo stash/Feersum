@@ -5,6 +5,8 @@ MANIFEST
 ppport.h
 README
 t/Socialtext-EvHttp.t
-fallback/const-c.inc
-fallback/const-xs.inc
 lib/Socialtext/EvHttp.pm
+picohttpparser/picohttpparser.c
+picohttpparser/picohttpparser.h
+test.c
+typemap
