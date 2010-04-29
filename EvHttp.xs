@@ -42,13 +42,7 @@ struct http_client {
     struct ev_io write_ev_io;
     struct ev_loop *loop;
 
-    char *r_buf;
-    size_t r_offset;
-    size_t r_len;
-
-    char *w_buf;
-    size_t w_offset;
-    size_t w_len;
+    SV *rbuf, *wbuf;
 
     size_t body_offset;
 
@@ -98,7 +92,7 @@ new_http_client (EV_P_ int client_fd)
     SvGROW(self, sizeof(struct http_client));
     SvPOK_only(self);
     SvIOK_on(self);
-    SvIVX(self) = client_fd;
+    SvIV_set(self,client_fd);
 
     struct http_client *c = (struct http_client *)SvPVX(self);
     Zero(c, 1, struct http_client);
@@ -165,7 +159,7 @@ process_request_ready_rinq (EV_P)
 
         call_http_request_callback(EV_A, c);
 
-        if (c->w_buf && (c->w_len - c->w_offset) > 0) {
+        if (c->wbuf && SvCUR(c->wbuf) > 0) {
             client_write_ready(c);
         }
     }
@@ -202,39 +196,58 @@ static void
 try_client_write(EV_P_ struct ev_io *w, int revents)
 {
     dCLIENT;
-    ssize_t wrote;
 
-    trace("going to write %d %ld %p\n",w->fd, c->w_len, c->w_buf);
-    wrote = write(w->fd, c->w_buf + c->w_offset, c->w_len - c->w_offset);
-    if (wrote == -1) {
-        if (errno == EAGAIN) goto try_write_again;
-        perror("try_client_write");
-        goto try_write_error;
-    }
-
-    c->w_offset += wrote;
-    if (c->w_len - c->w_offset == 0) {
-        trace("All done with %d\n",w->fd);
+    if (!c->wbuf || SvCUR(c->wbuf) == 0) {
+        trace("tried to write with an empty buffer %d\n",w->fd);
         ev_io_stop(EV_A, w);
-        free(c->w_buf);
-        c->w_buf = NULL;
-        c->w_offset = c->w_len = 0;
-        // TODO: call the drain callback
-        SvREFCNT_dec(c->self);
+        return;
     }
-    return;
 
-try_write_error:
-    ev_io_stop(EV_A, w);
-    close(w->fd);
-    SvREFCNT_dec(c->self);
-    return;
+    // TODO: handle errors in revents?
+
+    trace("going to write %d %ld %p\n",w->fd, SvCUR(c->wbuf), SvPVX(c->wbuf));
+    //ssize_t wrote = write(w->fd, SvPVX(c->wbuf), SvCUR(c->wbuf));
+    ssize_t wrote = (SvCUR(c->wbuf) > 16) ? 16 : SvCUR(c->wbuf);
+    wrote = write(w->fd, SvPVX(c->wbuf), wrote);
+    trace("wrote %d bytes to %d\n", wrote, w->fd);
+    if (wrote == -1) {
+        if (errno == EAGAIN)
+            goto try_write_again;
+        perror("try_client_write");
+        goto try_write_finished;
+    }
+
+    // check for more work
+    if (SvCUR(c->wbuf) == wrote) {
+        trace("All done with %d\n",w->fd);
+        SvREFCNT_dec(c->wbuf); c->wbuf = NULL;
+        goto try_write_finished;
+    }
+    trace("More work to do %d: cur=%d len=%d ivx=%d\n",w->fd, SvCUR(c->wbuf), SvLEN(c->wbuf), SvIVX(c->wbuf));
+
+    // remove written bytes from the front of the string (using the OOK hack)
+    if (!SvOOK(c->wbuf)) {
+        // can't use the OOK hack without a PVIV
+        if (SvTYPE(c->wbuf) < SVt_PVIV)
+            SvUPGRADE(c->wbuf, SVt_PVIV);
+        SvOOK_on(c->wbuf);
+    }
+    SvIVX(c->wbuf) += wrote;
+    SvPVX(c->wbuf) += wrote;
+    SvCUR(c->wbuf) -= wrote;
+    SvLEN(c->wbuf) -= wrote;
 
 try_write_again:
     trace("write again %d\n",w->fd);
     if (!ev_is_active(w)) {
         ev_io_start(EV_A, w);
     }
+    return;
+
+try_write_finished:
+    // TODO: call the drain callback with success/error
+    ev_io_stop(EV_A, w);
+    SvREFCNT_dec(c->self);
     return;
 }
 
@@ -248,7 +261,7 @@ try_parse_http(struct http_client *c, size_t last_len)
         req->num_headers = MAX_HEADERS;
         c->req = req;
     }
-    return phr_parse_request(c->r_buf, c->r_len,
+    return phr_parse_request(SvPVX(c->rbuf), SvCUR(c->rbuf),
         &req->method, &req->method_len,
         &req->path, &req->path_len, &req->minor_version,
         req->headers, &req->num_headers, 
@@ -261,58 +274,53 @@ static void
 try_client_read(EV_P_ ev_io *w, int revents)
 {
     dCLIENT;
-    int attempts = 0;
+
+    // TODO: handle errors in revents?
 
     trace("try read %d\n",w->fd);
 
-    if (c->r_len == 0) {
+    if (!c->rbuf) {
         trace("init rbuf for %d\n",w->fd);
-        c->r_len = 2 * READ_CHUNK;
-        c->r_buf = (char *)malloc(c->r_len);
-        c->r_offset = 0;
+        c->rbuf = newSV((2*READ_CHUNK) - 1);
     }
 
-    while (attempts < 20) {
-        if (c->r_len - c->r_offset < READ_CHUNK) {
-            trace("moar memory %d\n",w->fd);
-            // XXX: unbounded, unchecked realloc
-            c->r_len += READ_CHUNK;
-            c->r_buf = (char *)realloc(c->r_buf, c->r_len);
-        }
+    if (SvLEN(c->rbuf) - SvCUR(c->rbuf) < READ_CHUNK) {
+        size_t new_len = SvLEN(c->rbuf) + READ_CHUNK;
+        trace("moar memory %d: %d to %d\n",w->fd, SvLEN(c->rbuf),new_len);
+        SvGROW(c->rbuf, new_len);
+    }
 
-        attempts ++;
-        ssize_t got_n = read(w->fd, c->r_buf + c->r_offset, READ_CHUNK);
+    char *cur = SvPVX(c->rbuf) + SvCUR(c->rbuf);
+    ssize_t got_n = read(w->fd, cur, READ_CHUNK);
 
-        if (got_n == -1) {
-            int errno_copy = errno;
-            if (errno_copy == EAGAIN) goto try_read_again;
-            perror("try_client_read");
-            goto try_read_error;
-        }
-        else if (got_n == 0) {
-            trace("EOF %d after %d\n",w->fd,c->r_offset);
-            goto try_read_error;
-        }
-        else {
-            trace("read %d %d\n", w->fd, got_n);
-            c->r_offset += got_n;
-            int ret = try_parse_http(c, (size_t)got_n);
-            if (ret == -1) goto try_read_error;
-            if (ret == -2) goto try_read_again;
-            c->body_offset = (size_t)ret;
-            trace("GOT HTTP %d: %.*s", c->r_len, c->body_offset, c->r_buf);
-            ev_io_stop(EV_A, w);
-
-            
-            // XXX: here's where we'd check the content length or chunked
-            // input stuff, read the body if it's not too big
-            
-            trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
-            rinq_push(&request_ready_rinq, c);
-            if (!ev_is_active(&ei)) {
-                ev_idle_start(EV_A, &ei);
-            }
-            break;
+    if (got_n == -1) {
+        int errno_copy = errno;
+        if (errno_copy == EAGAIN) goto try_read_again;
+        perror("try_client_read");
+        goto try_read_error;
+    }
+    else if (got_n == 0) {
+        trace("EOF before complete request: %d\n",w->fd,SvCUR(c->rbuf));
+        goto try_read_error;
+    }
+    else {
+        trace("read %d %d\n", w->fd, got_n);
+        SvCUR(c->rbuf) += got_n;
+        int ret = try_parse_http(c, (size_t)got_n);
+        if (ret == -1) goto try_read_error;
+        if (ret == -2) goto try_read_again;
+        c->body_offset = (size_t)ret;
+        ev_io_stop(EV_A, w);
+        
+        // XXX: here's where we'd check the content length or chunked
+        // input stuff, read the body if it's not too big.
+        //
+        // Instead, just assume it's a GET and schedule a callback.
+        
+        trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
+        rinq_push(&request_ready_rinq, c);
+        if (!ev_is_active(&ei)) {
+            ev_idle_start(EV_A, &ei);
         }
     }
 
@@ -471,37 +479,69 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
 {
     char *ptr;
     STRLEN len;
-    I32 i, avl;
-    SV *tmp = NEWSV(0,0);
+    I32 i;
+
     trace("send response c=%p\n",c);
 
-    avl = av_len(headers);
+    I32 avl = av_len(headers);
     if (avl < 0 || (avl % 2 != 1)) {
-        croak("even-length array of headers expected\n");
+        croak("expected even-length array");
+    }
+    if (!SvOK(body)) {
+        croak("body must be a scalar or scalar reference");
+    }
+    if (SvROK(body)) {
+        SV *refd = SvRV(body);
+        if (SvOK(refd) && !SvROK(refd)) {
+            body = refd;
+        }
+        else {
+            croak("body must be a scalar or scalar reference");
+        }
     }
 
-    sv_catpv(tmp, "HTTP/1.0 ");
-    sv_catsv(tmp, message);
-    sv_catpv(tmp, "\r\n");
+    SV *tmp = newSV((2*READ_CHUNK)-1);
 
-    for (i=0; i<=av_len(headers); i++) {
-        SV **elt = av_fetch(headers, i, 0);
-        sv_catsv(tmp, *elt);
-        sv_catpvn(tmp, (i%2) ? "\r\n" : ": ", 2);
+    ptr = SvPV(message, len);
+    sv_catpvf(tmp, "HTTP/1.0 %.*s\r\n", len, ptr);
+
+    for (i=0; i<avl; i+= 2) {
+        const char *hp, *vp;
+        STRLEN hlen, vlen;
+        SV **hdr = av_fetch(headers, i, 0);
+        SV **val = av_fetch(headers, i+1, 0);
+
+        if (!hdr || !SvOK(*hdr)) {
+            warn("skipping undef header");
+            continue;
+        }
+        if (!val || !SvOK(*val)) {
+            warn("skipping undef header value");
+            continue;
+        }
+
+        hp = SvPV(*hdr, hlen);
+        vp = SvPV(*val, vlen);
+
+        if (strncasecmp(hp,"Content-Length",hlen) == 0) {
+            warn("Ignoring content-length header in the response");
+            continue; 
+        }
+
+        sv_catpvf(tmp, "%.*s: %.*s\r\n", hlen, hp, vlen, vp);
     }
 
     ptr = SvPV(body, len);
     sv_catpvf(tmp, "Content-Length: %d\r\n\r\n", len);
     sv_catpvn(tmp, ptr, len);
 
-    ptr = SvPV(tmp, len);
-    c->w_buf = (char *)malloc(len);
-    c->w_len = len;
-    memcpy(c->w_buf, ptr, len);
-    SvREFCNT_dec(tmp);
-
-    free(c->r_buf); c->r_buf = NULL;
-    free(c->req); c->req = NULL;
+    if (!c->wbuf) {
+        c->wbuf = tmp;
+    }
+    else {
+        sv_catsv(c->wbuf, tmp);
+        SvREFCNT_dec(tmp);
+    }
 
     client_write_ready(c);
 }
@@ -512,8 +552,8 @@ DESTROY (struct http_client *c)
 {
     trace("DESTROY client %p\n", c);
     if (c->drain_cb) SvREFCNT_dec(c->drain_cb);
-    if (c->r_buf) free(c->r_buf);
-    if (c->w_buf) free(c->w_buf);
+    if (c->rbuf) SvREFCNT_dec(c->rbuf);
+    if (c->wbuf) SvREFCNT_dec(c->wbuf);
     if (c->req) free(c->req);
     if (c->fd) close(c->fd);
 #ifdef DEBUG
