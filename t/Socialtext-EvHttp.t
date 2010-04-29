@@ -1,16 +1,13 @@
-# Before `make install' is performed this script should be runnable with
-# `make test'. After `make install' it should work as `perl Socialtext-EvHttp.t'
-
-#########################
-
-# change 'tests => 1' to 'tests => last_test_to_print';
-
-use Test::More tests => 10;
+#!perl
+use warnings;
+use strict;
+use Test::More tests => 26;
 use Test::Exception;
 use blib;
 use Carp ();
 use Guard;
 $SIG{__DIE__} = \&Carp::confess;
+$SIG{PIPE} = 'IGNORE';
 
 BEGIN { use_ok('Socialtext::EvHttp') };
 
@@ -52,8 +49,20 @@ $cb = sub {
     pass "called back!";
     my $r = shift;
     isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
+#     use Devel::Peek();
+#     Devel::Peek::Dump($r);
+    my $headers = $r->get_headers();
+    ok $headers, "got headers";
+    is ref($headers), 'ARRAY', ".. and it's an array";
+    my %h = (@$headers);
+    like $h{'User-agent'}, qr/AnyEvent-HTTP/, "got anyevent-http's UA";
     eval {
-        $r->send_response("200 OK", ['Content-Type' => 'text/plain'], 'Baz!');
+        $r->send_response("200 OK", [
+            'Content-Type' => 'text/plain',
+            'Connection' => 'close',
+            'X-Client' => 0+$$r,
+            'Content-Length' => 666, # should be ignored
+         ], 'Baz!');
     }; warn $@ if $@;
 };
 
@@ -62,15 +71,27 @@ lives_ok {
 } "can assign another code block";
 
 use AnyEvent::HTTP;
-use XXX;
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 1, sub {
-    WWW($_[1]);
-    warn "CLIENT GOT: ".$_[0];
+my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 3, sub {
+    my ($body, $headers) = @_;
+    is $headers->{Status}, 200, "client 1 got 200";
+    like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
+    is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
+    warn "CLIENT GOT: $body\n";
+    $cv->end;
+};
+
+$cv->begin;
+my $w2 = http_get 'http://localhost:10203/?zzzzz', timeout => 3, sub {
+    my ($body, $headers) = @_;
+    is $headers->{Status}, 200, "client 2 got 200";
+    like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
+    is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
+    warn "CLIENT 2 GOT: $body\n";
     $cv->end;
 };
 
 $cv->recv;
-
+pass "all done";

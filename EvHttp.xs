@@ -12,6 +12,7 @@
 #include "rinq.c"
 
 #define MAX_HEADERS 128
+#define MAX_HEADER_NAME_LEN 128
 
 #ifdef DEBUG
 #define trace(f_, ...) warn(f_, ##__VA_ARGS__)
@@ -397,7 +398,7 @@ call_http_request_callback (EV_P_ struct http_client *c)
 
     trace("called request callback...\n");
 
-    if (SvTRUE(ERRSV)) {
+    if (SvOK(ERRSV) && SvTRUE(ERRSV)) {
         STRLEN len;
         char *err = SvPV(ERRSV,len);
         trace("an error was thrown: %.*s\n",len,err);
@@ -545,6 +546,35 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
 
     client_write_ready(c);
 }
+
+SV*
+get_headers (struct http_client *c)
+    CODE:
+{
+    AV *hdrs = newAV();
+    int i;
+    SV *lastval = NULL;
+
+    for (i=0; i<c->req->num_headers; i++) {
+        struct phr_header *hdr = &(c->req->headers[i]);
+        if (hdr->name == NULL && lastval != NULL) {
+            warn("... extending %.*s\n", hdr->value_len, hdr->value);
+            sv_catpvn(lastval, hdr->value, hdr->value_len);
+        }
+        else {
+            warn("adding %.*s:%.*s\n", hdr->name_len, hdr->name, hdr->value_len, hdr->value);
+            SV *key = newSVpvn(hdr->name, hdr->name_len);
+            SV *val = newSVpvn(hdr->value, hdr->value_len);
+            lastval = val;
+            av_push(hdrs, key);
+            av_push(hdrs, val);
+        }
+    }
+    sv_dump((SV*)hdrs);
+    RETVAL = newRV_noinc((SV*)hdrs);
+}
+    OUTPUT:
+        RETVAL
 
 void
 DESTROY (struct http_client *c)
