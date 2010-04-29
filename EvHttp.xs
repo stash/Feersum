@@ -11,6 +11,12 @@
 
 #define MAX_HEADERS 128
 
+#ifdef DEBUG
+#define trace(f_, ...) warn(f_, ##__VA_ARGS__)
+#else
+#define trace(...)
+#endif
+
 struct http_client_req {
     const char* method;
     size_t method_len;
@@ -21,7 +27,11 @@ struct http_client_req {
     struct phr_header headers[MAX_HEADERS];
 };
 
+// enough to hold a 64-bit signed integer (which is 20+1 chars) plus nul
+#define CLIENT_LABEL_LENGTH 24
+
 struct http_client {
+    char label[CLIENT_LABEL_LENGTH];
     SV *self;
     SV *drain_cb;
 
@@ -41,6 +51,8 @@ struct http_client {
     size_t body_offset;
 
     struct http_client_req *req;
+
+    int in_callback;
 };
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
@@ -73,18 +85,26 @@ setnonblock(int fd)
 static struct http_client *
 new_http_client (EV_P_ int client_fd)
 {
-    // Construct a client inside of a perl string buffer, move the "start"
-    // pointer of the string to the end (the trailing null byte)
-    SV *self = NEWSV(0, sizeof(struct http_client));
+    // allocate an SV that can hold the http_client PLUS a string for the fd
+    // so that dumping the SV from interpreter-land 
+    SV *self = newSV(0);
+    SvUPGRADE(self, SVt_PVMG); // ensures sv_bless doesn't reallocate
+    SvGROW(self, sizeof(struct http_client));
     SvPOK_only(self);
-    SvCUR_set(self,sizeof(struct http_client));
-    SvREFCNT_inc(self);
+    SvIOK_on(self);
+    SvIVX(self) = client_fd;
 
     struct http_client *c = (struct http_client *)SvPVX(self);
     Zero(c, 1, struct http_client);
-    c->self = self;
-    warn("made client self=%p, c=%p\n", self, c);
 
+    STRLEN label_len = snprintf(
+        c->label, CLIENT_LABEL_LENGTH, "%"IVdf, client_fd);
+
+    // make the var readonly and make the visible portion just the fd number
+    SvCUR_set(self, label_len);
+    SvREADONLY_on(self); // turn off later for blessing
+
+    c->self = self;
     c->fd = client_fd;
     setnonblock(c->fd);
 
@@ -96,6 +116,14 @@ new_http_client (EV_P_ int client_fd)
 
     ev_io_init(&c->write_ev_io, try_client_write, client_fd, EV_WRITE);
     c->write_ev_io.data = (void *)c;
+
+#ifdef DEBUG
+    sv_dump(self);
+#endif
+    trace("made client self=%p, c=%p, cur=%d, len=%d, structlen=%d, refcnt=%d\n",
+        self, c, SvCUR(self), SvLEN(self), sizeof(struct http_client), SvREFCNT(self));
+
+    return c;
 }
 
 // for use in the typemap:
@@ -110,14 +138,11 @@ sv_2http_client (SV *rv)
 static SV*
 http_client_2sv (struct http_client *c)
 {
-    SV *rv;
-    if (SvOBJECT(c->self)) {
-        warn("c->self is already an object\n");
-        rv = newRV_inc(c->self);
-    }
-    else {
-        warn("c->self not yet an object\n");
-        rv = newRV_noinc(c->self);
+    SV *rv = newRV_inc(c->self);
+    if (!SvOBJECT(c->self)) {
+        trace("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
+        SvREADONLY_off(c->self);
+        // XXX: should this block use newRV_noinc instead?
         sv_bless(rv, http_client_stash);
         SvREADONLY_on(c->self);
     }
@@ -127,7 +152,7 @@ http_client_2sv (struct http_client *c)
 static void
 prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
-    warn("prepare!\n");
+    trace("prepare!\n");
     if (!ev_is_active(&accept_w)) {
         ev_io_start(EV_A, &accept_w);
         //ev_prepare_stop(EV_A, w);
@@ -142,7 +167,7 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     dCLIENT;
     ssize_t wrote;
 
-    warn("going to write %d %ld %p\n",w->fd, c->w_len, c->w_buf);
+    trace("going to write %d %ld %p\n",w->fd, c->w_len, c->w_buf);
     wrote = write(w->fd, c->w_buf + c->w_offset, c->w_len - c->w_offset);
     if (wrote == -1) {
         if (errno == EAGAIN) goto try_write_again;
@@ -152,12 +177,12 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
 
     c->w_offset += wrote;
     if (c->w_len - c->w_offset == 0) {
-        warn("All done with %d\n",w->fd);
+        trace("All done with %d\n",w->fd);
         ev_io_stop(EV_A, w);
         free(c->w_buf);
         c->w_buf = NULL;
         c->w_offset = c->w_len = 0;
-        // XXX: here's where we'd call the Perl-land completion callback.
+        // TODO: call the drain callback
         SvREFCNT_dec(c->self);
     }
     return;
@@ -169,7 +194,7 @@ try_write_error:
     return;
 
 try_write_again:
-    warn("write again %d\n",w->fd);
+    trace("write again %d\n",w->fd);
     if (!ev_is_active(w)) {
         ev_io_start(EV_A, w);
     }
@@ -201,10 +226,10 @@ try_client_read(EV_P_ ev_io *w, int revents)
     dCLIENT;
     int attempts = 0;
 
-    warn("try read %d\n",w->fd);
+    trace("try read %d\n",w->fd);
 
     if (c->r_len == 0) {
-        warn("init rbuf for %d\n",w->fd);
+        trace("init rbuf for %d\n",w->fd);
         c->r_len = 2 * READ_CHUNK;
         c->r_buf = (char *)malloc(c->r_len);
         c->r_offset = 0;
@@ -212,7 +237,7 @@ try_client_read(EV_P_ ev_io *w, int revents)
 
     while (attempts < 20) {
         if (c->r_len - c->r_offset < READ_CHUNK) {
-            warn("moar memory %d\n",w->fd);
+            trace("moar memory %d\n",w->fd);
             // XXX: unbounded, unchecked realloc
             c->r_len += READ_CHUNK;
             c->r_buf = (char *)realloc(c->r_buf, c->r_len);
@@ -228,17 +253,17 @@ try_client_read(EV_P_ ev_io *w, int revents)
             goto try_read_error;
         }
         else if (got_n == 0) {
-            warn("EOF %d after %d\n",w->fd,c->r_offset);
+            trace("EOF %d after %d\n",w->fd,c->r_offset);
             goto try_read_error;
         }
         else {
-            warn("read %d %d\n", w->fd, got_n);
+            trace("read %d %d\n", w->fd, got_n);
             c->r_offset += got_n;
             int ret = try_parse_http(c, (size_t)got_n);
             if (ret == -1) goto try_read_error;
             if (ret == -2) goto try_read_again;
             c->body_offset = (size_t)ret;
-            warn("GOT HTTP %d: %.*s", c->r_len, c->body_offset, c->r_buf);
+            trace("GOT HTTP %d: %.*s", c->r_len, c->body_offset, c->r_buf);
             ev_io_stop(EV_A, w);
 
             // XXX: here's where we'd check the content length or chunked
@@ -257,7 +282,7 @@ try_client_read(EV_P_ ev_io *w, int revents)
     return;
 
 try_read_again:
-    warn("read again %d\n", w->fd);
+    trace("read again %d\n", w->fd);
     if (!ev_is_active(w)) {
         ev_io_start(EV_A,w);
     }
@@ -277,7 +302,7 @@ accept_cb (EV_P_ ev_io *w, int revents)
     struct sockaddr_in client_sockaddr;
     socklen_t client_socklen = sizeof(struct sockaddr_in);
 
-    warn("accept! %08x %d\n", revents, revents & EV_READ);
+    trace("accept! %08x %d\n", revents, revents & EV_READ);
     // TODO: accept as many as possible
     client_fd = accept(w->fd,
                        (struct sockaddr *)&client_sockaddr, &client_socklen);
@@ -294,27 +319,29 @@ call_http_request_callback (EV_P_ struct http_client *c)
     dSP;
     SV *sv_self;
 
-    warn("about to call request callback...\n");
+    c->in_callback++;
 
     sv_self = http_client_2sv(c);
 
-    warn("got self: %p", sv_self);
+    trace("request callback c=%p self=%p\n", c, sv_self);
 
     ENTER;
     SAVETMPS;
 
     PUSHMARK(SP);
-    XPUSHs(sv_self);
+    XPUSHs(sv_2mortal(sv_self));
     PUTBACK;
 
-    warn("calling request callback...\n");
+    trace("calling request callback...\n");
 
     call_sv(request_cb_cv, G_DISCARD|G_EVAL|G_VOID);
 
-    warn("called request callback...\n");
+    trace("called request callback...\n");
 
     if (SvTRUE(ERRSV)) {
-        warn("an error was thrown...\n");
+        STRLEN len;
+        char *err = SvPV(ERRSV,len);
+        trace("an error was thrown: %.*s\n",len,err);
         SPAGAIN;
         PUSHMARK(SP);
         PUTBACK;
@@ -322,9 +349,11 @@ call_http_request_callback (EV_P_ struct http_client *c)
                 G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
     }
 
-    warn("leaving request callback\n");
+    trace("leaving request callback\n");
     FREETMPS;
     LEAVE;
+
+    c->in_callback--;
 }
 
 MODULE = Socialtext::EvHttp		PACKAGE = Socialtext::EvHttp		
@@ -335,7 +364,8 @@ void
 accept_on_fd(SV *self, int fd)
     PPCODE:
     {
-        warn("going to accept on %d\n",fd);
+        trace("going to accept on %d\n",fd);
+
         ev_prepare_init(&ep, prepare_cb);
         ev_prepare_start(EV_DEFAULT, &ep);
         ev_io_init(&accept_w, accept_cb, fd, EV_READ);
@@ -352,7 +382,7 @@ request_handler(SV *self, SV *cb)
         SvREFCNT_dec(request_cb_cv);
     request_cb_cv = SvRV(cb);
     SvREFCNT_inc(request_cb_cv);
-    warn("assigned request handler %p\n", SvRV(cb));
+    trace("assigned request handler %p\n", SvRV(cb));
 }
 
 void
@@ -386,7 +416,7 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
     STRLEN len;
     I32 i, avl;
     SV *tmp = NEWSV(0,0);
-    warn("send response");
+    trace("send response c=%p\n",c);
 
     avl = av_len(headers);
     if (avl < 0 || (avl % 2 != 1)) {
@@ -415,17 +445,25 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
 
     free(c->r_buf); c->r_buf = NULL;
     free(c->req); c->req = NULL;
+
+    client_write_ready(c);
 }
 
 void
 DESTROY (struct http_client *c)
     PPCODE:
 {
-    warn("DESTROY client %p\n", c);
+    trace("DESTROY client %p\n", c);
     if (c->drain_cb) SvREFCNT_dec(c->drain_cb);
     if (c->r_buf) free(c->r_buf);
     if (c->w_buf) free(c->w_buf);
     if (c->req) free(c->req);
+    if (c->fd) close(c->fd);
+#ifdef DEBUG
+    sv_dump(c->self);
+    // overwrite for debugging
+    Poison(c, 1, struct http_client);
+#endif
 }
 
 MODULE = Socialtext::EvHttp	PACKAGE = Socialtext::EvHttp		
