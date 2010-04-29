@@ -207,9 +207,9 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     // TODO: handle errors in revents?
 
     trace("going to write %d %ld %p\n",w->fd, SvCUR(c->wbuf), SvPVX(c->wbuf));
-    //ssize_t wrote = write(w->fd, SvPVX(c->wbuf), SvCUR(c->wbuf));
-    ssize_t wrote = (SvCUR(c->wbuf) > 16) ? 16 : SvCUR(c->wbuf);
-    wrote = write(w->fd, SvPVX(c->wbuf), wrote);
+    ssize_t wrote = write(w->fd, SvPVX(c->wbuf), SvCUR(c->wbuf));
+//     ssize_t wrote = (SvCUR(c->wbuf) > 16) ? 16 : SvCUR(c->wbuf);
+//     wrote = write(w->fd, SvPVX(c->wbuf), wrote);
     trace("wrote %d bytes to %d\n", wrote, w->fd);
     if (wrote == -1) {
         if (errno == EAGAIN)
@@ -283,6 +283,10 @@ try_client_read(EV_P_ ev_io *w, int revents)
     if (!c->rbuf) {
         trace("init rbuf for %d\n",w->fd);
         c->rbuf = newSV((2*READ_CHUNK) - 1);
+        SvPOK_on(c->rbuf);
+#ifdef DEBUG
+        sv_dump(c->rbuf);
+#endif
     }
 
     if (SvLEN(c->rbuf) - SvCUR(c->rbuf) < READ_CHUNK) {
@@ -502,6 +506,10 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
     }
 
     SV *tmp = newSV((2*READ_CHUNK)-1);
+    SvPOK_on(tmp);
+#ifdef DEBUG
+    sv_dump(tmp);
+#endif
 
     ptr = SvPV(message, len);
     sv_catpvf(tmp, "HTTP/1.0 %.*s\r\n", len, ptr);
@@ -558,11 +566,11 @@ get_headers (struct http_client *c)
     for (i=0; i<c->req->num_headers; i++) {
         struct phr_header *hdr = &(c->req->headers[i]);
         if (hdr->name == NULL && lastval != NULL) {
-            warn("... extending %.*s\n", hdr->value_len, hdr->value);
+            trace("... extending %.*s\n", hdr->value_len, hdr->value);
             sv_catpvn(lastval, hdr->value, hdr->value_len);
         }
         else {
-            warn("adding %.*s:%.*s\n", hdr->name_len, hdr->name, hdr->value_len, hdr->value);
+            trace("adding %.*s:%.*s\n", hdr->name_len, hdr->name, hdr->value_len, hdr->value);
             SV *key = newSVpvn(hdr->name, hdr->name_len);
             SV *val = newSVpvn(hdr->value, hdr->value_len);
             lastval = val;
@@ -570,7 +578,6 @@ get_headers (struct http_client *c)
             av_push(hdrs, val);
         }
     }
-    sv_dump((SV*)hdrs);
     RETVAL = newRV_noinc((SV*)hdrs);
 }
     OUTPUT:
