@@ -9,6 +9,8 @@
 
 #include "picohttpparser/picohttpparser.c"
 
+#include "rinq.c"
+
 #define MAX_HEADERS 128
 
 #ifdef DEBUG
@@ -65,7 +67,10 @@ static SV *request_cb_cv = NULL;
 
 static ev_io accept_w;
 static ev_prepare ep;
+static ev_check   ec;
+struct ev_idle    ei;
 
+static struct rinq *request_ready_rinq = NULL;
 
 static int
 setnonblock(int fd)
@@ -150,6 +155,22 @@ http_client_2sv (struct http_client *c)
 }
 
 static void
+process_request_ready_rinq (EV_P)
+{
+    while (request_ready_rinq) {
+        struct http_client *c =
+            (struct http_client *)rinq_shift(&request_ready_rinq);
+        trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
+
+        call_http_request_callback(EV_A, c);
+
+        if (c->w_buf && (c->w_len - c->w_offset) > 0) {
+            client_write_ready(c);
+        }
+    }
+}
+
+static void
 prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
     trace("prepare!\n");
@@ -157,6 +178,21 @@ prepare_cb (EV_P_ ev_prepare *w, int revents)
         ev_io_start(EV_A, &accept_w);
         //ev_prepare_stop(EV_A, w);
     }
+}
+
+static void
+check_cb (EV_P_ ev_check *w, int revents)
+{
+    trace("check! head=%p\n", request_ready_rinq);
+    process_request_ready_rinq(EV_A);
+}
+
+static void
+idle_cb (EV_P_ ev_idle *w, int revents)
+{
+    trace("idle! head=%p\n", request_ready_rinq);
+    process_request_ready_rinq(EV_A);
+    ev_idle_stop(EV_A, w);
 }
 
 #define dCLIENT struct http_client *c = (struct http_client *)w->data
@@ -266,15 +302,15 @@ try_client_read(EV_P_ ev_io *w, int revents)
             trace("GOT HTTP %d: %.*s", c->r_len, c->body_offset, c->r_buf);
             ev_io_stop(EV_A, w);
 
+            
             // XXX: here's where we'd check the content length or chunked
-            // input stuff, read the body if it's not too big, then bubble
-            // that request up to Perl-land.
-            // Instead, synthesize a response.
-            call_http_request_callback(EV_A, c);
-
-            // XXX: good idea to write right away?
-            // try_client_write(EV_A, &c->write_ev_io, EV_WRITE);
-            ev_io_start(EV_A, &c->write_ev_io);
+            // input stuff, read the body if it's not too big
+            
+            trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
+            rinq_push(&request_ready_rinq, c);
+            if (!ev_is_active(&ei)) {
+                ev_idle_start(EV_A, &ei);
+            }
             break;
         }
     }
@@ -368,6 +404,12 @@ accept_on_fd(SV *self, int fd)
 
         ev_prepare_init(&ep, prepare_cb);
         ev_prepare_start(EV_DEFAULT, &ep);
+
+        ev_check_init(&ec, check_cb);
+        ev_check_start(EV_DEFAULT, &ec);
+
+        ev_idle_init(&ei, idle_cb);
+
         ev_io_init(&accept_w, accept_cb, fd, EV_READ);
     }
 
