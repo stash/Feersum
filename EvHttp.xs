@@ -58,6 +58,7 @@ struct http_client {
 };
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
+static void client_write_ready (struct http_client *c);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
 static void call_http_request_callback(EV_P_ struct http_client *c);
 
@@ -347,6 +348,20 @@ accept_cb (EV_P_ ev_io *w, int revents)
     // XXX: good idea to read right away?
     // try_client_read(EV_A, &c->read_ev_io, EV_READ);
     ev_io_start(EV_A, &c->read_ev_io);
+}
+
+static void
+client_write_ready (struct http_client *c)
+{
+    if (c->in_callback) return;
+
+    if (ev_is_active(&c->write_ev_io)) {
+        // just wait for event to fire
+    }
+    else {
+        // attempt a non-blocking write immediately
+        try_client_write(c->loop, &c->write_ev_io, EV_WRITE);
+    }
 }
 
 void
