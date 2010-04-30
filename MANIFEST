@@ -4,9 +4,10 @@ Makefile.PL
 MANIFEST
 ppport.h
 README
-t/Socialtext-EvHttp.t
 lib/Socialtext/EvHttp.pm
 picohttpparser/picohttpparser.c
 picohttpparser/picohttpparser.h
-test.c
 typemap
+rinq.c
+t/01-simple.t
+t/02-array-body.t

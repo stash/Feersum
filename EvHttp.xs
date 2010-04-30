@@ -485,6 +485,7 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
     char *ptr;
     STRLEN len;
     I32 i;
+    bool body_is_string = 0;
 
     trace("send response c=%p\n",c);
 
@@ -493,16 +494,20 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         croak("expected even-length array");
     }
     if (!SvOK(body)) {
-        croak("body must be a scalar or scalar reference");
+        croak("body must be a scalar, scalar reference or array reference");
     }
     if (SvROK(body)) {
         SV *refd = SvRV(body);
         if (SvOK(refd) && !SvROK(refd)) {
             body = refd;
+            body_is_string = 1;
         }
-        else {
-            croak("body must be a scalar or scalar reference");
+        else if (SvTYPE(refd) != SVt_PVAV) {
+            croak("body must be a scalar, scalar reference or array reference");
         }
+    }
+    else {
+        body_is_string = 1;
     }
 
     SV *tmp = newSV((2*READ_CHUNK)-1);
@@ -540,9 +545,49 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         sv_catpvf(tmp, "%.*s: %.*s\r\n", hlen, hp, vlen, vp);
     }
 
-    ptr = SvPV(body, len);
-    sv_catpvf(tmp, "Content-Length: %d\r\n\r\n", len);
-    sv_catpvn(tmp, ptr, len);
+    if (body_is_string) {
+        SV *what_to_write = body;
+        if (SvUTF8(body)) {
+            what_to_write = newSVsv(body);
+            sv_utf8_encode(what_to_write);
+        }
+
+        sv_catpvf(tmp, "Content-Length: %d\r\n\r\n", SvCUR(what_to_write));
+        sv_catsv(tmp, what_to_write);
+
+        if (what_to_write != body) SvREFCNT_dec(what_to_write);
+    }
+    else {
+        AV *abody = (AV*)SvRV(body);
+        I32 amax = av_len(abody);
+        unsigned int cl = 0;
+        for (i=0; i<=amax; i++) {
+            SV **elt = av_fetch(abody,i,0);
+            if (!elt || !SvOK(*elt))
+                continue;
+            warn("body part i=%d cur=%d utf=%d\n", i, SvCUR(*elt), 0+SvUTF8(*elt));
+            if (SvUTF8(*elt)) {
+                sv_dump(*elt);
+                SV *copy = newSVsv(*elt);
+                sv_utf8_encode(copy);
+                av_store(abody,i,copy);
+            }
+            (void)SvPV(*elt,len);
+            warn("body part i=%d len=%d\n", i, len);
+            cl += len;
+        }
+
+        sv_catpvf(tmp, "Content-Length: %u\r\n\r\n", cl);
+        // must grow here to use Copy below
+        SvGROW(tmp, SvCUR(tmp) + cl);
+
+        for (i=0; i<=amax; i++) {
+            SV **elt = av_fetch(abody,i,0);
+            if (!elt || !SvOK(*elt))
+                continue;
+            sv_catsv(tmp, *elt);
+        }
+    }
 
     if (!c->wbuf) {
         c->wbuf = tmp;
@@ -552,6 +597,7 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         SvREFCNT_dec(tmp);
     }
 
+    ptr = SvPV(c->wbuf,len);
     client_write_ready(c);
 }
 

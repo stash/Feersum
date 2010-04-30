@@ -1,11 +1,13 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 26;
+use Test::More tests => 30;
 use Test::Exception;
 use blib;
 use Carp ();
 use Guard;
+use Encode();
+use utf8;
 $SIG{__DIE__} = \&Carp::confess;
 $SIG{PIPE} = 'IGNORE';
 
@@ -56,13 +58,14 @@ $cb = sub {
     is ref($headers), 'ARRAY', ".. and it's an array";
     my %h = (@$headers);
     like $h{'User-agent'}, qr/AnyEvent-HTTP/, "got anyevent-http's UA";
+    my $utf8 = exists $h{'X-unicode-please'};
     eval {
         $r->send_response("200 OK", [
-            'Content-Type' => 'text/plain',
+            'Content-Type' => 'text/plain'.($utf8 ? '; charset=UTF-8' : ''),
             'Connection' => 'close',
             'X-Client' => 0+$$r,
             'Content-Length' => 666, # should be ignored
-         ], 'Baz!');
+        ], $utf8 ? 'Bāz!' : 'Baz!');
     }; warn $@ if $@;
 };
 
@@ -74,22 +77,30 @@ use AnyEvent::HTTP;
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 3, sub {
+my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 3,
+sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, "client 1 got 200";
     like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
     is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
-    warn "CLIENT GOT: $body\n";
+    is $headers->{'content-type'}, 'text/plain';
+    is $body, 'Baz!';
     $cv->end;
 };
 
 $cv->begin;
-my $w2 = http_get 'http://localhost:10203/?zzzzz', timeout => 3, sub {
+my $w2 = http_get 'http://localhost:10203/?zzzzz',
+    headers => {
+        'X-Unicode-Please'=> 1,
+    },
+    timeout => 3,
+sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, "client 2 got 200";
     like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
-    is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
-    warn "CLIENT 2 GOT: $body\n";
+    is $headers->{'content-length'}, 5, 'content-length was overwritten by the engine';
+    is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
+    is Encode::decode_utf8($body), 'Bāz!';
     $cv->end;
 };
 
