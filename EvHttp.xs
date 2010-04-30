@@ -53,9 +53,11 @@ struct http_client {
 };
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
-static void client_write_ready (struct http_client *c);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
 static void call_http_request_callback(EV_P_ struct http_client *c);
+
+static void client_write_ready (struct http_client *c);
+static void respond_with_server_error(EV_P_ struct http_client *c, const char *msg, STRLEN msg_len);
 
 static HV *stash, *http_client_stash;
 
@@ -377,6 +379,41 @@ client_write_ready (struct http_client *c)
     }
 }
 
+static void
+add_sv_to_wbuf (struct http_client *c, SV *tmp) {
+    if (!c->wbuf) {
+        c->wbuf = tmp;
+    }
+    else {
+        sv_catsv(c->wbuf, tmp);
+        SvREFCNT_dec(tmp);
+    }
+    client_write_ready(c);
+}
+
+static void
+respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN msg_len)
+{
+    SV *tmp;
+
+    static char *base_error = NULL;
+    static STRLEN base_error_len = 0;
+    if (!base_error) {
+        base_error =
+            "HTTP/1.0 500 Server Error\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n"
+            "Content-Length: ";
+        base_error_len = strlen(base_error);
+    }
+    
+    if (!msg_len) msg_len = strlen(msg);
+    tmp = newSV(base_error_len + msg_len + 16);
+    sv_catpvn(tmp, base_error, base_error_len);
+    sv_catpvf(tmp, "%d\r\n\r\n%.*s", msg_len, msg_len, msg);
+    add_sv_to_wbuf(c,tmp);
+}
+
 void
 call_http_request_callback (EV_P_ struct http_client *c)
 {
@@ -394,26 +431,31 @@ call_http_request_callback (EV_P_ struct http_client *c)
 
     PUSHMARK(SP);
     XPUSHs(sv_2mortal(sv_self));
+
+    warn("calling request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
+
     PUTBACK;
-
-    trace("calling request callback...\n");
-
     call_sv(request_cb_cv, G_DISCARD|G_EVAL|G_VOID);
+    SPAGAIN;
 
-    trace("called request callback...\n");
+    warn("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
-    if (SvOK(ERRSV) && SvTRUE(ERRSV)) {
-        STRLEN len;
-        char *err = SvPV(ERRSV,len);
-        trace("an error was thrown: %.*s\n",len,err);
-        SPAGAIN;
+    if (SvTRUE(ERRSV)) {
+        STRLEN err_len;
+        char *err = SvPV(ERRSV,err_len);
+        //warn("an error was thrown in the request callback: %.*s\n",len,err);
         PUSHMARK(SP);
+        XPUSHs(sv_2mortal(newSVsv(ERRSV)));
         PUTBACK;
-        call_sv(get_sv("Socialtext::EvHttp::DIED",1),
-                G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
+        call_pv("Socialtext::EvHttp::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
+        SPAGAIN;
+
+        respond_with_server_error(EV_A,c,"Request handler threw an exception.\n",0);
+        sv_setsv(ERRSV, &PL_sv_undef);
     }
 
     trace("leaving request callback\n");
+    PUTBACK;
     FREETMPS;
     LEAVE;
 
@@ -589,16 +631,7 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         }
     }
 
-    if (!c->wbuf) {
-        c->wbuf = tmp;
-    }
-    else {
-        sv_catsv(c->wbuf, tmp);
-        SvREFCNT_dec(tmp);
-    }
-
-    ptr = SvPV(c->wbuf,len);
-    client_write_ready(c);
+    add_sv_to_wbuf(c,tmp);
 }
 
 SV*
