@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <errno.h>
+#include <ctype.h>
 
 #include "ppport.h"
 
@@ -11,7 +12,7 @@
 
 #include "rinq.c"
 
-#define MAX_HEADERS 128
+#define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
 
 #ifdef DEBUG
@@ -26,6 +27,7 @@ struct http_client_req {
     const char* path; 
     size_t path_len;
     int minor_version;
+    ssize_t expected_cl;
     size_t num_headers;
     struct phr_header headers[MAX_HEADERS];
 };
@@ -69,6 +71,10 @@ static ev_check   ec;
 struct ev_idle    ei;
 
 static struct rinq *request_ready_rinq = NULL;
+
+static AV *psgi_ver;
+static SV *psgi_serv10, *psgi_serv11;
+static HV *psgi_env_template;
 
 static int
 setnonblock(int fd)
@@ -255,7 +261,7 @@ try_write_finished:
 }
 
 static int
-try_parse_http(struct http_client *c, size_t last_len)
+try_parse_http(struct http_client *c, size_t last_read)
 {
     struct http_client_req *req = c->req;
     if (!req) {
@@ -268,7 +274,7 @@ try_parse_http(struct http_client *c, size_t last_len)
         &req->method, &req->method_len,
         &req->path, &req->path_len, &req->minor_version,
         req->headers, &req->num_headers, 
-        last_len);
+        (SvCUR(c->rbuf)-last_read));
 }
 
 #define READ_CHUNK 4096
@@ -318,16 +324,20 @@ try_client_read(EV_P_ ev_io *w, int revents)
         if (ret == -2) goto try_read_again;
         c->body_offset = (size_t)ret;
         ev_io_stop(EV_A, w);
-        
+
         // XXX: here's where we'd check the content length or chunked
         // input stuff, read the body if it's not too big.
-        //
-        // Instead, just assume it's a GET and schedule a callback.
-        
-        trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
-        rinq_push(&request_ready_rinq, c);
-        if (!ev_is_active(&ei)) {
-            ev_idle_start(EV_A, &ei);
+        c->req->expected_cl = 0;
+
+        if (strncmp(c->req->method, "GET", 3) == 0) {
+            trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
+            rinq_push(&request_ready_rinq, c);
+            if (!ev_is_active(&ei)) {
+                ev_idle_start(EV_A, &ei);
+            }
+        }
+        else {
+            respond_with_server_error(EV_A, c, "TODO: support POST/PUT\n", 0);
         }
     }
 
@@ -432,13 +442,13 @@ call_http_request_callback (EV_P_ struct http_client *c)
     PUSHMARK(SP);
     XPUSHs(sv_2mortal(sv_self));
 
-    warn("calling request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
+    trace("calling request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
     PUTBACK;
     call_sv(request_cb_cv, G_DISCARD|G_EVAL|G_VOID);
     SPAGAIN;
 
-    warn("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
+    trace("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
     if (SvTRUE(ERRSV)) {
         STRLEN err_len;
@@ -506,6 +516,8 @@ DESTROY (SV *self)
 }
 
 MODULE = Socialtext::EvHttp	PACKAGE = Socialtext::EvHttp::Client
+
+PROTOTYPES: ENABLE
 
 void
 on_drain (struct http_client *c, SV *cb)
@@ -579,8 +591,8 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         hp = SvPV(*hdr, hlen);
         vp = SvPV(*val, vlen);
 
-        if (strncasecmp(hp,"Content-Length",hlen) == 0) {
-            warn("Ignoring content-length header in the response");
+        if (strncasecmp(hp,"content-length",hlen) == 0) {
+            trace("Ignoring content-length header in the response");
             continue; 
         }
 
@@ -607,15 +619,14 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
             SV **elt = av_fetch(abody,i,0);
             if (!elt || !SvOK(*elt))
                 continue;
-            warn("body part i=%d cur=%d utf=%d\n", i, SvCUR(*elt), 0+SvUTF8(*elt));
+            trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(*elt), 0+SvUTF8(*elt));
             if (SvUTF8(*elt)) {
-                sv_dump(*elt);
                 SV *copy = newSVsv(*elt);
                 sv_utf8_encode(copy);
                 av_store(abody,i,copy);
             }
             (void)SvPV(*elt,len);
-            warn("body part i=%d len=%d\n", i, len);
+            trace("body part i=%d len=%d\n", i, len);
             cl += len;
         }
 
@@ -663,6 +674,92 @@ get_headers (struct http_client *c)
         RETVAL
 
 void
+env (struct http_client *c, HV *e)
+    PROTOTYPE: $\%
+    PPCODE:
+{
+    SV **hsv;
+    int i,j;
+    struct http_client_req *r = c->req;
+
+    //  strlen: 012345678901234567890
+    hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
+    hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
+    hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
+    hv_store(e, "psgi.multithreaded", 18, &PL_sv_yes, 0);
+    hv_store(e, "psgi.streaming", 14, &PL_sv_no, 0); // TODO streaming
+    hv_store(e, "psgi.errors", 11, &PL_sv_undef, 0); // TODO errors object
+    hv_store(e, "psgi.input", 10, &PL_sv_undef, 0); // TODO input object
+    hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
+    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
+    hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
+    hv_store(e, "CONTENT_LENGTH", 14, newSViv(r->expected_cl), 0);
+    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ? newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+
+    {
+        const char *qpos = r->path;
+        while (*qpos != '?' && qpos < r->path + r->path_len) {
+            qpos++;
+        }
+        if (*qpos == '?') {
+            hv_store(e, "PATH_INFO", 9, newSVpvn(r->path, (qpos - r->path)),0);
+            qpos++;
+            hv_store(e, "QUERY_STRING", 12, newSVpvn(qpos, r->path_len - (qpos - r->path)), 0);
+        }
+        else {
+            hv_store(e, "PATH_INFO", 9, newSVpvn(r->path, r->path_len),0);
+        }
+        // TODO: uri_decode PATH_INFO
+    }
+
+    SV *val = NULL;
+    SV *keybuf = newSV(48 - 1);
+    char *key = SvPVX(keybuf);
+    key[0] = 'H'; key[1] = 'T'; key[2] = 'T'; key[3] = 'P'; key[4] = '_';
+
+    for (i=0; i<r->num_headers; i++) {
+        struct phr_header *hdr = &(r->headers[i]);
+        if (hdr->name == NULL && val != NULL) {
+            trace("... multiline %.*s\n", hdr->value_len, hdr->value);
+            sv_catpvn(val, hdr->value, hdr->value_len);
+        }
+        else if (tolower(hdr->name[0]) == 'c' &&
+                 strncasecmp(hdr->name, "content-length", (14 > hdr->name_len) ? hdr->name_len : 14) == 0)
+        {
+            // content length shouldn't show up as HTTP_CONTENT_LENGTH but
+            // as CONTENT_LENGTH in the env-hash.  This is assigned from
+            // r->expected_cl.
+            continue;
+        }
+        else {
+
+            SvGROW(keybuf,5+hdr->name_len);
+            SvLEN_set(keybuf,5+hdr->name_len);
+            key = SvPVX(keybuf) + 5;
+            for (j=0; j<hdr->name_len; j++) {
+                char n = hdr->name[j];
+                *key++ = (n == '-') ? '_' : toupper(n);
+            }
+
+            SV **val = hv_fetch(e, SvPVX(keybuf), hdr->name_len + 5, 1);
+            trace("adding %.*s:%.*s\n",
+                SvLEN(keybuf), SvPVX(keybuf), hdr->value_len, hdr->value);
+
+            assert(val != NULL); // "fetch is store" flag should ensure this
+            if (SvPOK(*val)) {
+                trace("... is multivalue\n");
+                // extend header with comma
+                sv_catpvf(*val, ", %.*s", hdr->value_len, hdr->value);
+            }
+            else {
+                // change from undef to a real value
+                sv_setpvn(*val, hdr->value, hdr->value_len);
+            }
+        }
+    }
+}
+
+void
 DESTROY (struct http_client *c)
     PPCODE:
 {
@@ -686,4 +783,15 @@ BOOT:
         stash = gv_stashpv("Socialtext::EvHttp", 1);
         http_client_stash = gv_stashpv("Socialtext::EvHttp::Client", 1);
         I_EV_API("Socialtext::EvHttp");
+
+        SV *ver_svs[2];
+        ver_svs[0] = newSViv(1);
+        ver_svs[1] = newSViv(0);
+        psgi_ver = av_make(2,ver_svs);
+        SvREFCNT_dec(ver_svs[0]);
+        SvREFCNT_dec(ver_svs[1]);
+        SvREADONLY_on((SV*)psgi_ver);
+
+        psgi_serv10 = newSVpvn("HTTP/1.0",8);
+        psgi_serv11 = newSVpvn("HTTP/1.1",8);
     }
