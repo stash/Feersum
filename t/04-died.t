@@ -33,8 +33,7 @@ my $evh = Socialtext::EvHttp->new();
     no warnings 'redefine';
     *Socialtext::EvHttp::DIED = sub {
         my $err = shift;
-        pass 'DIED was called';
-        diag "Died during request handler: $err";
+        like $err, qr/holy crap/, 'DIED was called';
     };
 }
 
