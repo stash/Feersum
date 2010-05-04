@@ -60,6 +60,25 @@ sub DIED {
 
 package Socialtext::EvHttp::Client;
 
+sub send_response {
+    # my ($self, $msg, $hdrs, $body) = @_;
+    $_[0]->start_response($_[1], $_[2], 0);
+    $_[0]->write_whole_body(ref($_[3]) ? $_[3] : \$_[3]);
+}
+
+sub initiate_streaming {
+    my $self = shift;
+    my $streamer = shift;
+    Carp::croak "Socialtext::EvHttp: Expected code reference argument to stream_response"
+        unless ref($streamer) eq 'CODE';
+    my $start_cb = sub {
+        $self->start_response($_[0],$_[1],1);
+        return $self;
+    };
+    @_ = ($start_cb);
+    goto &$streamer;
+}
+
 package Socialtext::EvHttp;
 
 1;

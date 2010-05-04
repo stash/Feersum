@@ -12,11 +12,20 @@
 
 #include "rinq.c"
 
+#ifndef CRLF
+#define CRLF "\015\012"
+#endif
+#define CRLFx2 CRLF CRLF
+
 #define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
 
+#define WARN_PREFIX "Socialtext::EvHttp: "
+
+#define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
+
 #ifdef DEBUG
-#define trace(f_, ...) warn(f_, ##__VA_ARGS__)
+#define trace(f_, ...) trouble(f_, ##__VA_ARGS__)
 #else
 #define trace(...)
 #endif
@@ -34,6 +43,9 @@ struct http_client_req {
 
 // enough to hold a 64-bit signed integer (which is 20+1 chars) plus nul
 #define CLIENT_LABEL_LENGTH 24
+#define RESPOND_NORMAL 1
+#define RESPOND_STREAMING 2
+#define RESPOND_SHUTDOWN 3
 
 struct http_client {
     char label[CLIENT_LABEL_LENGTH];
@@ -52,6 +64,7 @@ struct http_client {
     struct http_client_req *req;
 
     int in_callback;
+    int responding;
 };
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
@@ -169,6 +182,7 @@ process_request_ready_rinq (EV_P)
         call_http_request_callback(EV_A, c);
 
         if (c->wbuf && SvCUR(c->wbuf) > 0) {
+            // this was deferred until after the perl callback
             client_write_ready(c);
         }
     }
@@ -215,9 +229,9 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     // TODO: handle errors in revents?
 
     trace("going to write %d %ld %p\n",w->fd, SvCUR(c->wbuf), SvPVX(c->wbuf));
-    ssize_t wrote = write(w->fd, SvPVX(c->wbuf), SvCUR(c->wbuf));
-//     ssize_t wrote = (SvCUR(c->wbuf) > 16) ? 16 : SvCUR(c->wbuf);
-//     wrote = write(w->fd, SvPVX(c->wbuf), wrote);
+    STRLEN buflen;
+    const char *bufptr = SvPV(c->wbuf, buflen);
+    ssize_t wrote = write(w->fd, bufptr, buflen);
     trace("wrote %d bytes to %d\n", wrote, w->fd);
     if (wrote == -1) {
         if (errno == EAGAIN)
@@ -254,9 +268,14 @@ try_write_again:
     return;
 
 try_write_finished:
-    // TODO: call the drain callback with success/error
+    // TODO: call a drain callback with success/error
     ev_io_stop(EV_A, w);
-    SvREFCNT_dec(c->self);
+    // should always be responding, but just in case
+    if (!c->responding || c->responding == RESPOND_SHUTDOWN) {
+        trace("ref dec after write %d\n", c->fd);
+        // TODO: call a completion callback instead of just GCing
+        SvREFCNT_dec(c->self);
+    }
     return;
 }
 
@@ -378,27 +397,62 @@ accept_cb (EV_P_ ev_io *w, int revents)
 static void
 client_write_ready (struct http_client *c)
 {
-    if (c->in_callback) return;
+    if (c->in_callback) return; // defer until out of callback
 
-    if (ev_is_active(&c->write_ev_io)) {
-        // just wait for event to fire
-    }
-    else {
-        // attempt a non-blocking write immediately
+    if (!ev_is_active(&c->write_ev_io)) {
+        // attempt a non-blocking write immediately if we're not already
+        // waiting for writability
         try_client_write(c->loop, &c->write_ev_io, EV_WRITE);
     }
 }
 
 static void
-add_sv_to_wbuf (struct http_client *c, SV *tmp) {
-    if (!c->wbuf) {
-        c->wbuf = tmp;
+add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked)
+{
+    if (sv == NULL || !SvOK(sv)) {
+        if (chunked) {
+            // last-chunk = 1*"0" CRLF CRLF
+            if (!c->wbuf)
+                c->wbuf =  newSVpv("0" CRLFx2, 5);
+            else
+                sv_catpvn(c->wbuf, "0" CRLFx2, 5);
+        }
+        return;
+    }
+
+    if (SvUTF8(sv)) {
+        sv_utf8_encode(sv);
+    }
+
+    if (chunked) {
+        STRLEN len;
+        const char *ptr = SvPV(sv, len); // invoke magic if any
+        if (!c->wbuf) {
+            // make a buffer that can fit the data plus chunk envelope
+            STRLEN need = (len > READ_CHUNK) ? len+32 : READ_CHUNK-1;
+            c->wbuf = newSV(need);
+            SvPOK_on(c->wbuf);
+        }
+        /*
+            From http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.6.1
+
+            chunk-size = [0-9a-f]+
+            chunk = chunk-size CRLF chunk-data CRLF
+        */
+        sv_catpvf(c->wbuf, "%x" CRLF, len);
+        sv_catpvn(c->wbuf, ptr, len);
+        sv_catpvn(c->wbuf, CRLF, 2);
     }
     else {
-        sv_catsv(c->wbuf, tmp);
-        SvREFCNT_dec(tmp);
+        if (c->wbuf)
+            sv_catsv(c->wbuf, sv);
+        else {
+            // use newSV+sv_setsv instead of newSVsv so that we can steal the
+            // buffer if possible
+            c->wbuf = newSV(0);
+            sv_setsv(c->wbuf, sv);
+        }
     }
-    client_write_ready(c);
 }
 
 static void
@@ -406,22 +460,33 @@ respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN 
 {
     SV *tmp;
 
+    if (c->responding) {
+        trouble("Tried to send server error but already responding!");
+        return;
+    }
+
     static char *base_error = NULL;
     static STRLEN base_error_len = 0;
     if (!base_error) {
         base_error =
-            "HTTP/1.0 500 Server Error\r\n"
-            "Content-Type: text/plain\r\n"
-            "Connection: close\r\n"
+            "HTTP/1.0 500 Server Error" CRLF
+            "Content-Type: text/plain" CRLF
+            "Connection: close" CRLF
             "Content-Length: ";
         base_error_len = strlen(base_error);
     }
     
     if (!msg_len) msg_len = strlen(msg);
     tmp = newSV(base_error_len + msg_len + 16);
+    SvPOK_on(tmp);
+    SvTEMP_on(tmp); // so add_sv_to_wbuf can optimize
     sv_catpvn(tmp, base_error, base_error_len);
-    sv_catpvf(tmp, "%d\r\n\r\n%.*s", msg_len, msg_len, msg);
-    add_sv_to_wbuf(c,tmp);
+    sv_catpvf(tmp, "%d" CRLFx2, msg_len);
+    sv_catpvn(tmp, msg, msg_len);
+    add_sv_to_wbuf(c,tmp,0);
+    SvREFCNT_dec(tmp);
+    client_write_ready(c);
+    c->responding = RESPOND_SHUTDOWN;
 }
 
 void
@@ -453,7 +518,7 @@ call_http_request_callback (EV_P_ struct http_client *c)
     if (SvTRUE(ERRSV)) {
         STRLEN err_len;
         char *err = SvPV(ERRSV,err_len);
-        //warn("an error was thrown in the request callback: %.*s\n",len,err);
+        trace("an error was thrown in the request callback: %.*s\n",err_len,err);
         PUSHMARK(SP);
         XPUSHs(sv_2mortal(newSVsv(ERRSV)));
         PUTBACK;
@@ -533,23 +598,88 @@ on_drain (struct http_client *c, SV *cb)
 }
 
 void
-send_response (struct http_client *c, SV *message, AV *headers, SV *body)
+start_response (struct http_client *c, SV *message, AV *headers, int streaming)
     PPCODE:
 {
     char *ptr;
     STRLEN len;
     I32 i;
-    bool body_is_string = 0;
 
-    trace("send response c=%p\n",c);
+    trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
+
+    if (c->responding)
+        croak("already responding!");
+    c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
 
     I32 avl = av_len(headers);
     if (avl < 0 || (avl % 2 != 1)) {
         croak("expected even-length array");
     }
-    if (!SvOK(body)) {
-        croak("body must be a scalar, scalar reference or array reference");
+
+    SV *tmp = newSV((2*READ_CHUNK)-1);
+    SvPOK_on(tmp);
+    SvTEMP_on(tmp);
+#ifdef DEBUG
+    sv_dump(tmp);
+#endif
+
+    ptr = SvPV(message, len);
+    sv_catpvf(tmp, "HTTP/1.%d %.*s" CRLF, streaming ? 1 : 0, len, ptr);
+
+    for (i=0; i<avl; i+= 2) {
+        const char *hp, *vp;
+        STRLEN hlen, vlen;
+        SV **hdr = av_fetch(headers, i, 0);
+        SV **val = av_fetch(headers, i+1, 0);
+
+        if (!hdr || !SvOK(*hdr)) {
+            trouble("skipping undef header");
+            continue;
+        }
+        if (!val || !SvOK(*val)) {
+            trouble("skipping undef header value");
+            continue;
+        }
+
+        hp = SvPV(*hdr, hlen);
+        vp = SvPV(*val, vlen);
+
+        if (strncasecmp(hp,"content-length",hlen) == 0) {
+            trouble("ignoring content-length header in the response");
+            continue; 
+        }
+
+        sv_catpvf(tmp, "%.*s: %.*s" CRLF, hlen, hp, vlen, vp);
     }
+
+    if (streaming) {
+        sv_catpvn(tmp, "Transfer-Encoding: chunked" CRLFx2, 30);
+    }
+
+    add_sv_to_wbuf(c,tmp,0);
+    SvREFCNT_dec(tmp);
+    client_write_ready(c);
+}
+
+void
+write_whole_body (struct http_client *c, SV *body)
+    PPCODE:
+{
+    int i;
+    const char *ptr;
+    STRLEN len;
+    bool body_is_string = 0;
+
+    if (c->responding != RESPOND_NORMAL)
+        croak("can't use write_whole_body when in streaming mode");
+
+    if (!SvOK(body)) {
+        sv_catpvn(c->wbuf, "Content-Length: 0" CRLFx2, 21);
+        client_write_ready(c);
+        PUTBACK;
+        return;
+    }
+
     if (SvROK(body)) {
         SV *refd = SvRV(body);
         if (SvOK(refd) && !SvROK(refd)) {
@@ -564,85 +694,79 @@ send_response (struct http_client *c, SV *message, AV *headers, SV *body)
         body_is_string = 1;
     }
 
-    SV *tmp = newSV((2*READ_CHUNK)-1);
-    SvPOK_on(tmp);
-#ifdef DEBUG
-    sv_dump(tmp);
-#endif
-
-    ptr = SvPV(message, len);
-    sv_catpvf(tmp, "HTTP/1.0 %.*s\r\n", len, ptr);
-
-    for (i=0; i<avl; i+= 2) {
-        const char *hp, *vp;
-        STRLEN hlen, vlen;
-        SV **hdr = av_fetch(headers, i, 0);
-        SV **val = av_fetch(headers, i+1, 0);
-
-        if (!hdr || !SvOK(*hdr)) {
-            warn("skipping undef header");
-            continue;
-        }
-        if (!val || !SvOK(*val)) {
-            warn("skipping undef header value");
-            continue;
-        }
-
-        hp = SvPV(*hdr, hlen);
-        vp = SvPV(*val, vlen);
-
-        if (strncasecmp(hp,"content-length",hlen) == 0) {
-            trace("Ignoring content-length header in the response");
-            continue; 
-        }
-
-        sv_catpvf(tmp, "%.*s: %.*s\r\n", hlen, hp, vlen, vp);
-    }
+    assert(c->wbuf);
 
     if (body_is_string) {
-        SV *what_to_write = body;
-        if (SvUTF8(body)) {
-            what_to_write = newSVsv(body);
-            sv_utf8_encode(what_to_write);
-        }
-
-        sv_catpvf(tmp, "Content-Length: %d\r\n\r\n", SvCUR(what_to_write));
-        sv_catsv(tmp, what_to_write);
-
-        if (what_to_write != body) SvREFCNT_dec(what_to_write);
+        sv_catpvf(c->wbuf, "Content-Length: %d" CRLFx2, SvCUR(body));
+        add_sv_to_wbuf(c,body,0);
     }
     else {
         AV *abody = (AV*)SvRV(body);
         I32 amax = av_len(abody);
+        SV **svs;
+        New(0,svs,amax+1,SV*);
         unsigned int cl = 0;
+        int actual = 0;
         for (i=0; i<=amax; i++) {
-            SV **elt = av_fetch(abody,i,0);
+            SV **elt = av_fetch(abody, i, 0);
             if (!elt || !SvOK(*elt))
                 continue;
-            trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(*elt), 0+SvUTF8(*elt));
-            if (SvUTF8(*elt)) {
-                SV *copy = newSVsv(*elt);
-                sv_utf8_encode(copy);
-                av_store(abody,i,copy);
+
+            SV *sv = *elt;
+            trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(sv), 0+SvUTF8(sv));
+            if (SvUTF8(sv)) {
+                sv_utf8_encode(sv); // convert to utf-8 bytes
+                trace("... encoded utf8, cur=%d\n", SvCUR(sv));
             }
-            (void)SvPV(*elt,len);
-            trace("body part i=%d len=%d\n", i, len);
-            cl += len;
+            cl += SvCUR(sv);
+            svs[actual++] = sv;
         }
 
-        sv_catpvf(tmp, "Content-Length: %u\r\n\r\n", cl);
-        // must grow here to use Copy below
-        SvGROW(tmp, SvCUR(tmp) + cl);
-
-        for (i=0; i<=amax; i++) {
-            SV **elt = av_fetch(abody,i,0);
-            if (!elt || !SvOK(*elt))
-                continue;
-            sv_catsv(tmp, *elt);
+        if (!c->wbuf) {
+            c->wbuf = newSV(cl + 32);
         }
+        else {
+            SvGROW(c->wbuf, SvCUR(c->wbuf) + cl + 32);
+        }
+        sv_catpvf(c->wbuf, "Content-Length: %u" CRLFx2, cl);
+
+        for (i=0; i<actual; i++) {
+            add_sv_to_wbuf(c, svs[i], 0);
+        }
+        Safefree(svs);
     }
 
-    add_sv_to_wbuf(c,tmp);
+    c->responding = RESPOND_SHUTDOWN;
+    client_write_ready(c);
+}
+
+void
+write (struct http_client *c, SV *body)
+    PPCODE:
+{
+    if (c->responding != RESPOND_STREAMING)
+        croak("can only call write in streaming mode");
+
+    if (!SvOK(body)) {
+        trace("write fd=%d c=%p, body=undef\n", c->fd, c);
+        add_sv_to_wbuf(c, NULL, 1);   
+        c->responding = RESPOND_SHUTDOWN;
+    }
+    else {
+        trace("write fd=%d c=%p, body=%p\n", c->fd, c, body);
+        if (SvROK(body)) {
+            SV *refd = SvRV(body);
+            if (SvOK(refd) && SvPOK(refd)) {
+                body = refd;
+            }
+            else {
+                croak("body must be a scalar, scalar ref or undef");
+            }
+        }
+        add_sv_to_wbuf(c, body, 1);
+    }
+
+    client_write_ready(c);
 }
 
 SV*
@@ -687,7 +811,7 @@ env (struct http_client *c, HV *e)
     hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
     hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
     hv_store(e, "psgi.multithreaded", 18, &PL_sv_yes, 0);
-    hv_store(e, "psgi.streaming", 14, &PL_sv_no, 0); // TODO streaming
+    hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
     hv_store(e, "psgi.errors", 11, &PL_sv_undef, 0); // TODO errors object
     hv_store(e, "psgi.input", 10, &PL_sv_undef, 0); // TODO input object
     hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
@@ -714,6 +838,7 @@ env (struct http_client *c, HV *e)
 
     SV *val = NULL;
     SV *keybuf = newSV(48 - 1);
+    SvPOK_on(keybuf);
     char *key = SvPVX(keybuf);
     key[0] = 'H'; key[1] = 'T'; key[2] = 'T'; key[3] = 'P'; key[4] = '_';
 
