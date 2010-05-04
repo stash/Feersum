@@ -37,7 +37,7 @@ dies_ok {
 my $cb;
 {
     my $g = guard { pass "cv recycled"; };
-    $cb = sub { $g; fail "old callback" }
+    $cb = sub { $g = $g; fail "old callback" };
 }
 
 lives_ok {
