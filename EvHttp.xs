@@ -22,6 +22,10 @@
 
 #define WARN_PREFIX "Socialtext::EvHttp: "
 
+#ifndef __inline
+#define __inline
+#endif
+
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
 
 #ifdef DEBUG
@@ -67,12 +71,16 @@ struct http_client {
     int responding;
 };
 
+
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
 static void call_http_request_callback(EV_P_ struct http_client *c);
 
+static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
 static void client_write_ready (struct http_client *c);
 static void respond_with_server_error(EV_P_ struct http_client *c, const char *msg, STRLEN msg_len);
+static void uri_decode_sv (SV *);
+
 
 static HV *stash, *http_client_stash;
 
@@ -489,6 +497,58 @@ respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN 
     c->responding = RESPOND_SHUTDOWN;
 }
 
+__inline int
+hex_decode(const char ch)
+{
+    if ('0' <= ch && ch <= '9')
+        return ch - '0';
+    else if ('A' <= ch && ch <= 'F')
+        return ch - 'A' + 10;
+    else if ('a' <= ch && ch <= 'f')
+        return ch - 'a' + 10;
+    return -1;
+}
+
+
+static void
+uri_decode_sv (SV *sv)
+{
+    STRLEN len;
+    char *ptr, *end, *decoded;
+
+    ptr = SvPV(sv, len);
+    end = SvEND(sv);
+    while (ptr < end) {
+        if (*ptr == '%') goto needs_decode;
+        ptr++;
+    }
+    return;
+
+needs_decode:
+
+    // Up until ptr have been "decoded" already by virtue of those chars not
+    // being encoded.
+    decoded = ptr;
+
+    for (; ptr < end; ptr++) {
+        if (*ptr == '%' && end-ptr >= 2) {
+            int c1 = hex_decode(ptr[1]);
+            int c2 = hex_decode(ptr[2]);
+            if (c1 != -1 && c2 != -1) {
+                *decoded++ = (c1 << 4) + c2;
+                ptr += 2;
+                continue;
+            }
+        }
+        *decoded++ = *ptr;
+    }
+
+    *decoded = '\0'; // play nice with C
+
+    ptr = SvPV_nolen(sv);
+    SvCUR_set(sv, decoded-ptr);
+}
+
 void
 call_http_request_callback (EV_P_ struct http_client *c)
 {
@@ -822,18 +882,20 @@ env (struct http_client *c, HV *e)
 
     {
         const char *qpos = r->path;
+        SV *pinfo;
         while (*qpos != '?' && qpos < r->path + r->path_len) {
             qpos++;
         }
         if (*qpos == '?') {
-            hv_store(e, "PATH_INFO", 9, newSVpvn(r->path, (qpos - r->path)),0);
+            pinfo = newSVpvn(r->path, (qpos - r->path));
             qpos++;
             hv_store(e, "QUERY_STRING", 12, newSVpvn(qpos, r->path_len - (qpos - r->path)), 0);
         }
         else {
-            hv_store(e, "PATH_INFO", 9, newSVpvn(r->path, r->path_len),0);
+            pinfo = newSVpvn(r->path, r->path_len);
         }
-        // TODO: uri_decode PATH_INFO
+        uri_decode_sv(pinfo);
+        hv_store(e, "PATH_INFO", 9, pinfo, 0);
     }
 
     SV *val = NULL;

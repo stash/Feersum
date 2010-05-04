@@ -57,16 +57,16 @@ $evh->request_handler(sub {
 
     ok $env->{HTTP_X_TEST_NUM}, "got a test number header";
     if ($env->{HTTP_X_TEST_NUM} == 1) {
-        like $env->{HTTP_REFERER}, qr/blar/, "got the AE Referer";
+        like $env->{HTTP_REFERER}, qr/wrong/, "got the AE Referer";
         is $env->{QUERY_STRING}, 'blar', "got query string";
-        is $env->{PATH_INFO}, '/foo', "got path string";
-        is $env->{REQUEST_URI}, '/foo?blar', "got full URI string";
+        is $env->{PATH_INFO}, '/what is wrong?', "got decoded path info string";
+        is $env->{REQUEST_URI}, '/what%20is%20wrong%3f?blar', "got full URI string";
     }
     else {
-        like $env->{HTTP_REFERER}, qr/qlux/, "got the AE Referer";
+        like $env->{HTTP_REFERER}, qr/good/, "got the AE Referer";
         is $env->{QUERY_STRING}, 'dlux=sonice', "got query string";
-        is $env->{PATH_INFO}, '/qlux', "got path string";
-        is $env->{REQUEST_URI}, '/qlux?dlux=sonice', "got full URI string";
+        is $env->{PATH_INFO}, '/what% is good?%2', "got decoded path info string";
+        is $env->{REQUEST_URI}, '/what%%20is%20good%3F%2?dlux=sonice', "got full URI string";
     }
 
     lives_ok {
@@ -83,7 +83,7 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/foo?blar',
+my $w = http_get 'http://localhost:10203/what%20is%20wrong%3f?blar',
     headers => {'x-test-num' => 1},
     timeout => 3,
 sub {
@@ -101,7 +101,7 @@ sub {
 };
 
 $cv->begin;
-my $w2 = http_get 'http://localhost:10203/qlux?dlux=sonice', 
+my $w2 = http_get 'http://localhost:10203/what%%20is%20good%3F%2?dlux=sonice', 
     headers => {'x-test-num' => 2},
     timeout => 3,
 sub {
