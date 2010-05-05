@@ -76,10 +76,17 @@ static void try_client_write(EV_P_ struct ev_io *w, int revents);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
 static void call_http_request_callback(EV_P_ struct http_client *c);
 
-static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
 static void client_write_ready (struct http_client *c);
 static void respond_with_server_error(EV_P_ struct http_client *c, const char *msg, STRLEN msg_len);
-static void uri_decode_sv (SV *);
+
+static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
+static void uri_decode_sv (SV *sv);
+
+static bool str_eq(const char *a, int a_len, const char *b, int b_len);
+static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
+
+static const char const *http_code_to_msg (int code);
+static int setnonblock (int fd);
 
 
 static HV *stash, *http_client_stash;
@@ -576,6 +583,32 @@ respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN 
     SvREFCNT_dec(tmp);
     client_write_ready(c);
     c->responding = RESPOND_SHUTDOWN;
+
+__inline bool
+str_eq(const char *a, int a_len, const char *b, int b_len)
+{
+    if (a_len != b_len) return 0;
+    if (a == b) return 1;
+    int i;
+    for (i=0; i<a_len && i<b_len; i++) {
+        if (a[i] != b[i]) return 0;
+    }
+    return 1;
+}
+
+/*
+ * Compares two strings, assumes that the first string is already lower-cased
+ */
+__inline bool
+str_case_eq(const char *a, int a_len, const char *b, int b_len)
+{
+    if (a_len != b_len) return 0;
+    if (a == b) return 1;
+    int i;
+    for (i=0; i<a_len && i<b_len; i++) {
+        if (a[i] != tolower(b[i])) return 0;
+    }
+    return 1;
 }
 
 __inline int
