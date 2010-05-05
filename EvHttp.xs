@@ -19,6 +19,7 @@
 
 #define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
+#define MAX_BODY_LENGTH IV_MAX - 1
 
 #define WARN_PREFIX "Socialtext::EvHttp: "
 
@@ -35,12 +36,12 @@
 #endif
 
 struct http_client_req {
+    SV *buf;
     const char* method;
     size_t method_len;
     const char* path; 
     size_t path_len;
     int minor_version;
-    ssize_t expected_cl;
     size_t num_headers;
     struct phr_header headers[MAX_HEADERS];
 };
@@ -50,11 +51,14 @@ struct http_client_req {
 #define RESPOND_NORMAL 1
 #define RESPOND_STREAMING 2
 #define RESPOND_SHUTDOWN 3
+#define RECEIVE_HEADERS 0
+#define RECEIVE_BODY 1
+#define RECEIVE_STREAMING 2
+#define RECEIVE_SHUTDOWN 3
 
 struct http_client {
     char label[CLIENT_LABEL_LENGTH];
     SV *self;
-    SV *drain_cb;
 
     int fd;
     struct ev_io read_ev_io;
@@ -63,21 +67,27 @@ struct http_client {
 
     SV *rbuf, *wbuf;
 
-    size_t body_offset;
-
     struct http_client_req *req;
+    size_t expected_cl;
+    size_t received_cl;
 
-    int in_callback;
-    int responding;
+    // SV *drain_cb; // async "done writing" callback
+    // SV *read_cb;  // async "data available" callback
+
+    int16_t in_callback;
+    int16_t responding;
+    int16_t receiving;
 };
 
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
-static void call_http_request_callback(EV_P_ struct http_client *c);
+static bool process_request_headers(struct http_client *c, int body_offset);
+static void sched_request_callback(struct http_client *c);
+static void call_request_callback(struct http_client *c);
 
 static void client_write_ready (struct http_client *c);
-static void respond_with_server_error(EV_P_ struct http_client *c, const char *msg, STRLEN msg_len);
+static void respond_with_server_error(struct http_client *c, const char *msg, STRLEN msg_len, int code);
 
 static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
 static void uri_decode_sv (SV *sv);
@@ -269,19 +279,20 @@ http_client_2sv (struct http_client *c)
 }
 
 static void
-process_request_ready_rinq (EV_P)
+process_request_ready_rinq (void)
 {
     while (request_ready_rinq) {
         struct http_client *c =
             (struct http_client *)rinq_shift(&request_ready_rinq);
         trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
 
-        call_http_request_callback(EV_A, c);
+        call_request_callback(c);
 
         if (c->wbuf && SvCUR(c->wbuf) > 0) {
             // this was deferred until after the perl callback
             client_write_ready(c);
         }
+        SvREFCNT_dec(c->self); // for the rinq
     }
 }
 
@@ -299,14 +310,14 @@ static void
 check_cb (EV_P_ ev_check *w, int revents)
 {
     trace("check! head=%p\n", request_ready_rinq);
-    process_request_ready_rinq(EV_A);
+    process_request_ready_rinq();
 }
 
 static void
 idle_cb (EV_P_ ev_idle *w, int revents)
 {
     trace("idle! head=%p\n", request_ready_rinq);
-    process_request_ready_rinq(EV_A);
+    process_request_ready_rinq();
     ev_idle_stop(EV_A, w);
 }
 
@@ -393,12 +404,16 @@ try_client_read(EV_P_ ev_io *w, int revents)
 
     // TODO: handle errors in revents?
 
+    if (c->receiving == RECEIVE_SHUTDOWN) {
+        ev_io_stop(EV_A, w);
+        return;
+    }
+
     trace("try read %d\n",w->fd);
 
     if (!c->rbuf) {
         trace("init rbuf for %d\n",w->fd);
-        c->rbuf = newSV((2*READ_CHUNK) - 1);
-        SvPOK_on(c->rbuf);
+        c->rbuf = newSV(2*READ_CHUNK + 1);
 #ifdef DEBUG
         sv_dump(c->rbuf);
 #endif
@@ -423,31 +438,44 @@ try_client_read(EV_P_ ev_io *w, int revents)
         trace("EOF before complete request: %d\n",w->fd,SvCUR(c->rbuf));
         goto try_read_error;
     }
-    else {
-        trace("read %d %d\n", w->fd, got_n);
-        SvCUR(c->rbuf) += got_n;
+
+    trace("read %d %d\n", w->fd, got_n);
+    SvCUR(c->rbuf) += got_n;
+    if (c->receiving == RECEIVE_HEADERS) {
         int ret = try_parse_http(c, (size_t)got_n);
         if (ret == -1) goto try_read_error;
         if (ret == -2) goto try_read_again;
-        c->body_offset = (size_t)ret;
-        ev_io_stop(EV_A, w);
 
-        // XXX: here's where we'd check the content length or chunked
-        // input stuff, read the body if it's not too big.
-        c->req->expected_cl = 0;
-
-        if (strncmp(c->req->method, "GET", 3) == 0) {
-            trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
-            rinq_push(&request_ready_rinq, c);
-            if (!ev_is_active(&ei)) {
-                ev_idle_start(EV_A, &ei);
-            }
-        }
-        else {
-            respond_with_server_error(EV_A, c, "TODO: support POST/PUT\n", 0);
-        }
+        if (process_request_headers(c, ret))
+            goto try_read_again;
+        else
+            goto dont_read_again;
+    }
+    else if (c->receiving == RECEIVE_BODY) {
+        c->received_cl += got_n;
+        if (c->received_cl < c->expected_cl)
+            goto try_read_again;
+        // body is complete
+        c->receiving = RECEIVE_SHUTDOWN;
+        sched_request_callback(c);
+        goto dont_read_again;
+    }
+    else {
+        warn("unknown read state %d %d", w->fd, c->receiving);
     }
 
+try_read_error:
+    trace("try read error %d\n", w->fd);
+    ev_io_stop(EV_A, w);
+    c->receiving = RECEIVE_SHUTDOWN;
+    c->responding = RESPOND_SHUTDOWN;
+    close(w->fd);
+    SvREFCNT_dec(c->self);
+    return;
+
+dont_read_again:
+    c->receiving = RECEIVE_SHUTDOWN;
+    ev_io_stop(EV_A, w);
     return;
 
 try_read_again:
@@ -455,12 +483,6 @@ try_read_again:
     if (!ev_is_active(w)) {
         ev_io_start(EV_A,w);
     }
-    return;
-
-try_read_error:
-    ev_io_stop(EV_A, w);
-    close(w->fd);
-    SvREFCNT_dec(c->self);
     return;
 }
 
@@ -480,6 +502,114 @@ accept_cb (EV_P_ ev_io *w, int revents)
     // XXX: good idea to read right away?
     // try_client_read(EV_A, &c->read_ev_io, EV_READ);
     ev_io_start(EV_A, &c->read_ev_io);
+}
+
+static void
+sched_request_callback (struct http_client *c)
+{
+    trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
+    sv_dump(c->self);
+    rinq_push(&request_ready_rinq, c);
+    SvREFCNT_inc(c->self); // for the rinq
+    if (!ev_is_active(&ei)) {
+        ev_idle_start(c->loop, &ei);
+    }
+}
+
+static bool
+process_request_headers (struct http_client *c, int body_offset)
+{
+    int err_code;
+    const char *err;
+    struct http_client_req *req = c->req;
+
+    trace("body follows headers, making new rbuf\n");
+    bool body_is_required;
+
+    c->receiving = RECEIVE_BODY;
+
+    if (str_eq("GET", 3, req->method, req->method_len) ||
+        str_eq("HEAD", 4, req->method, req->method_len) ||
+        str_eq("DELETE", 6, req->method, req->method_len))
+    {
+        // Not supposed to have a body.  Additional bytes are either a mistake
+        // or pipelined requests under HTTP/1.1
+
+        // XXX ignore them for now
+        goto got_it_all;
+    }
+    else if (str_eq("PUT", 3, req->method, req->method_len) ||
+             str_eq("POST", 4, req->method, req->method_len))
+    {
+        // MUST have a body
+        body_is_required = 1;
+    }
+    
+    // a body potentially follows the headers. Let http_client_req retain its
+    // pointers into rbuf and make a new scalar for more body data.
+    int need = SvCUR(c->rbuf) - body_offset;
+    char *from  = SvPVX(c->rbuf) + body_offset;
+    SV *new_rbuf = newSV((need > 2*READ_CHUNK) ? need-1 : 2*READ_CHUNK-1);
+    if (need)
+        sv_setpvn(new_rbuf, from, need);
+    req->buf = c->rbuf;
+    c->rbuf = new_rbuf;
+
+    // determine how much we need to read
+    int i;
+    size_t expected = 0;
+    for (i=0; i < req->num_headers; i++) {
+        struct phr_header *hdr = &req->headers[i];
+        if (!hdr->name) continue;
+        // XXX: ignore multiple C-L headers?
+        if (str_case_eq("content-length", 14, hdr->name, hdr->name_len)) {
+            int g = grok_number(hdr->value, hdr->value_len, &expected);
+            if (g == IS_NUMBER_IN_UV) {
+                if (expected > MAX_BODY_LENGTH) {
+                    err_code = 413;
+                    err = "Content length exceeds maximum\n";
+                    goto got_bad_request;
+                }
+                else
+                    goto got_cl;
+            }
+            else {
+                err_code = 400;
+                err = "invalid content-length\n";
+                goto got_bad_request;
+            }
+        }
+        // TODO: support "Connection: close" bodies
+        // TODO: support "Transfer-Encoding: chunked" bodies
+    }
+
+    if (body_is_required) {
+        // Go the nginx route...
+        err_code = 411;
+        err = "Content-Length required\n";
+    }
+
+got_bad_request:
+    respond_with_server_error(c, err, 0, err_code);
+    return 0;
+
+got_cl:
+    c->expected_cl = expected;
+    c->received_cl = SvCUR(c->rbuf);
+
+    // don't have enough bytes to schedule immediately?
+    if (c->expected_cl && c->received_cl < c->expected_cl) {
+        // TODO: schedule the callback immediately and support a non-blocking
+        // ->read method.
+        // sched_request_callback(c);
+        // c->receiving = RECEIVE_STREAM;
+        return 1;
+    }
+    // fallthrough: have enough bytes
+got_it_all:
+    c->receiving = RECEIVE_SHUTDOWN;
+    sched_request_callback(c);
+    return 0;
 }
 
 static void
@@ -559,7 +689,7 @@ add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked)
 }
 
 static void
-respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN msg_len)
+respond_with_server_error (struct http_client *c, const char *msg, STRLEN msg_len, int err_code)
 {
     SV *tmp;
 
@@ -568,28 +698,23 @@ respond_with_server_error (EV_P_ struct http_client *c, const char *msg, STRLEN 
         return;
     }
 
-    static char *base_error = NULL;
-    static STRLEN base_error_len = 0;
-    if (!base_error) {
-        base_error =
-            "HTTP/1.0 500 Server Error" CRLF
-            "Content-Type: text/plain" CRLF
-            "Connection: close" CRLF
-            "Content-Length: ";
-        base_error_len = strlen(base_error);
-    }
-    
     if (!msg_len) msg_len = strlen(msg);
-    tmp = newSV(base_error_len + msg_len + 16);
-    SvPOK_on(tmp);
-    SvTEMP_on(tmp); // so add_sv_to_wbuf can optimize
-    sv_catpvn(tmp, base_error, base_error_len);
-    sv_catpvf(tmp, "%d" CRLFx2, msg_len);
+    tmp = newSV(255);
+    sv_catpvf(tmp, "HTTP/1.1 %d %s" CRLF
+                   "Content-Type: text/plain" CRLF
+                   "Connection: close" CRLF
+                   "Content-Length: %d" CRLFx2,
+              err_code, http_code_to_msg(err_code), msg_len);
     sv_catpvn(tmp, msg, msg_len);
+
+    SvTEMP_on(tmp); // so add_sv_to_wbuf can optimize
     add_sv_to_wbuf(c,tmp,0);
     SvREFCNT_dec(tmp);
+
     client_write_ready(c);
     c->responding = RESPOND_SHUTDOWN;
+    c->receiving = RECEIVE_SHUTDOWN;
+}
 
 __inline bool
 str_eq(const char *a, int a_len, const char *b, int b_len)
@@ -629,7 +754,6 @@ hex_decode(const char ch)
         return ch - 'a' + 10;
     return -1;
 }
-
 
 static void
 uri_decode_sv (SV *sv)
@@ -671,7 +795,7 @@ needs_decode:
 }
 
 void
-call_http_request_callback (EV_P_ struct http_client *c)
+call_request_callback (struct http_client *c)
 {
     dSP;
     SV *sv_self;
@@ -706,7 +830,7 @@ call_http_request_callback (EV_P_ struct http_client *c)
         call_pv("Socialtext::EvHttp::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
         SPAGAIN;
 
-        respond_with_server_error(EV_A,c,"Request handler threw an exception.\n",0);
+        respond_with_server_error(c,"Request handler exception.\n",0,500);
         sv_setsv(ERRSV, &PL_sv_undef);
     }
 
@@ -725,19 +849,19 @@ PROTOTYPES: ENABLE
 void
 accept_on_fd(SV *self, int fd)
     PPCODE:
-    {
-        trace("going to accept on %d\n",fd);
+{
+    trace("going to accept on %d\n",fd);
 
-        ev_prepare_init(&ep, prepare_cb);
-        ev_prepare_start(EV_DEFAULT, &ep);
+    ev_prepare_init(&ep, prepare_cb);
+    ev_prepare_start(EV_DEFAULT, &ep);
 
-        ev_check_init(&ec, check_cb);
-        ev_check_start(EV_DEFAULT, &ec);
+    ev_check_init(&ec, check_cb);
+    ev_check_start(EV_DEFAULT, &ec);
 
-        ev_idle_init(&ei, idle_cb);
+    ev_idle_init(&ei, idle_cb);
 
-        ev_io_init(&accept_w, accept_cb, fd, EV_READ);
-    }
+    ev_io_init(&accept_w, accept_cb, fd, EV_READ);
+}
 
 void
 request_handler(SV *self, SV *cb)
@@ -765,24 +889,77 @@ MODULE = Socialtext::EvHttp	PACKAGE = Socialtext::EvHttp::Client
 
 PROTOTYPES: ENABLE
 
-void
-on_drain (struct http_client *c, SV *cb)
-    PPCODE:
+SV*
+read (struct http_client *c, SV *buf, size_t len, ...)
+    PROTOTYPE: $$$;$
+    CODE:
 {
-    if (!(SvOK(cb) && SvROK(cb) && SvTYPE(SvRV(cb)) == SVt_PVCV)) {
-        croak("expected code reference");
+    STRLEN buf_len, src_len;
+    char *buf_ptr, *src_ptr;
+    bool src_ookd;
+    
+    //  if (items > 3 && SvOK(ST(3)) && SvIOK(ST(3)))
+    //      off = SvUV(ST(3));
+    if (items > 3)
+        croak("reading with an offset is not yet supported");
+
+    if (c->receiving <= RECEIVE_HEADERS)
+        croak("can't call read() until the body begins to arrive");
+
+    if (!SvOK(buf) || !SvPOK(buf)) {
+        SvUPGRADE(buf, SVt_PV);
     }
-    if (c->drain_cb) {
-        SvREFCNT_dec(c->drain_cb);
+
+    if (SvUTF8(buf)) 
+        croak("buffer must have unicode flag turned off");
+
+    buf_ptr = SvPV(buf, buf_len);
+    if (c->rbuf)
+        src_ptr = SvPV(c->rbuf, src_len);
+
+    if (!c->rbuf || src_len == 0) {
+        trace("rbuf empty during read %d\n", c->fd);
+        if (c->receiving == RECEIVE_SHUTDOWN) {
+            XSRETURN_IV(0); // all done
+        }
+        else {
+            errno = EAGAIN; // need to wait for more
+            XSRETURN_UNDEF;
+        }
     }
-    c->drain_cb = newRV_inc(SvRV(cb));
+
+    if (len == -1) len = src_len;
+
+    if (len >= src_len) {
+        trace("appending entire rbuf %d\n", c->fd);
+        SvTEMP_on(c->rbuf);
+        if (buf_len == 0) {
+            sv_setsv(buf, c->rbuf);
+        }
+        else {
+            sv_catsv(buf, c->rbuf);
+        }
+        SvREFCNT_dec(c->rbuf);
+        c->rbuf = NULL;
+        XSRETURN_IV(src_len);
+    }
+    else {
+        trace("appending partial rbuf %d\n", c->fd);
+        // partial append
+        SvGROW(buf, SvCUR(buf) + len);
+        sv_catpvn(buf, src_ptr, len);
+        offset_sv(c->rbuf, len);
+        XSRETURN_IV(len);
+    }
+
+    XSRETURN_UNDEF;
 }
 
 void
 start_response (struct http_client *c, SV *message, AV *headers, int streaming)
     PPCODE:
 {
-    char *ptr;
+    const char *ptr;
     STRLEN len;
     I32 i;
 
@@ -792,6 +969,10 @@ start_response (struct http_client *c, SV *message, AV *headers, int streaming)
         croak("already responding!");
     c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
 
+    if (!SvOK(message) || !(SvIOK(message) || SvPOK(message))) {
+        croak("Must define an HTTP status code or message");
+    }
+
     I32 avl = av_len(headers);
     if (avl < 0 || (avl % 2 != 1)) {
         croak("expected even-length array");
@@ -800,9 +981,14 @@ start_response (struct http_client *c, SV *message, AV *headers, int streaming)
     SV *tmp = newSV((2*READ_CHUNK)-1);
     SvPOK_on(tmp);
     SvTEMP_on(tmp);
-#ifdef DEBUG
-    sv_dump(tmp);
-#endif
+
+    // int or 3 chars? use a stock message
+    if (SvIOK(message) || (SvPOK(message) && SvCUR(message) == 3)) {
+        int code = SvIV(message);
+        ptr = http_code_to_msg(code);
+        len = strlen(ptr);
+        message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
+    }
 
     ptr = SvPV(message, len);
     sv_catpvf(tmp, "HTTP/1.%d %.*s" CRLF, streaming ? 1 : 0, len, ptr);
@@ -825,7 +1011,7 @@ start_response (struct http_client *c, SV *message, AV *headers, int streaming)
         hp = SvPV(*hdr, hlen);
         vp = SvPV(*val, vlen);
 
-        if (strncasecmp(hp,"content-length",hlen) == 0) {
+        if (str_case_eq("content-length",15,hp,hlen)) {
             trouble("ignoring content-length header in the response");
             continue; 
         }
@@ -994,12 +1180,19 @@ env (struct http_client *c, HV *e)
     hv_store(e, "psgi.multithreaded", 18, &PL_sv_yes, 0);
     hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
     hv_store(e, "psgi.errors", 11, &PL_sv_undef, 0); // TODO errors object
-    hv_store(e, "psgi.input", 10, &PL_sv_undef, 0); // TODO input object
     hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
     hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
     hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
-    hv_store(e, "CONTENT_LENGTH", 14, newSViv(r->expected_cl), 0);
     hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ? newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+
+    if (c->expected_cl >= 0) {
+        hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
+        hv_store(e, "psgi.input", 10, http_client_2sv(c), 0);
+    }
+    else {
+        hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
+        hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
+    }
 
     {
         const char *qpos = r->path;
@@ -1031,16 +1224,12 @@ env (struct http_client *c, HV *e)
             trace("... multiline %.*s\n", hdr->value_len, hdr->value);
             sv_catpvn(val, hdr->value, hdr->value_len);
         }
-        else if (tolower(hdr->name[0]) == 'c' &&
-                 strncasecmp(hdr->name, "content-length", (14 > hdr->name_len) ? hdr->name_len : 14) == 0)
-        {
+        else if (str_case_eq("content-length", 14, hdr->name, hdr->name_len)) {
             // content length shouldn't show up as HTTP_CONTENT_LENGTH but
-            // as CONTENT_LENGTH in the env-hash.  This is assigned from
-            // r->expected_cl.
+            // as CONTENT_LENGTH in the env-hash.
             continue;
         }
         else {
-
             SvGROW(keybuf,5+hdr->name_len);
             SvLEN_set(keybuf,5+hdr->name_len);
             key = SvPVX(keybuf) + 5;
@@ -1072,10 +1261,12 @@ DESTROY (struct http_client *c)
     PPCODE:
 {
     trace("DESTROY client %p\n", c);
-    if (c->drain_cb) SvREFCNT_dec(c->drain_cb);
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
     if (c->wbuf) SvREFCNT_dec(c->wbuf);
-    if (c->req) free(c->req);
+    if (c->req) {
+        if (c->req->buf) SvREFCNT_dec(c->req->buf);
+        free(c->req);
+    }
     if (c->fd) close(c->fd);
 #ifdef DEBUG
     sv_dump(c->self);
