@@ -81,6 +81,7 @@ static void respond_with_server_error(EV_P_ struct http_client *c, const char *m
 
 static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
 static void uri_decode_sv (SV *sv);
+static void offset_sv(SV *sv, int how_much);
 
 static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
@@ -345,16 +346,7 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     trace("More work to do %d: cur=%d len=%d ivx=%d\n",w->fd, SvCUR(c->wbuf), SvLEN(c->wbuf), SvIVX(c->wbuf));
 
     // remove written bytes from the front of the string (using the OOK hack)
-    if (!SvOOK(c->wbuf)) {
-        // can't use the OOK hack without a PVIV
-        if (SvTYPE(c->wbuf) < SVt_PVIV)
-            SvUPGRADE(c->wbuf, SVt_PVIV);
-        SvOOK_on(c->wbuf);
-    }
-    SvIVX(c->wbuf) += wrote;
-    SvPVX(c->wbuf) += wrote;
-    SvCUR(c->wbuf) -= wrote;
-    SvLEN(c->wbuf) -= wrote;
+    offset_sv(c->wbuf, wrote);
 
 try_write_again:
     trace("write again %d\n",w->fd);
@@ -500,6 +492,21 @@ client_write_ready (struct http_client *c)
         // waiting for writability
         try_client_write(c->loop, &c->write_ev_io, EV_WRITE);
     }
+}
+
+static void
+offset_sv(SV *sv, int how_much)
+{
+    if (!SvOOK(sv)) {
+        if (SvTYPE(sv) < SVt_PVIV)
+            SvUPGRADE(sv, SVt_PVIV);
+        SvOOK_on(sv);
+        SvIVX(sv) = 0;
+    }
+    SvIVX(sv) += how_much;
+    SvPVX(sv) += how_much;
+    SvCUR(sv) -= how_much;
+    SvLEN(sv) -= how_much;
 }
 
 static void
