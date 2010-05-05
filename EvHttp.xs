@@ -5,6 +5,8 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <ctype.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 
 #include "ppport.h"
 
@@ -21,10 +23,19 @@
 #define MAX_HEADER_NAME_LEN 128
 #define MAX_BODY_LENGTH IV_MAX - 1
 
+// Setting this to true will wait for writability before calling write() (will
+// try to immediately write otherwise)
+#define AUTOCORK_WRITES 1
+
 #define WARN_PREFIX "Socialtext::EvHttp: "
 
-#ifndef __inline
-#define __inline
+#ifndef DEBUG
+ #ifndef __inline
+  #define __inline
+ #endif
+ #define INLINE_UNLESS_DEBUG __inline
+#else
+ #define INLINE_UNLESS_DEBUG
 #endif
 
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
@@ -97,7 +108,7 @@ static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 
 static const char const *http_code_to_msg (int code);
-static int setnonblock (int fd);
+static int prep_socket (int fd);
 
 
 static HV *stash, *http_client_stash;
@@ -197,16 +208,29 @@ http_code_to_msg (int code) {
 }
 
 static int
-setnonblock(int fd)
+prep_socket(int fd)
 {
     int flags;
+    struct linger linger = { .l_onoff = 0, .l_linger = 0 };
 
-    flags = fcntl(fd, F_GETFL);
-    if (flags < 0)
-            return flags;
-    flags |= O_NONBLOCK;
+    // make it non-blocking
+    flags = O_NONBLOCK;
     if (fcntl(fd, F_SETFL, flags) < 0)
-            return -1;
+        return -1;
+
+    // flush writes immediately
+    flags = 1;
+    if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int)))
+        return -1;
+
+    // handle URG data inline
+    flags = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_OOBINLINE, &flags, sizeof(int)))
+        return -1;
+
+    // disable lingering
+    if (setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger)))
+        return -1;
 
     return 0;
 }
@@ -235,7 +259,10 @@ new_http_client (EV_P_ int client_fd)
 
     c->self = self;
     c->fd = client_fd;
-    setnonblock(c->fd);
+    if (prep_socket(c->fd)) {
+        perror("prep_socket");
+        trace("prep_socket failed for %d", c->fd);
+    }
 
     c->loop = loop; // from EV_P_
 
@@ -249,8 +276,8 @@ new_http_client (EV_P_ int client_fd)
 #ifdef DEBUG
     sv_dump(self);
 #endif
-    trace("made client self=%p, c=%p, cur=%d, len=%d, structlen=%d, refcnt=%d\n",
-        self, c, SvCUR(self), SvLEN(self), sizeof(struct http_client), SvREFCNT(self));
+    trace("made client fd=%d self=%p, c=%p, cur=%d, len=%d\n",
+        c->fd, self, c, SvCUR(self), SvLEN(self));
 
     return c;
 }
@@ -342,7 +369,7 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     ssize_t wrote = write(w->fd, bufptr, buflen);
     trace("wrote %d bytes to %d\n", wrote, w->fd);
     if (wrote == -1) {
-        if (errno == EAGAIN)
+        if (errno == EAGAIN || errno == EINTR)
             goto try_write_again;
         perror("try_client_write");
         goto try_write_finished;
@@ -371,6 +398,8 @@ try_write_finished:
     ev_io_stop(EV_A, w);
     // should always be responding, but just in case
     if (!c->responding || c->responding == RESPOND_SHUTDOWN) {
+        shutdown(c->fd, SHUT_WR);
+        // sleep(1);
         trace("ref dec after write %d\n", c->fd);
         // TODO: call a completion callback instead of just GCing
         SvREFCNT_dec(c->self);
@@ -429,8 +458,8 @@ try_client_read(EV_P_ ev_io *w, int revents)
     ssize_t got_n = read(w->fd, cur, READ_CHUNK);
 
     if (got_n == -1) {
-        int errno_copy = errno;
-        if (errno_copy == EAGAIN) goto try_read_again;
+        if (errno == EAGAIN || errno == EINTR)
+            goto try_read_again;
         perror("try_client_read");
         goto try_read_error;
     }
@@ -456,7 +485,6 @@ try_client_read(EV_P_ ev_io *w, int revents)
         if (c->received_cl < c->expected_cl)
             goto try_read_again;
         // body is complete
-        c->receiving = RECEIVE_SHUTDOWN;
         sched_request_callback(c);
         goto dont_read_again;
     }
@@ -469,12 +497,13 @@ try_read_error:
     ev_io_stop(EV_A, w);
     c->receiving = RECEIVE_SHUTDOWN;
     c->responding = RESPOND_SHUTDOWN;
-    close(w->fd);
+    shutdown(c->fd, SHUT_RDWR);
     SvREFCNT_dec(c->self);
     return;
 
 dont_read_again:
     c->receiving = RECEIVE_SHUTDOWN;
+    shutdown(c->fd, SHUT_RD);
     ev_io_stop(EV_A, w);
     return;
 
@@ -489,26 +518,27 @@ try_read_again:
 static void
 accept_cb (EV_P_ ev_io *w, int revents)
 {
-    int client_fd;
-    struct sockaddr_in client_sockaddr;
-    socklen_t client_socklen = sizeof(struct sockaddr_in);
+    struct sockaddr_in sa;
+    socklen_t sl = sizeof(struct sockaddr_in);
 
     trace("accept! %08x %d\n", revents, revents & EV_READ);
-    // TODO: accept as many as possible
-    client_fd = accept(w->fd,
-                       (struct sockaddr *)&client_sockaddr, &client_socklen);
+    while (1) {
+        sl = sizeof(struct sockaddr_in);
+        int fd = accept(w->fd, (struct sockaddr *)&sa, &sl);
+        if (fd == -1) break;
 
-    struct http_client *c = new_http_client(EV_A, client_fd);
-    // XXX: good idea to read right away?
-    // try_client_read(EV_A, &c->read_ev_io, EV_READ);
-    ev_io_start(EV_A, &c->read_ev_io);
+        // TODO: put the sockaddr in with the client
+        struct http_client *c = new_http_client(EV_A, fd);
+        // XXX: good idea to read right away?
+        // try_client_read(EV_A, &c->read_ev_io, EV_READ);
+        ev_io_start(EV_A, &c->read_ev_io);
+    }
 }
 
 static void
 sched_request_callback (struct http_client *c)
 {
     trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
-    sv_dump(c->self);
     rinq_push(&request_ready_rinq, c);
     SvREFCNT_inc(c->self); // for the rinq
     if (!ev_is_active(&ei)) {
@@ -608,6 +638,7 @@ got_cl:
     // fallthrough: have enough bytes
 got_it_all:
     c->receiving = RECEIVE_SHUTDOWN;
+    shutdown(c->fd, SHUT_RD);
     sched_request_callback(c);
     return 0;
 }
@@ -618,9 +649,13 @@ client_write_ready (struct http_client *c)
     if (c->in_callback) return; // defer until out of callback
 
     if (!ev_is_active(&c->write_ev_io)) {
+#if AUTOCORK_WRITES
+        ev_io_start(c->loop, &c->write_ev_io);
+#else
         // attempt a non-blocking write immediately if we're not already
         // waiting for writability
         try_client_write(c->loop, &c->write_ev_io, EV_WRITE);
+#endif
     }
 }
 
@@ -711,12 +746,13 @@ respond_with_server_error (struct http_client *c, const char *msg, STRLEN msg_le
     add_sv_to_wbuf(c,tmp,0);
     SvREFCNT_dec(tmp);
 
-    client_write_ready(c);
+    shutdown(c->fd, SHUT_RD);
     c->responding = RESPOND_SHUTDOWN;
     c->receiving = RECEIVE_SHUTDOWN;
+    client_write_ready(c);
 }
 
-__inline bool
+INLINE_UNLESS_DEBUG bool
 str_eq(const char *a, int a_len, const char *b, int b_len)
 {
     if (a_len != b_len) return 0;
@@ -731,7 +767,7 @@ str_eq(const char *a, int a_len, const char *b, int b_len)
 /*
  * Compares two strings, assumes that the first string is already lower-cased
  */
-__inline bool
+INLINE_UNLESS_DEBUG bool
 str_case_eq(const char *a, int a_len, const char *b, int b_len)
 {
     if (a_len != b_len) return 0;
@@ -743,7 +779,7 @@ str_case_eq(const char *a, int a_len, const char *b, int b_len)
     return 1;
 }
 
-__inline int
+INLINE_UNLESS_DEBUG int
 hex_decode(const char ch)
 {
     if ('0' <= ch && ch <= '9')
@@ -1211,7 +1247,7 @@ env (struct http_client *c, HV *e)
             }
 
             SV **val = hv_fetch(e, SvPVX(keybuf), hdr->name_len + 5, 1);
-            trace("adding %.*s:%.*s\n",
+            trace("adding header to env %.*s: %.*s\n",
                 SvLEN(keybuf), SvPVX(keybuf), hdr->value_len, hdr->value);
 
             assert(val != NULL); // "fetch is store" flag should ensure this
