@@ -1011,7 +1011,7 @@ start_response (struct http_client *c, SV *message, AV *headers, int streaming)
         hp = SvPV(*hdr, hlen);
         vp = SvPV(*val, vlen);
 
-        if (str_case_eq("content-length",15,hp,hlen)) {
+        if (str_case_eq("content-length",14,hp,hlen)) {
             trouble("ignoring content-length header in the response");
             continue; 
         }
