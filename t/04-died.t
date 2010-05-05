@@ -52,7 +52,7 @@ my $w = http_get 'http://localhost:10203/?blar', timeout => 3, sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 500, "client got 500";
     is $headers->{'content-type'}, 'text/plain';
-    is $body, "Request handler threw an exception.\n", 'got expected body';
+    is $body, "Request handler exception.\n", 'got expected body';
     $cv->end;
 };
 
