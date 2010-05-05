@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 45;
+use Test::More tests => 49;
 use Test::Exception;
 use blib;
 use Carp ();
@@ -48,6 +48,11 @@ $evh->request_handler(sub {
     is $env->{'psgi.url_scheme'}, "http", 'got psgi.url_scheme';
     ok $env->{'psgi.nonblocking'}, 'got psgi.nonblocking';
     ok $env->{'psgi.multithreaded'}, 'got psgi.multithreaded';
+    my $errfh = $env->{'psgi.errors'};
+    ok $errfh, 'got psgi.errors';
+    lives_ok {
+        $errfh->print("# foo!\n");
+    } "errors fh can print()";
 
     is $env->{REQUEST_METHOD}, 'GET', "got req method";
     like $env->{HTTP_USER_AGENT}, qr/AnyEvent-HTTP/, "got UA";
