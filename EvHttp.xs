@@ -1136,34 +1136,6 @@ write (struct http_client *c, SV *body)
     client_write_ready(c);
 }
 
-SV*
-get_headers (struct http_client *c)
-    CODE:
-{
-    AV *hdrs = newAV();
-    int i;
-    SV *lastval = NULL;
-
-    for (i=0; i<c->req->num_headers; i++) {
-        struct phr_header *hdr = &(c->req->headers[i]);
-        if (hdr->name == NULL && lastval != NULL) {
-            trace("... extending %.*s\n", hdr->value_len, hdr->value);
-            sv_catpvn(lastval, hdr->value, hdr->value_len);
-        }
-        else {
-            trace("adding %.*s:%.*s\n", hdr->name_len, hdr->name, hdr->value_len, hdr->value);
-            SV *key = newSVpvn(hdr->name, hdr->name_len);
-            SV *val = newSVpvn(hdr->value, hdr->value_len);
-            lastval = val;
-            av_push(hdrs, key);
-            av_push(hdrs, val);
-        }
-    }
-    RETVAL = newRV_noinc((SV*)hdrs);
-}
-    OUTPUT:
-        RETVAL
-
 void
 env (struct http_client *c, HV *e)
     PROTOTYPE: $\%

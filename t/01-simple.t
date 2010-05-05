@@ -53,12 +53,11 @@ $cb = sub {
     isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
 #     use Devel::Peek();
 #     Devel::Peek::Dump($r);
-    my $headers = $r->get_headers();
-    ok $headers, "got headers";
-    is ref($headers), 'ARRAY', ".. and it's an array";
-    my %h = (@$headers);
-    like $h{'User-agent'}, qr/AnyEvent-HTTP/, "got anyevent-http's UA";
-    my $utf8 = exists $h{'X-unicode-please'};
+    my %env;
+    $r->env(\%env);
+    ok %env, "got env";
+    like $env{HTTP_USER_AGENT}, qr/AnyEvent-HTTP/, "got anyevent-http's UA";
+    my $utf8 = exists $env{HTTP_X_UNICODE_PLEASE};
     eval {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain'.($utf8 ? '; charset=UTF-8' : ''),
@@ -67,6 +66,7 @@ $cb = sub {
             'Content-Length' => 666, # should be ignored
         ], $utf8 ? 'Bāz!' : 'Baz!');
     }; warn $@ if $@;
+    pass "done request handler";
 };
 
 lives_ok {
@@ -84,7 +84,7 @@ sub {
     like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
     is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
     is $headers->{'content-type'}, 'text/plain';
-    is $body, 'Baz!';
+    is $body, 'Baz!', 'plain old body';
     $cv->end;
 };
 
@@ -100,7 +100,7 @@ sub {
     like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
     is $headers->{'content-length'}, 5, 'content-length was overwritten by the engine';
     is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
-    is Encode::decode_utf8($body), 'Bāz!';
+    is Encode::decode_utf8($body), 'Bāz!', 'unicode body!';
     $cv->end;
 };
 
