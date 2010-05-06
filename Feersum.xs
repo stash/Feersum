@@ -576,6 +576,11 @@ process_request_headers (struct feer_client *c, int body_offset)
         // MUST have a body
         body_is_required = 1;
     }
+    else {
+        err = "Feersum doesn't support that method yet\n";
+        err_code = 405;
+        goto got_bad_request;
+    }
     
     // a body potentially follows the headers. Let feer_req retain its
     // pointers into rbuf and make a new scalar for more body data.
@@ -619,6 +624,11 @@ process_request_headers (struct feer_client *c, int body_offset)
         // Go the nginx route...
         err_code = 411;
         err = "Content-Length required\n";
+    }
+    else {
+        // XXX TODO support requests that don't require a body
+        err_code = 418;
+        err = "Feersum doesn't know how to handle optional-body requests yet\n";
     }
 
 got_bad_request:
