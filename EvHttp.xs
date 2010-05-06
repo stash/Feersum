@@ -1264,6 +1264,11 @@ env (struct http_client *c, HV *e)
     }
 }
 
+int
+fileno (struct http_client *c)
+    PPCODE:
+        XSRETURN_IV(c->fd);
+
 void
 DESTROY (struct http_client *c)
     PPCODE:

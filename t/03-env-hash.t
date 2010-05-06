@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 49;
+use Test::More tests => 51;
 use Test::Exception;
 use blib;
 use Carp ();
@@ -40,6 +40,7 @@ my $evh = Socialtext::EvHttp->new();
 $evh->request_handler(sub {
     my $r = shift;
     isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
+    ok ($r->fileno && !blessed($r->fileno));
     my $env = {};
     $r->env($env);
     ok $env && ref($env) eq 'HASH';
