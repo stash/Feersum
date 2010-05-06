@@ -114,6 +114,9 @@ static int prep_socket (int fd);
 static HV *stash, *http_client_stash;
 
 static SV *request_cb_cv = NULL;
+static SV *shutdown_cb_cv = NULL;
+static bool shutting_down = 0;
+static int active_clients = 0;
 
 static ev_io accept_w;
 static ev_prepare ep;
@@ -278,6 +281,7 @@ new_http_client (EV_P_ int client_fd)
     trace("made client fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
+    active_clients++;
     return c;
 }
 
@@ -877,6 +881,25 @@ call_request_callback (struct http_client *c)
     c->in_callback--;
 }
 
+void
+finish_shutdown(pTHX)
+{
+    ev_idle_stop(EV_DEFAULT, &ei);
+    ev_prepare_stop(EV_DEFAULT, &ep);
+    ev_check_stop(EV_DEFAULT, &ec);
+
+    trace("... was last client, going to try shutdown\n");
+    if (shutdown_cb_cv) {
+        dSP;
+        PUSHMARK(SP);
+        call_sv(shutdown_cb_cv, G_EVAL|G_VOID|G_DISCARD|G_NOARGS|G_KEEPERR);
+        trace("... ok, called that handler\n");
+        SvREFCNT_dec(shutdown_cb_cv);
+        shutdown_cb_cv = NULL;
+    }
+
+}
+
 MODULE = Socialtext::EvHttp		PACKAGE = Socialtext::EvHttp		
 
 PROTOTYPES: ENABLE
@@ -900,16 +923,34 @@ accept_on_fd(SV *self, int fd)
 
 void
 request_handler(SV *self, SV *cb)
+    PROTOTYPE: $&
     PPCODE:
 {
-    if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV) {
+    if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV)
         croak("must supply a code reference");
-    }
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
     request_cb_cv = SvRV(cb);
     SvREFCNT_inc(request_cb_cv);
     trace("assigned request handler %p\n", SvRV(cb));
+}
+
+void
+graceful_shutdown (SV *self, SV *cb)
+    PROTOTYPE: $&
+    PPCODE:
+{
+    if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV)
+        croak("must supply a code reference");
+    if (shutting_down)
+        croak("already shutting down");
+    shutdown_cb_cv = SvRV(cb);
+    SvREFCNT_inc(shutdown_cb_cv);
+    trace("assigned shutdown handler %p\n", SvRV(cb));
+
+    close(accept_w.fd);
+    ev_io_stop(EV_DEFAULT, &accept_w);
+    shutting_down = 1;
 }
 
 void
@@ -1274,7 +1315,7 @@ void
 DESTROY (struct http_client *c)
     PPCODE:
 {
-    trace("DESTROY client %p\n", c);
+    trace("DESTROY client %d %p\n", c->fd, c);
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
     if (c->wbuf) SvREFCNT_dec(c->wbuf);
     if (c->req) {
@@ -1282,6 +1323,10 @@ DESTROY (struct http_client *c)
         free(c->req);
     }
     if (c->fd) close(c->fd);
+    active_clients--;
+    if (shutting_down && active_clients == 0) {
+        finish_shutdown(aTHX);
+    }
 #ifdef DEBUG
     sv_dump(c->self);
     // overwrite for debugging
