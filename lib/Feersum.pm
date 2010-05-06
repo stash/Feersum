@@ -144,6 +144,7 @@ sub new {
     }
     return $INSTANCE;
 }
+*endjinn = \&new;
 
 sub use_socket {
     my ($self, $sock) = @_;

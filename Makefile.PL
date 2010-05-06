@@ -10,6 +10,12 @@ WriteMakefile(ev_args(
     PREREQ_PM         => {
         'EV'    => 3.8,
         'Guard' => 1.012,
+        # for testing
+        'AnyEvent' => 0,
+        'AnyEvent::HTTP' => 0,
+        'Test::More' => 0,
+        'Test::Differences' => 0,
+        'Test::Exception' => 0,
     },
     ABSTRACT_FROM     => 'lib/Feersum.pm',
     AUTHOR            => 'Jeremy Stashewsky <jstash@cpan.org>',
