@@ -1,4 +1,4 @@
-package Socialtext::EvHttp;
+package Feersum;
 
 use 5.008007;
 use strict;
@@ -16,7 +16,7 @@ use Carp;
 # # names by default without a very good reason. Use EXPORT_OK instead.
 # # Do not simply export all your public functions/methods/constants.
 # 
-# # This allows declaration	use Socialtext::EvHttp ':all';
+# # This allows declaration	use Feersum ':all';
 # # If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
 # # will save memory.
 # our %EXPORT_TAGS = ( 'all' => [ qw(
@@ -32,7 +32,7 @@ use Carp;
 our $VERSION = '0.01';
 
 require XSLoader;
-XSLoader::load('Socialtext::EvHttp', $VERSION);
+XSLoader::load('Feersum', $VERSION);
 
 # Preloaded methods go here.
 
@@ -58,7 +58,7 @@ sub DIED {
     warn "DIED: $@";
 }
 
-package Socialtext::EvHttp::Client;
+package Feersum::Client;
 
 sub send_response {
     # my ($self, $msg, $hdrs, $body) = @_;
@@ -69,7 +69,7 @@ sub send_response {
 sub initiate_streaming {
     my $self = shift;
     my $streamer = shift;
-    Carp::croak "Socialtext::EvHttp: Expected code reference argument to stream_response"
+    Carp::croak "Feersum: Expected code reference argument to stream_response"
         unless ref($streamer) eq 'CODE';
     my $start_cb = sub {
         $self->start_response($_[0],$_[1],1);
@@ -79,7 +79,7 @@ sub initiate_streaming {
     goto &$streamer;
 }
 
-package Socialtext::EvHttp;
+package Feersum;
 
 1;
 __END__
@@ -87,16 +87,16 @@ __END__
 
 =head1 NAME
 
-Socialtext::EvHttp - Perl extension for blah blah blah
+Feersum - Perl extension for blah blah blah
 
 =head1 SYNOPSIS
 
-  use Socialtext::EvHttp;
+  use Feersum;
   blah blah blah
 
 =head1 DESCRIPTION
 
-Stub documentation for Socialtext::EvHttp, created by h2xs. It looks like the
+Stub documentation for Feersum, created by h2xs. It looks like the
 author of the extension was negligent enough to leave the stub
 unedited.
 

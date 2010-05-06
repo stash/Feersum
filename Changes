@@ -1,6 +1,4 @@
-Revision history for Perl extension Socialtext::EvHttp.
+Revision history for Perl extension Feersum
 
 0.01  Fri Apr 23 10:55:54 2010
-	- original version; created by h2xs 1.23 with options
-		-n Socialtext::EvHttp
-
+        Started project.

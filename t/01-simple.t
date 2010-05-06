@@ -11,7 +11,7 @@ use utf8;
 $SIG{__DIE__} = \&Carp::confess;
 $SIG{PIPE} = 'IGNORE';
 
-BEGIN { use_ok('Socialtext::EvHttp') };
+BEGIN { use_ok('Feersum') };
 
 use IO::Socket::INET;
 my $socket = IO::Socket::INET->new(
@@ -23,7 +23,7 @@ my $socket = IO::Socket::INET->new(
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
-my $evh = Socialtext::EvHttp->new();
+my $evh = Feersum->new();
 use AnyEvent;
 
 lives_ok {
@@ -50,7 +50,7 @@ pass "after undef cb";
 $cb = sub {
     pass "called back!";
     my $r = shift;
-    isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
+    isa_ok $r, 'Feersum::Client', 'got an object!';
 #     use Devel::Peek();
 #     Devel::Peek::Dump($r);
     my %env;

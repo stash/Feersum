@@ -27,7 +27,7 @@
 // try to immediately write otherwise)
 #define AUTOCORK_WRITES 1
 
-#define WARN_PREFIX "Socialtext::EvHttp: "
+#define WARN_PREFIX "Feersum: "
 
 #ifndef DEBUG
  #ifndef __inline
@@ -46,7 +46,7 @@
 #define trace(...)
 #endif
 
-struct http_client_req {
+struct feer_req {
     SV *buf;
     const char* method;
     size_t method_len;
@@ -67,7 +67,7 @@ struct http_client_req {
 #define RECEIVE_STREAMING 2
 #define RECEIVE_SHUTDOWN 3
 
-struct http_client {
+struct feer_client {
     char label[CLIENT_LABEL_LENGTH];
     SV *self;
 
@@ -78,7 +78,7 @@ struct http_client {
 
     SV *rbuf, *wbuf;
 
-    struct http_client_req *req;
+    struct feer_req *req;
     size_t expected_cl;
     size_t received_cl;
 
@@ -93,14 +93,14 @@ struct http_client {
 
 static void try_client_write(EV_P_ struct ev_io *w, int revents);
 static void try_client_read(EV_P_ struct ev_io *w, int revents);
-static bool process_request_headers(struct http_client *c, int body_offset);
-static void sched_request_callback(struct http_client *c);
-static void call_request_callback(struct http_client *c);
+static bool process_request_headers(struct feer_client *c, int body_offset);
+static void sched_request_callback(struct feer_client *c);
+static void call_request_callback(struct feer_client *c);
 
-static void client_write_ready (struct http_client *c);
-static void respond_with_server_error(struct http_client *c, const char *msg, STRLEN msg_len, int code);
+static void client_write_ready (struct feer_client *c);
+static void respond_with_server_error(struct feer_client *c, const char *msg, STRLEN msg_len, int code);
 
-static void add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked);
+static void add_sv_to_wbuf (struct feer_client *c, SV *sv, bool chunked);
 static void uri_decode_sv (SV *sv);
 static void offset_sv(SV *sv, int how_much);
 
@@ -110,8 +110,7 @@ static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 static const char const *http_code_to_msg (int code);
 static int prep_socket (int fd);
 
-
-static HV *stash, *http_client_stash;
+static HV *feer_stash, *feer_client_stash;
 
 static SV *request_cb_cv = NULL;
 static SV *shutdown_cb_cv = NULL;
@@ -237,20 +236,20 @@ prep_socket(int fd)
     return 0;
 }
 
-static struct http_client *
-new_http_client (EV_P_ int client_fd)
+static struct feer_client *
+new_feer_client (EV_P_ int client_fd)
 {
-    // allocate an SV that can hold the http_client PLUS a string for the fd
+    // allocate an SV that can hold the feer_client PLUS a string for the fd
     // so that dumping the SV from interpreter-land 
     SV *self = newSV(0);
     SvUPGRADE(self, SVt_PVMG); // ensures sv_bless doesn't reallocate
-    SvGROW(self, sizeof(struct http_client));
+    SvGROW(self, sizeof(struct feer_client));
     SvPOK_only(self);
     SvIOK_on(self);
     SvIV_set(self,client_fd);
 
-    struct http_client *c = (struct http_client *)SvPVX(self);
-    Zero(c, 1, struct http_client);
+    struct feer_client *c = (struct feer_client *)SvPVX(self);
+    Zero(c, 1, struct feer_client);
 
     STRLEN label_len = snprintf(
         c->label, CLIENT_LABEL_LENGTH, "%"IVdf, client_fd);
@@ -286,23 +285,23 @@ new_http_client (EV_P_ int client_fd)
 }
 
 // for use in the typemap:
-static struct http_client *
-sv_2http_client (SV *rv)
+static struct feer_client *
+sv_2feer_client (SV *rv)
 {
-    if (!sv_isa(rv,"Socialtext::EvHttp::Client"))
-       croak("object is not of type Socialtext::EvHttp::Client");
-    return (struct http_client *)SvPVX(SvRV(rv));
+    if (!sv_isa(rv,"Feersum::Client"))
+       croak("object is not of type Feersum::Client");
+    return (struct feer_client *)SvPVX(SvRV(rv));
 }
 
 static SV*
-http_client_2sv (struct http_client *c)
+feer_client_2sv (struct feer_client *c)
 {
     SV *rv = newRV_inc(c->self);
     if (!SvOBJECT(c->self)) {
         trace("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
         SvREADONLY_off(c->self);
         // XXX: should this block use newRV_noinc instead?
-        sv_bless(rv, http_client_stash);
+        sv_bless(rv, feer_client_stash);
         SvREADONLY_on(c->self);
     }
     return rv;
@@ -312,8 +311,8 @@ static void
 process_request_ready_rinq (void)
 {
     while (request_ready_rinq) {
-        struct http_client *c =
-            (struct http_client *)rinq_shift(&request_ready_rinq);
+        struct feer_client *c =
+            (struct feer_client *)rinq_shift(&request_ready_rinq);
         trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
 
         call_request_callback(c);
@@ -351,7 +350,7 @@ idle_cb (EV_P_ ev_idle *w, int revents)
     ev_idle_stop(EV_A, w);
 }
 
-#define dCLIENT struct http_client *c = (struct http_client *)w->data
+#define dCLIENT struct feer_client *c = (struct feer_client *)w->data
 
 static void
 try_client_write(EV_P_ struct ev_io *w, int revents)
@@ -411,12 +410,12 @@ try_write_finished:
 }
 
 static int
-try_parse_http(struct http_client *c, size_t last_read)
+try_parse_http(struct feer_client *c, size_t last_read)
 {
-    struct http_client_req *req = c->req;
+    struct feer_req *req = c->req;
     if (!req) {
-        req = (struct http_client_req *)
-            calloc(1,sizeof(struct http_client_req));
+        req = (struct feer_req *)
+            calloc(1,sizeof(struct feer_req));
         req->num_headers = MAX_HEADERS;
         c->req = req;
     }
@@ -531,7 +530,7 @@ accept_cb (EV_P_ ev_io *w, int revents)
         if (fd == -1) break;
 
         // TODO: put the sockaddr in with the client
-        struct http_client *c = new_http_client(EV_A, fd);
+        struct feer_client *c = new_feer_client(EV_A, fd);
         // XXX: good idea to read right away?
         // try_client_read(EV_A, &c->read_ev_io, EV_READ);
         ev_io_start(EV_A, &c->read_ev_io);
@@ -539,7 +538,7 @@ accept_cb (EV_P_ ev_io *w, int revents)
 }
 
 static void
-sched_request_callback (struct http_client *c)
+sched_request_callback (struct feer_client *c)
 {
     trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
     rinq_push(&request_ready_rinq, c);
@@ -550,11 +549,11 @@ sched_request_callback (struct http_client *c)
 }
 
 static bool
-process_request_headers (struct http_client *c, int body_offset)
+process_request_headers (struct feer_client *c, int body_offset)
 {
     int err_code;
     const char *err;
-    struct http_client_req *req = c->req;
+    struct feer_req *req = c->req;
 
     trace("body follows headers, making new rbuf\n");
     bool body_is_required;
@@ -578,7 +577,7 @@ process_request_headers (struct http_client *c, int body_offset)
         body_is_required = 1;
     }
     
-    // a body potentially follows the headers. Let http_client_req retain its
+    // a body potentially follows the headers. Let feer_req retain its
     // pointers into rbuf and make a new scalar for more body data.
     int need = SvCUR(c->rbuf) - body_offset;
     char *from  = SvPVX(c->rbuf) + body_offset;
@@ -647,7 +646,7 @@ got_it_all:
 }
 
 static void
-client_write_ready (struct http_client *c)
+client_write_ready (struct feer_client *c)
 {
     if (c->in_callback) return; // defer until out of callback
 
@@ -678,7 +677,7 @@ offset_sv(SV *sv, int how_much)
 }
 
 static void
-add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked)
+add_sv_to_wbuf (struct feer_client *c, SV *sv, bool chunked)
 {
     if (sv == NULL || !SvOK(sv)) {
         if (chunked) {
@@ -727,7 +726,7 @@ add_sv_to_wbuf (struct http_client *c, SV *sv, bool chunked)
 }
 
 static void
-respond_with_server_error (struct http_client *c, const char *msg, STRLEN msg_len, int err_code)
+respond_with_server_error (struct feer_client *c, const char *msg, STRLEN msg_len, int err_code)
 {
     SV *tmp;
 
@@ -834,14 +833,14 @@ needs_decode:
 }
 
 void
-call_request_callback (struct http_client *c)
+call_request_callback (struct feer_client *c)
 {
     dSP;
     SV *sv_self;
 
     c->in_callback++;
 
-    sv_self = http_client_2sv(c);
+    sv_self = feer_client_2sv(c);
 
     trace("request callback c=%p self=%p\n", c, sv_self);
 
@@ -866,7 +865,7 @@ call_request_callback (struct http_client *c)
         PUSHMARK(SP);
         XPUSHs(sv_2mortal(newSVsv(ERRSV)));
         PUTBACK;
-        call_pv("Socialtext::EvHttp::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
+        call_pv("Feersum::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
         SPAGAIN;
 
         respond_with_server_error(c,"Request handler exception.\n",0,500);
@@ -900,7 +899,7 @@ finish_shutdown(pTHX)
 
 }
 
-MODULE = Socialtext::EvHttp		PACKAGE = Socialtext::EvHttp		
+MODULE = Feersum		PACKAGE = Feersum		
 
 PROTOTYPES: ENABLE
 
@@ -961,12 +960,12 @@ DESTROY (SV *self)
         SvREFCNT_dec(request_cb_cv);
 }
 
-MODULE = Socialtext::EvHttp	PACKAGE = Socialtext::EvHttp::Client
+MODULE = Feersum	PACKAGE = Feersum::Client
 
 PROTOTYPES: ENABLE
 
 SV*
-read (struct http_client *c, SV *buf, size_t len, ...)
+read (struct feer_client *c, SV *buf, size_t len, ...)
     PROTOTYPE: $$$;$
     CODE:
 {
@@ -1032,7 +1031,7 @@ read (struct http_client *c, SV *buf, size_t len, ...)
 }
 
 void
-start_response (struct http_client *c, SV *message, AV *headers, int streaming)
+start_response (struct feer_client *c, SV *message, AV *headers, int streaming)
     PPCODE:
 {
     const char *ptr;
@@ -1105,7 +1104,7 @@ start_response (struct http_client *c, SV *message, AV *headers, int streaming)
 }
 
 void
-write_whole_body (struct http_client *c, SV *body)
+write_whole_body (struct feer_client *c, SV *body)
     PPCODE:
 {
     int i;
@@ -1184,7 +1183,7 @@ write_whole_body (struct http_client *c, SV *body)
 }
 
 void
-write (struct http_client *c, SV *body)
+write (struct feer_client *c, SV *body)
     PPCODE:
 {
     if (c->responding != RESPOND_STREAMING)
@@ -1213,13 +1212,13 @@ write (struct http_client *c, SV *body)
 }
 
 void
-env (struct http_client *c, HV *e)
+env (struct feer_client *c, HV *e)
     PROTOTYPE: $\%
     PPCODE:
 {
     SV **hsv;
     int i,j;
-    struct http_client_req *r = c->req;
+    struct feer_req *r = c->req;
 
     //  strlen: 012345678901234567890
     hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
@@ -1235,7 +1234,7 @@ env (struct http_client *c, HV *e)
 
     if (c->expected_cl >= 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
-        hv_store(e, "psgi.input", 10, http_client_2sv(c), 0);
+        hv_store(e, "psgi.input", 10, feer_client_2sv(c), 0);
     }
     else {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
@@ -1307,12 +1306,12 @@ env (struct http_client *c, HV *e)
 }
 
 int
-fileno (struct http_client *c)
+fileno (struct feer_client *c)
     PPCODE:
         XSRETURN_IV(c->fd);
 
 void
-DESTROY (struct http_client *c)
+DESTROY (struct feer_client *c)
     PPCODE:
 {
     trace("DESTROY client %d %p\n", c->fd, c);
@@ -1330,17 +1329,17 @@ DESTROY (struct http_client *c)
 #ifdef DEBUG
     sv_dump(c->self);
     // overwrite for debugging
-    Poison(c, 1, struct http_client);
+    Poison(c, 1, struct feer_client);
 #endif
 }
 
-MODULE = Socialtext::EvHttp	PACKAGE = Socialtext::EvHttp		
+MODULE = Feersum	PACKAGE = Feersum		
 
 BOOT:
     {
-        stash = gv_stashpv("Socialtext::EvHttp", 1);
-        http_client_stash = gv_stashpv("Socialtext::EvHttp::Client", 1);
-        I_EV_API("Socialtext::EvHttp");
+        feer_stash = gv_stashpv("Feersum", 1);
+        feer_client_stash = gv_stashpv("Feersum::Client", 1);
+        I_EV_API("Feersum");
 
         SV *ver_svs[2];
         ver_svs[0] = newSViv(1);

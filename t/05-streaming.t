@@ -14,7 +14,7 @@ use Scalar::Util qw/blessed/;
 $SIG{__DIE__} = \&Carp::confess;
 $SIG{PIPE} = 'IGNORE';
 
-BEGIN { use_ok('Socialtext::EvHttp') };
+BEGIN { use_ok('Feersum') };
 
 use IO::Socket::INET;
 use AnyEvent;
@@ -29,11 +29,11 @@ my $socket = IO::Socket::INET->new(
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
-my $evh = Socialtext::EvHttp->new();
+my $evh = Feersum->new();
 
 {
     no warnings 'redefine';
-    *Socialtext::EvHttp::DIED = sub {
+    *Feersum::DIED = sub {
         my $err = shift;
         fail "Died during request handler: $err";
     };
@@ -44,7 +44,7 @@ my $started = 0;
 my $finished = 0;
 $evh->request_handler(sub {
     my $r = shift;
-    isa_ok $r, 'Socialtext::EvHttp::Client', 'got an object!';
+    isa_ok $r, 'Feersum::Client', 'got an object!';
     my $env = {};
     $r->env($env);
     ok $env && ref($env) eq 'HASH';
