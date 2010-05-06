@@ -1204,20 +1204,22 @@ env (struct http_client *c, HV *e)
 
     {
         const char *qpos = r->path;
-        SV *pinfo;
+        SV *pinfo, *qstr;
         while (*qpos != '?' && qpos < r->path + r->path_len) {
             qpos++;
         }
         if (*qpos == '?') {
             pinfo = newSVpvn(r->path, (qpos - r->path));
             qpos++;
-            hv_store(e, "QUERY_STRING", 12, newSVpvn(qpos, r->path_len - (qpos - r->path)), 0);
+            qstr = newSVpvn(qpos, r->path_len - (qpos - r->path));
         }
         else {
             pinfo = newSVpvn(r->path, r->path_len);
+            qstr = newSVpvn("",0);
         }
         uri_decode_sv(pinfo);
         hv_store(e, "PATH_INFO", 9, pinfo, 0);
+        hv_store(e, "QUERY_STRING", 12, qstr, 0);
     }
 
     SV *val = NULL;
