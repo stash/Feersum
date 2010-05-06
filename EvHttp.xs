@@ -124,7 +124,6 @@ static struct rinq *request_ready_rinq = NULL;
 
 static AV *psgi_ver;
 static SV *psgi_serv10, *psgi_serv11;
-static HV *psgi_env_template;
 
 static const char const *
 http_code_to_msg (int code) {
