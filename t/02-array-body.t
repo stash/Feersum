@@ -35,7 +35,7 @@ $evh->request_handler(sub {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain; charset=UTF-8',
             'Connection' => 'close',
-        ], ['this ','should ',undef,'be ','cøncātenated.']);
+        ], ['this ',\'should ',undef,'be ','cøncātenated.']);
     } 'sent response';
 });
 

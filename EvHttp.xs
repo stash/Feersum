@@ -1115,7 +1115,7 @@ write_whole_body (struct http_client *c, SV *body)
             if (!elt || !SvOK(*elt))
                 continue;
 
-            SV *sv = *elt;
+            SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
             trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(sv), 0+SvUTF8(sv));
             if (SvUTF8(sv)) {
                 sv_utf8_encode(sv); // convert to utf-8 bytes
