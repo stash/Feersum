@@ -690,7 +690,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
 
     // determine how much we need to read
     int i;
-    size_t expected = 0;
+    UV expected = 0;
     for (i=0; i < req->num_headers; i++) {
         struct phr_header *hdr = &req->headers[i];
         if (!hdr->name) continue;
