@@ -1,8 +1,14 @@
 struct feer_conn * T_feer_conn
+feer_conn_handle * T_feer_conn_handle
 
 INPUT
 T_feer_conn
     $var = sv_2feer_conn($arg);
+
+T_feer_conn_handle
+    $var = sv_2feer_conn_handle($arg,1);
+    /* handle is really just a feer_conn struct: */
+    struct feer_conn *c = (struct feer_conn *)$var;
 
 OUTPUT
 T_feer_conn

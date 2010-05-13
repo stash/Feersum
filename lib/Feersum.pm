@@ -11,14 +11,14 @@ Feersum - A scary-fast HTTP engine for Perl based on EV/libev
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 SYNOPSIS
 
     use Feersum;
-    my $endjinn = Feersum->new();
-    $endjinn->use_socket($io_socket);
-    $endjinn->request_handler(sub {
+    my $ngn = Feersum->new();
+    $ngn->use_socket($io_socket);
+    $ngn->request_handler(sub {
         my $req = shift;
         my $t; $t = EV::timer 2, 0, sub {
             $req->send_response(
@@ -82,10 +82,11 @@ the C<write()> method (which really acts more like a buffered 'print').
     # "1" tells Feersum to send a Transfer-Encoding: chunked response
     my $req = shift;
     $req->start_responding(200, \@headers, 1);
-    $req->write(\"this is a reference to some shared chunk\n");
-    $req->write("regular scalars are OK too\n");
+    my $w = $req->write_handle;
+    $w->write(\"this is a reference to some shared chunk\n");
+    $w->write("regular scalars are OK too\n");
     # close off the stream
-    $req->write(undef); # XXX: may change to ->close()
+    $w->close()
 
 A PSGI-like environment hash is easy to obtain.  Currently POST/PUT does not
 stream input, but read() can be called on C<psgi.input> to get the body (which
@@ -98,7 +99,10 @@ for a callback to be registered on the arrival of more data.
     $req->env(\%env);
     if ($req->{REQUEST_METHOD} eq 'POST') {
         my $body = '';
-        $env{'psgi.input'}->read($body, $env{CONTENT_LENGTH});
+        my $r = delete $env{'psgi.input'};
+        $r->read($body, $env{CONTENT_LENGTH});
+        # optional: choose to stop receiving further input:
+        # $r->close();
     }
 
 The C<psgi.streaming> interface is emulated with a call to
@@ -110,18 +114,18 @@ any C<write> or C<start_response> calls.
     my $req = shift;
     $req->initiate_streaming(sub {
         my $starter = shift;
-        my $writer = $starter->(
+        my $w = $starter->(
             "200 OK", ['Content-Type' => 'application/json']);
         my $n = 0;
-        $writer->write('[');
+        $w->write('[');
 
         my $t; $t = EV::timer 1, 1, sub {
-            $writer->write(q({"time":).time."},");
+            $w->write(q({"time":).time."},");
 
             if ($n++ > 60) {
                 // stop the stream
-                $writer->write("{}]");
-                $writer->write(undef); # XXX: this may change to ->close()
+                $w->write("{}]");
+                $w->close();
                 undef $t;
             }
         };
@@ -160,6 +164,7 @@ sub DIED {
 }
 
 package Feersum::Connection;
+use strict;
 
 sub send_response {
     # my ($self, $msg, $hdrs, $body) = @_;
@@ -170,15 +175,35 @@ sub send_response {
 sub initiate_streaming {
     my $self = shift;
     my $streamer = shift;
-    Carp::croak "Feersum: Expected code reference argument to stream_response"
+    Carp::croak "Feersum: Expected coderef"
         unless ref($streamer) eq 'CODE';
-    my $start_cb = sub {
+    @_ = (sub {
         $self->start_response($_[0],$_[1],1);
-        return $self;
-    };
-    @_ = ($start_cb);
+        return $self->write_handle;
+    });
     goto &$streamer;
 }
+
+package Feersum::Connection::Handle;
+use strict;
+
+sub new {
+    Carp::croak "Cannot instantiate Feersum::Connection::Handles directly";
+}
+
+package Feersum::Connection::Reader;
+use strict;
+use base 'Feersum::Connection::Handle';
+
+sub write { Carp::croak "can't call write method on a read-only handle" }
+
+sub seek { Carp::carp "seek not supported."; return 0 }
+
+package Feersum::Connection::Writer;
+use strict;
+use base 'Feersum::Connection::Handle';
+
+sub read { Carp::croak "can't call read method on a write-only handle" }
 
 package Feersum;
 

@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use constant CLIENTS => 12;
-use Test::More tests => 10 + 8 * CLIENTS;
+use Test::More tests => 10 + 9 * CLIENTS;
 use Test::Exception;
 use Test::Differences;
 use Scalar::Util qw/blessed/;
@@ -44,18 +44,20 @@ $evh->request_handler(sub {
 
     $cv->begin;
     my $cb = $r->initiate_streaming(sub {
+        undef $r;
         $started++;
         my $start = shift;
         is ref($start), 'CODE', "streaming handler got a code ref $cnum";
         my $w = $start->("200 OK", ['Content-Type' => 'text/plain']);
-        ok blessed($w) && $w->can('write'),
-            "after starting, writer can write $cnum";
+        isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
+        isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
         my $t; $t = AE::timer 1.5+rand(0.5), 0, sub {
             lives_ok {
                 $w->write("So graceful!\n");
-                $w->write(undef);
+                $w->close();
             } "wrote after waiting a little $cnum";
-            undef $t; # keep timer alive
+            undef $t; # keep timer alive until it runs
+            undef $w;
             $cv->end;
             $finished++;
         };
@@ -94,10 +96,16 @@ sub client {
 client($_) for (1..CLIENTS);
 
 $cv->begin;
+my $death;
 my $grace_t = AE::timer 1.0, 0, sub {
     pass "calling for shutdown";
+    $death = AE::timer 2.5, 0, sub {
+        fail "SHUTDOWN TOOK TOO LONG";
+        exit 1;
+    };
     $evh->graceful_shutdown(sub {
         pass "all gracefully shut down, supposedly";
+        undef $death;
         $cv->end;
     });
 };

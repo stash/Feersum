@@ -90,6 +90,9 @@ struct feer_conn {
     int16_t receiving;
 };
 
+typedef struct feer_conn feer_conn_handle; // for typemap
+
+#define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 
 static void try_conn_write(EV_P_ struct ev_io *w, int revents);
 static void try_conn_read(EV_P_ struct ev_io *w, int revents);
@@ -111,6 +114,7 @@ static const char const *http_code_to_msg (int code);
 static int prep_socket (int fd);
 
 static HV *feer_stash, *feer_conn_stash;
+static HV *feer_conn_reader_stash = NULL, *feer_conn_writer_stash = NULL;
 
 static SV *request_cb_cv = NULL;
 static SV *shutdown_cb_cv = NULL;
@@ -289,7 +293,7 @@ new_feer_conn (EV_P_ int conn_fd)
 }
 
 // for use in the typemap:
-static struct feer_conn *
+INLINE_UNLESS_DEBUG static struct feer_conn *
 sv_2feer_conn (SV *rv)
 {
     if (!sv_isa(rv,"Feersum::Connection"))
@@ -297,7 +301,7 @@ sv_2feer_conn (SV *rv)
     return (struct feer_conn *)SvPVX(SvRV(rv));
 }
 
-static SV*
+INLINE_UNLESS_DEBUG static SV*
 feer_conn_2sv (struct feer_conn *c)
 {
     SV *rv = newRV_inc(c->self);
@@ -309,6 +313,41 @@ feer_conn_2sv (struct feer_conn *c)
         SvREADONLY_on(c->self);
     }
     return rv;
+}
+
+INLINE_UNLESS_DEBUG static feer_conn_handle *
+sv_2feer_conn_handle (SV *rv, bool can_croak)
+{
+    trace("sv 2 conn_handle\n");
+    if (!SvROK(rv))
+        croak("Expected a reference");
+    // do not allow subclassing
+    SV *sv = SvRV(rv);
+    if (sv_isobject(rv) &&
+        (SvSTASH(sv) == feer_conn_writer_stash ||
+         SvSTASH(sv) == feer_conn_reader_stash))
+    {
+        UV uv = SvUV(sv);
+        if (uv == 0) {
+            if (can_croak) croak("Operation not allowed: Handle is closed.");
+            return NULL;
+        }
+        return INT2PTR(feer_conn_handle*,uv);
+    }
+
+    if (can_croak)
+        croak("Expected a Feersum::Connection::Writer or ::Reader object");
+    return NULL;
+}
+
+static SV *
+new_feer_conn_handle (struct feer_conn *c, bool is_writer)
+{
+    SV *sv;
+    SvREFCNT_inc(c->self);
+    sv = newRV_noinc(newSVuv(PTR2UV(c)));
+    sv_bless(sv, is_writer ? feer_conn_writer_stash : feer_conn_reader_stash);
+    return sv;
 }
 
 static void
@@ -333,7 +372,7 @@ static void
 prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
     trace("prepare!\n");
-    if (!ev_is_active(&accept_w)) {
+    if (!ev_is_active(&accept_w) && !shutting_down) {
         ev_io_start(EV_A, &accept_w);
         //ev_prepare_stop(EV_A, w);
     }
@@ -353,8 +392,6 @@ idle_cb (EV_P_ ev_idle *w, int revents)
     process_request_ready_rinq();
     ev_idle_stop(EV_A, w);
 }
-
-#define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 
 static void
 try_conn_write(EV_P_ struct ev_io *w, int revents)
@@ -509,7 +546,7 @@ try_read_error:
 
 dont_read_again:
     c->receiving = RECEIVE_SHUTDOWN;
-    shutdown(c->fd, SHUT_RD);
+    shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
     ev_io_stop(EV_A, w);
     return;
 
@@ -527,7 +564,17 @@ accept_cb (EV_P_ ev_io *w, int revents)
     struct sockaddr_in sa;
     socklen_t sl = sizeof(struct sockaddr_in);
 
-    trace("accept! %08x %d\n", revents, revents & EV_READ);
+    trace("accept! revents=0x%08x\n", revents);
+    if (!(revents & EV_READ))
+        return;
+
+    if (shutting_down) {
+        // shouldn't get called, but be defensive
+        close(w->fd);
+        ev_io_stop(EV_A, w);
+        return;
+    }
+
     while (1) {
         sl = sizeof(struct sockaddr_in);
         int fd = accept(w->fd, (struct sockaddr *)&sa, &sl);
@@ -894,25 +941,6 @@ call_request_callback (struct feer_conn *c)
     c->in_callback--;
 }
 
-void
-finish_shutdown(pTHX)
-{
-    ev_idle_stop(EV_DEFAULT, &ei);
-    ev_prepare_stop(EV_DEFAULT, &ep);
-    ev_check_stop(EV_DEFAULT, &ec);
-
-    trace("... was last conn, going to try shutdown\n");
-    if (shutdown_cb_cv) {
-        dSP;
-        PUSHMARK(SP);
-        call_sv(shutdown_cb_cv, G_EVAL|G_VOID|G_DISCARD|G_NOARGS|G_KEEPERR);
-        trace("... ok, called that handler\n");
-        SvREFCNT_dec(shutdown_cb_cv);
-        shutdown_cb_cv = NULL;
-    }
-
-}
-
 MODULE = Feersum		PACKAGE = Feersum		
 
 PROTOTYPES: ENABLE
@@ -961,27 +989,50 @@ graceful_shutdown (SV *self, SV *cb)
     SvREFCNT_inc(shutdown_cb_cv);
     trace("assigned shutdown handler %p\n", SvRV(cb));
 
-    close(accept_w.fd);
-    ev_io_stop(EV_DEFAULT, &accept_w);
     shutting_down = 1;
+    ev_io_stop(EV_DEFAULT, &accept_w);
+    close(accept_w.fd);
 }
 
 void
 DESTROY (SV *self)
     PPCODE:
 {
+    trace("DESTROY server\n");
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
 }
 
-MODULE = Feersum	PACKAGE = Feersum::Connection
+MODULE = Feersum	PACKAGE = Feersum::Connection::Handle
 
 PROTOTYPES: ENABLE
 
-SV*
-read (struct feer_conn *c, SV *buf, size_t len, ...)
-    PROTOTYPE: $$$;$
+int
+fileno (feer_conn_handle *hdl)
     CODE:
+        RETVAL = c->fd;
+    OUTPUT:
+        RETVAL
+
+void
+DESTROY (SV *self)
+    PPCODE:
+{
+    feer_conn_handle *hdl = sv_2feer_conn_handle(self, 0);
+    if (hdl == NULL) {
+        trace("DESTROY handle (closed) class=%s\n", HvNAME(SvSTASH(SvRV(ST(0)))));
+    }
+    else {
+        struct feer_conn *c = (struct feer_conn *)hdl;
+        trace("DESTROY handle fd=%d, class=%s\n", c->fd, HvNAME(SvSTASH(SvRV(ST(0)))));
+        SvREFCNT_dec(c->self);
+    }
+}
+
+SV*
+read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
+    PROTOTYPE: $$$;$
+    PPCODE:
 {
     STRLEN buf_len, src_len;
     char *buf_ptr, *src_ptr;
@@ -1044,8 +1095,86 @@ read (struct feer_conn *c, SV *buf, size_t len, ...)
     XSRETURN_UNDEF;
 }
 
+int
+write (feer_conn_handle *hdl, SV *body, ...)
+    CODE:
+{
+    if (c->responding != RESPOND_STREAMING)
+        croak("can only call write in streaming mode");
+
+    if (!SvOK(body)) {
+        XSRETURN_IV(0);
+    }
+
+    trace("write fd=%d c=%p, body=%p\n", c->fd, c, body);
+    if (SvROK(body)) {
+        SV *refd = SvRV(body);
+        if (SvOK(refd) && SvPOK(refd)) {
+            body = refd;
+        }
+        else {
+            croak("body must be a scalar, scalar ref or undef");
+        }
+    }
+    RETVAL = SvCUR(body);
+    add_sv_to_wbuf(c, body, 1);
+    conn_write_ready(c);
+}
+    OUTPUT:
+        RETVAL
+
+int
+_close (feer_conn_handle *hdl)
+    PROTOTYPE: $
+    ALIAS:
+        Feersum::Connection::Reader::close = 1
+        Feersum::Connection::Writer::close = 2
+    CODE:
+{
+    SV *hdl_sv = SvRV(ST(0));
+
+    switch (ix) {
+    case 1:
+        trace("close reader fd=%d, c=%p\n", c->fd, c);
+        RETVAL = shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
+        c->receiving = RECEIVE_SHUTDOWN;
+        break;
+    case 2:
+        trace("close writer fd=%d, c=%p\n", c->fd, c);
+        add_sv_to_wbuf(c, NULL, 1);   
+        conn_write_ready(c);
+        c->responding = RESPOND_SHUTDOWN;
+        RETVAL = 1;
+        break;
+    default:
+        croak("cannot call _close directly");
+    }
+
+    // disassociate the handle from the conn
+    SvUVX(hdl_sv) = 0;
+    SvREFCNT_dec(c->self);
+}
+    OUTPUT:
+        RETVAL
+
+void
+_poll_cb (feer_conn_handle *hdl, CV *cb)
+    PROTOTYPE: $&
+    ALIAS:
+        Feersum::Connection::Reader::poll_cb = 1
+        Feersum::Connection::Writer::poll_cb = 2
+    PPCODE:
+{
+    croak("poll_cb is not yet supported (ix=%d)", ix);
+}
+
+MODULE = Feersum	PACKAGE = Feersum::Connection
+
+PROTOTYPES: ENABLE
+
 void
 start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
+    PROTOTYPE: $$\@$
     PPCODE:
 {
     const char *ptr;
@@ -1117,9 +1246,10 @@ start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
     conn_write_ready(c);
 }
 
-void
+int
 write_whole_body (struct feer_conn *c, SV *body)
-    PPCODE:
+    PROTOTYPE: $$
+    CODE:
 {
     int i;
     const char *ptr;
@@ -1130,13 +1260,10 @@ write_whole_body (struct feer_conn *c, SV *body)
         croak("can't use write_whole_body when in streaming mode");
 
     if (!SvOK(body)) {
-        sv_catpvn(c->wbuf, "Content-Length: 0" CRLFx2, 21);
-        conn_write_ready(c);
-        PUTBACK;
-        return;
+        body = sv_2mortal(newSVpvn("",0));
+        body_is_string = 1;
     }
-
-    if (SvROK(body)) {
+    else if (SvROK(body)) {
         SV *refd = SvRV(body);
         if (SvOK(refd) && !SvROK(refd)) {
             body = refd;
@@ -1150,9 +1277,10 @@ write_whole_body (struct feer_conn *c, SV *body)
         body_is_string = 1;
     }
 
-    assert(c->wbuf);
+    RETVAL = c->wbuf ? SvCUR(c->wbuf) : 0;
 
     if (body_is_string) {
+        if (!c->wbuf) c->wbuf = newSV(SvCUR(body) + 32);
         sv_catpvf(c->wbuf, "Content-Length: %d" CRLFx2, SvCUR(body));
         add_sv_to_wbuf(c,body,0);
     }
@@ -1192,38 +1320,24 @@ write_whole_body (struct feer_conn *c, SV *body)
         Safefree(svs);
     }
 
+    RETVAL = SvCUR(c->wbuf) - RETVAL;
     c->responding = RESPOND_SHUTDOWN;
     conn_write_ready(c);
 }
+    OUTPUT:
+        RETVAL
 
-void
-write (struct feer_conn *c, SV *body)
-    PPCODE:
-{
-    if (c->responding != RESPOND_STREAMING)
-        croak("can only call write in streaming mode");
-
-    if (!SvOK(body)) {
-        trace("write fd=%d c=%p, body=undef\n", c->fd, c);
-        add_sv_to_wbuf(c, NULL, 1);   
-        c->responding = RESPOND_SHUTDOWN;
-    }
-    else {
-        trace("write fd=%d c=%p, body=%p\n", c->fd, c, body);
-        if (SvROK(body)) {
-            SV *refd = SvRV(body);
-            if (SvOK(refd) && SvPOK(refd)) {
-                body = refd;
-            }
-            else {
-                croak("body must be a scalar, scalar ref or undef");
-            }
-        }
-        add_sv_to_wbuf(c, body, 1);
-    }
-
-    conn_write_ready(c);
-}
+SV *
+_handle (struct feer_conn *c)
+    PROTOTYPE: $
+    ALIAS:
+        read_handle = 1
+        write_handle = 2
+    CODE:
+        if(!ix) croak("cannot call _handle directly");
+        RETVAL = new_feer_conn_handle(c, ix-1);
+    OUTPUT:
+        RETVAL
 
 void
 env (struct feer_conn *c, HV *e)
@@ -1248,7 +1362,7 @@ env (struct feer_conn *c, HV *e)
 
     if (c->expected_cl >= 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
-        hv_store(e, "psgi.input", 10, feer_conn_2sv(c), 0);
+        hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
     }
     else {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
@@ -1321,8 +1435,10 @@ env (struct feer_conn *c, HV *e)
 
 int
 fileno (struct feer_conn *c)
-    PPCODE:
-        XSRETURN_IV(c->fd);
+    CODE:
+        RETVAL = c->fd;
+    OUTPUT:
+        RETVAL
 
 void
 DESTROY (struct feer_conn *c)
@@ -1336,9 +1452,23 @@ DESTROY (struct feer_conn *c)
         free(c->req);
     }
     if (c->fd) close(c->fd);
+
     active_conns--;
-    if (shutting_down && active_conns == 0) {
-        finish_shutdown(aTHX);
+
+    if (shutting_down && active_conns <= 0) {
+        ev_idle_stop(EV_DEFAULT, &ei);
+        ev_prepare_stop(EV_DEFAULT, &ep);
+        ev_check_stop(EV_DEFAULT, &ec);
+
+        trace("... was last conn, going to try shutdown\n");
+        if (shutdown_cb_cv) {
+            PUSHMARK(SP);
+            call_sv(shutdown_cb_cv, G_EVAL|G_VOID|G_DISCARD|G_NOARGS|G_KEEPERR);
+            PUTBACK;
+            trace("... ok, called that handler\n");
+            SvREFCNT_dec(shutdown_cb_cv);
+            shutdown_cb_cv = NULL;
+        }
     }
 #ifdef DEBUG
     sv_dump(c->self);
@@ -1353,6 +1483,8 @@ BOOT:
     {
         feer_stash = gv_stashpv("Feersum", 1);
         feer_conn_stash = gv_stashpv("Feersum::Connection", 1);
+        feer_conn_writer_stash = gv_stashpv("Feersum::Connection::Writer",0);
+        feer_conn_reader_stash = gv_stashpv("Feersum::Connection::Reader",0);
         I_EV_API("Feersum");
 
         SV *ver_svs[2];

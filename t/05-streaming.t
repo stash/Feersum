@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use constant CLIENTS => 10;
-use Test::More tests => 7 + 15 * CLIENTS;
+use Test::More tests => 7 + 16 * CLIENTS;
 use Test::Exception;
 use Test::Differences;
 use Scalar::Util qw/blessed/;
@@ -38,9 +38,7 @@ $evh->request_handler(sub {
     my $cnum = $env->{HTTP_X_CLIENT};
     ok $cnum, "got client number";
 
-    dies_ok {
-        $r->write("some junk");
-    } "calling write too early is wrong $cnum";
+    ok !$r->can('write'), "write method removed from connection object";
 
     $cv->begin;
     my $cb = $r->initiate_streaming(sub {
@@ -48,8 +46,8 @@ $evh->request_handler(sub {
         my $start = shift;
         is ref($start), 'CODE', "streaming handler got a code ref $cnum";
         my $w = $start->("200 OK", ['Content-Type' => 'text/plain']);
-        ok blessed($w) && $w->can('write'),
-            "after starting, writer can write $cnum";
+        isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
+        isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
         my $n = 0;
         my $t; $t = AE::timer rand(),rand(), sub {
             eval {
@@ -59,7 +57,7 @@ $evh->request_handler(sub {
                     pass "wrote chunk $n $cnum";
                 }
                 else {
-                    $w->write(undef);
+                    $w->close();
                     pass "async writer finished $cnum";
                     dies_ok {
                         $w->write("after completion");

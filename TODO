@@ -11,10 +11,6 @@ psgi.input streaming
     * related: Connection: close bodies
     * related: Transfer-Encoding: chunked bodies
 
-psgi.streaming
-
-    * use close() rather than write(undef) to close-off a response
-
 allow streaming responses to be HTTP/1.0 "Connection: close" rather than
 HTTP/1.1 "Transfer-Encoding: chunked".
 
