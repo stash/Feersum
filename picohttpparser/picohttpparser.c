@@ -6,6 +6,12 @@
     return -2;		\
   }
 
+// perl 5.12 has an EXPECT macro
+#ifdef EXPECT
+#define ORIG_EXPECT_ EXPECT
+#undef EXPECT
+#endif
+
 #define EXPECT(ch)    \
   CHECK_EOF();	      \
   if (*buf++ != ch) { \
@@ -164,3 +170,7 @@ int phr_parse_request(const char* _buf, size_t len, const char** method,
 #undef CHECK_EOF
 #undef EXPECT
 #undef ADVACE_TOKEN
+
+#ifdef ORIG_EXPECT_
+#define EXPECT ORIG_EXPECT_
+#endif
