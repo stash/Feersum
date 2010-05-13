@@ -221,7 +221,11 @@ prep_socket(int fd)
 
     // flush writes immediately
     flags = 1;
+#if PERL_DARWIN
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(int)))
+#else
     if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int)))
+#endif
         return -1;
 
     // handle URG data inline
