@@ -3,26 +3,14 @@ use warnings;
 use strict;
 use Test::More tests => 11;
 use Test::Exception;
-use blib;
-use Carp ();
-use Encode;
 use utf8;
-use bytes; no bytes;
-$SIG{__DIE__} = \&Carp::confess;
-$SIG{PIPE} = 'IGNORE';
+use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
 
-use IO::Socket::INET;
-use AnyEvent;
 use AnyEvent::HTTP;
 
-my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10203',
-    Proto => 'tcp',
-    Listen => 1024,
-    Blocking => 0,
-);
+my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
@@ -45,7 +33,7 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/?blar', timeout => 3, sub {
+my $w = http_get "http://localhost:$port/?blar", timeout => 3, sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, "client got 200";
     is $headers->{'content-type'}, 'text/plain; charset=UTF-8';

@@ -3,28 +3,16 @@ use warnings;
 use strict;
 use Test::More tests => 30;
 use Test::Exception;
-use blib;
-use Carp ();
-use Guard;
-use Encode();
 use utf8;
-$SIG{__DIE__} = \&Carp::confess;
-$SIG{PIPE} = 'IGNORE';
+use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
 
-use IO::Socket::INET;
-my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10203',
-    Proto => 'tcp',
-    Listen => 1024,
-    Blocking => 0,
-);
+my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
 my $evh = Feersum->new();
-use AnyEvent;
 
 lives_ok {
     $evh->use_socket($socket);
@@ -77,7 +65,7 @@ use AnyEvent::HTTP;
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/?qqqqq', timeout => 3,
+my $w = http_get "http://localhost:$port/?qqqqq", timeout => 3,
 sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, "client 1 got 200";
@@ -89,7 +77,7 @@ sub {
 };
 
 $cv->begin;
-my $w2 = http_get 'http://localhost:10203/?zzzzz',
+my $w2 = http_get "http://localhost:$port/?zzzzz",
     headers => {
         'X-Unicode-Please'=> 1,
     },

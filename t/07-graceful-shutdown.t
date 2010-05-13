@@ -5,14 +5,8 @@ use constant CLIENTS => 12;
 use Test::More tests => 10 + 8 * CLIENTS;
 use Test::Exception;
 use Test::Differences;
-use blib;
-use Carp ();
-use Encode;
-use utf8;
-use bytes; no bytes;
 use Scalar::Util qw/blessed/;
-$SIG{__DIE__} = \&Carp::confess;
-$SIG{PIPE} = 'IGNORE';
+use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
 
@@ -20,12 +14,7 @@ use IO::Socket::INET;
 use AnyEvent;
 use AnyEvent::HTTP;
 
-my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10203',
-    Proto => 'tcp',
-    Listen => 1024,
-    Blocking => 0,
-);
+my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
@@ -83,7 +72,7 @@ sub client {
     my $data;
     $cv->begin;
     my $h; $h = AnyEvent::Handle->new(
-        connect => ["localhost", 10203],
+        connect => ["localhost", $port],
         on_connect => sub {
             my $to_write = qq{GET /foo HTTP/1.1\nAccept: */*\nX-Client: $client_no\n\n};
             $to_write =~ s/\n/\015\012/smg;
@@ -115,7 +104,7 @@ my $grace_t = AE::timer 1.0, 0, sub {
 $cv->begin;
 my $try_connect = AE::timer 1.4, 0, sub {
     my $h; $h = AnyEvent::Handle->new(
-        connect => ["localhost", 10203],
+        connect => ["localhost", $port],
         on_connect => sub {
             fail "boo, connected when shut down";
             $cv->end;

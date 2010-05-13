@@ -2,24 +2,12 @@
 use warnings;
 use strict;
 use Test::More tests => 13;
-use blib;
-use Carp ();
-use Guard;
-use Encode();
 use Scalar::Util qw/blessed/;
-use utf8;
-$SIG{__DIE__} = \&Carp::confess;
-$SIG{PIPE} = 'IGNORE';
+use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
 
-use IO::Socket::INET;
-my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10203',
-    Proto => 'tcp',
-    Listen => 1024,
-    Blocking => 0,
-);
+my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
@@ -58,7 +46,7 @@ $evh->request_handler(sub {
 use AnyEvent::HTTP;
 
 $cv->begin;
-my $w = http_post 'http://localhost:10203/uppercase', 'this is the post body',
+my $w = http_post "http://localhost:$port/uppercase", 'this is the post body',
 timeout => 3,
 sub {
     my ($body, $headers) = @_;

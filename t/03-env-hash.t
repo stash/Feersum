@@ -3,27 +3,15 @@ use warnings;
 use strict;
 use Test::More tests => 51;
 use Test::Exception;
-use blib;
-use Carp ();
-use Encode;
 use utf8;
-use bytes; no bytes;
+use lib 't'; use Utils;
 use Scalar::Util qw/blessed/;
-$SIG{__DIE__} = \&Carp::confess;
-$SIG{PIPE} = 'IGNORE';
 
 BEGIN { use_ok('Feersum') };
 
-use IO::Socket::INET;
-use AnyEvent;
 use AnyEvent::HTTP;
 
-my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10203',
-    Proto => 'tcp',
-    Listen => 1024,
-    Blocking => 0,
-);
+my ($socket, $port) = get_listen_socket();
 ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
@@ -89,7 +77,7 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get 'http://localhost:10203/what%20is%20wrong%3f?blar',
+my $w = http_get "http://localhost:$port/what%20is%20wrong%3f?blar",
     headers => {'x-test-num' => 1},
     timeout => 3,
 sub {
@@ -107,7 +95,7 @@ sub {
 };
 
 $cv->begin;
-my $w2 = http_get 'http://localhost:10203/what%%20is%20good%3F%2?dlux=sonice', 
+my $w2 = http_get "http://localhost:$port/what%%20is%20good%3F%2?dlux=sonice", 
     headers => {'x-test-num' => 2},
     timeout => 3,
 sub {
