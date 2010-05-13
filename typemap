@@ -1,9 +1,9 @@
-struct feer_client * T_FEER_CLIENT
+struct feer_conn * T_feer_conn
 
 INPUT
-T_FEER_CLIENT
-    $var = sv_2feer_client($arg);
+T_feer_conn
+    $var = sv_2feer_conn($arg);
 
 OUTPUT
-T_FEER_CLIENT
-   $arg = feer_client_2sv($var);
+T_feer_conn
+   $arg = feer_conn_2sv($var);

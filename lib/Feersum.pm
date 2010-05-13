@@ -55,7 +55,7 @@ perhaps cooperate with C<Plack> and other middleware.
 =head1 INTERFACE
 
 The main entry point is the sub-ref passed to C<request_handler>.  This sub is
-passed a reference to an object that represents an HTTP client connection.
+passed a reference to an object that represents an HTTP connection.
 Currently the request_handler is called during the "check" and "idle" phases
 of the EV event loop.  The handler is always called after request headers have
 been read.  Currently it will also only be called after a full request entity
@@ -159,7 +159,7 @@ sub DIED {
     warn "DIED: $@";
 }
 
-package Feersum::Client;
+package Feersum::Connection;
 
 sub send_response {
     # my ($self, $msg, $hdrs, $body) = @_;

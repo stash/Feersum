@@ -29,7 +29,7 @@ my $started = 0;
 my $finished = 0;
 $evh->request_handler(sub {
     my $r = shift;
-    isa_ok $r, 'Feersum::Client', 'got an object!';
+    isa_ok $r, 'Feersum::Connection', 'got an object!';
     my $env = {};
     $r->env($env);
     ok $env && ref($env) eq 'HASH';

@@ -38,7 +38,7 @@ pass "after undef cb";
 $cb = sub {
     pass "called back!";
     my $r = shift;
-    isa_ok $r, 'Feersum::Client', 'got an object!';
+    isa_ok $r, 'Feersum::Connection', 'got an object!';
 #     use Devel::Peek();
 #     Devel::Peek::Dump($r);
     my %env;

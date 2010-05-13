@@ -58,7 +58,7 @@ struct feer_req {
 };
 
 // enough to hold a 64-bit signed integer (which is 20+1 chars) plus nul
-#define CLIENT_LABEL_LENGTH 24
+#define CONN_LABEL_LENGTH 24
 #define RESPOND_NORMAL 1
 #define RESPOND_STREAMING 2
 #define RESPOND_SHUTDOWN 3
@@ -67,8 +67,8 @@ struct feer_req {
 #define RECEIVE_STREAMING 2
 #define RECEIVE_SHUTDOWN 3
 
-struct feer_client {
-    char label[CLIENT_LABEL_LENGTH];
+struct feer_conn {
+    char label[CONN_LABEL_LENGTH];
     SV *self;
 
     int fd;
@@ -91,16 +91,16 @@ struct feer_client {
 };
 
 
-static void try_client_write(EV_P_ struct ev_io *w, int revents);
-static void try_client_read(EV_P_ struct ev_io *w, int revents);
-static bool process_request_headers(struct feer_client *c, int body_offset);
-static void sched_request_callback(struct feer_client *c);
-static void call_request_callback(struct feer_client *c);
+static void try_conn_write(EV_P_ struct ev_io *w, int revents);
+static void try_conn_read(EV_P_ struct ev_io *w, int revents);
+static bool process_request_headers(struct feer_conn *c, int body_offset);
+static void sched_request_callback(struct feer_conn *c);
+static void call_request_callback(struct feer_conn *c);
 
-static void client_write_ready (struct feer_client *c);
-static void respond_with_server_error(struct feer_client *c, const char *msg, STRLEN msg_len, int code);
+static void conn_write_ready (struct feer_conn *c);
+static void respond_with_server_error(struct feer_conn *c, const char *msg, STRLEN msg_len, int code);
 
-static void add_sv_to_wbuf (struct feer_client *c, SV *sv, bool chunked);
+static void add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked);
 static void uri_decode_sv (SV *sv);
 static void offset_sv(SV *sv, int how_much);
 
@@ -110,12 +110,12 @@ static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 static const char const *http_code_to_msg (int code);
 static int prep_socket (int fd);
 
-static HV *feer_stash, *feer_client_stash;
+static HV *feer_stash, *feer_conn_stash;
 
 static SV *request_cb_cv = NULL;
 static SV *shutdown_cb_cv = NULL;
 static bool shutting_down = 0;
-static int active_clients = 0;
+static int active_conns = 0;
 
 static ev_io accept_w;
 static ev_prepare ep;
@@ -240,30 +240,30 @@ prep_socket(int fd)
     return 0;
 }
 
-static struct feer_client *
-new_feer_client (EV_P_ int client_fd)
+static struct feer_conn *
+new_feer_conn (EV_P_ int conn_fd)
 {
-    // allocate an SV that can hold the feer_client PLUS a string for the fd
+    // allocate an SV that can hold the feer_conn PLUS a string for the fd
     // so that dumping the SV from interpreter-land 
     SV *self = newSV(0);
     SvUPGRADE(self, SVt_PVMG); // ensures sv_bless doesn't reallocate
-    SvGROW(self, sizeof(struct feer_client));
+    SvGROW(self, sizeof(struct feer_conn));
     SvPOK_only(self);
     SvIOK_on(self);
-    SvIV_set(self,client_fd);
+    SvIV_set(self,conn_fd);
 
-    struct feer_client *c = (struct feer_client *)SvPVX(self);
-    Zero(c, 1, struct feer_client);
+    struct feer_conn *c = (struct feer_conn *)SvPVX(self);
+    Zero(c, 1, struct feer_conn);
 
     STRLEN label_len = snprintf(
-        c->label, CLIENT_LABEL_LENGTH, "%"IVdf, client_fd);
+        c->label, CONN_LABEL_LENGTH, "%"IVdf, conn_fd);
 
     // make the var readonly and make the visible portion just the fd number
     SvCUR_set(self, label_len);
     SvREADONLY_on(self); // turn off later for blessing
 
     c->self = self;
-    c->fd = client_fd;
+    c->fd = conn_fd;
     if (prep_socket(c->fd)) {
         perror("prep_socket");
         trace("prep_socket failed for %d", c->fd);
@@ -272,40 +272,40 @@ new_feer_client (EV_P_ int client_fd)
     c->loop = loop; // from EV_P_
 
     // TODO: these initializations should be Lazy
-    ev_io_init(&c->read_ev_io, try_client_read, client_fd, EV_READ);
+    ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
 
-    ev_io_init(&c->write_ev_io, try_client_write, client_fd, EV_WRITE);
+    ev_io_init(&c->write_ev_io, try_conn_write, conn_fd, EV_WRITE);
     c->write_ev_io.data = (void *)c;
 
 #ifdef DEBUG
     sv_dump(self);
 #endif
-    trace("made client fd=%d self=%p, c=%p, cur=%d, len=%d\n",
+    trace("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
-    active_clients++;
+    active_conns++;
     return c;
 }
 
 // for use in the typemap:
-static struct feer_client *
-sv_2feer_client (SV *rv)
+static struct feer_conn *
+sv_2feer_conn (SV *rv)
 {
-    if (!sv_isa(rv,"Feersum::Client"))
-       croak("object is not of type Feersum::Client");
-    return (struct feer_client *)SvPVX(SvRV(rv));
+    if (!sv_isa(rv,"Feersum::Connection"))
+       croak("object is not of type Feersum::Connection");
+    return (struct feer_conn *)SvPVX(SvRV(rv));
 }
 
 static SV*
-feer_client_2sv (struct feer_client *c)
+feer_conn_2sv (struct feer_conn *c)
 {
     SV *rv = newRV_inc(c->self);
     if (!SvOBJECT(c->self)) {
         trace("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
         SvREADONLY_off(c->self);
         // XXX: should this block use newRV_noinc instead?
-        sv_bless(rv, feer_client_stash);
+        sv_bless(rv, feer_conn_stash);
         SvREADONLY_on(c->self);
     }
     return rv;
@@ -315,15 +315,15 @@ static void
 process_request_ready_rinq (void)
 {
     while (request_ready_rinq) {
-        struct feer_client *c =
-            (struct feer_client *)rinq_shift(&request_ready_rinq);
+        struct feer_conn *c =
+            (struct feer_conn *)rinq_shift(&request_ready_rinq);
         trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
 
         call_request_callback(c);
 
         if (c->wbuf && SvCUR(c->wbuf) > 0) {
             // this was deferred until after the perl callback
-            client_write_ready(c);
+            conn_write_ready(c);
         }
         SvREFCNT_dec(c->self); // for the rinq
     }
@@ -354,12 +354,12 @@ idle_cb (EV_P_ ev_idle *w, int revents)
     ev_idle_stop(EV_A, w);
 }
 
-#define dCLIENT struct feer_client *c = (struct feer_client *)w->data
+#define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 
 static void
-try_client_write(EV_P_ struct ev_io *w, int revents)
+try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
-    dCLIENT;
+    dCONN;
 
     if (!c->wbuf || SvCUR(c->wbuf) == 0) {
         trace("tried to write with an empty buffer %d\n",w->fd);
@@ -377,7 +377,7 @@ try_client_write(EV_P_ struct ev_io *w, int revents)
     if (wrote == -1) {
         if (errno == EAGAIN || errno == EINTR)
             goto try_write_again;
-        perror("try_client_write");
+        perror("try_conn_write");
         goto try_write_finished;
     }
 
@@ -414,7 +414,7 @@ try_write_finished:
 }
 
 static int
-try_parse_http(struct feer_client *c, size_t last_read)
+try_parse_http(struct feer_conn *c, size_t last_read)
 {
     struct feer_req *req = c->req;
     if (!req) {
@@ -433,9 +433,9 @@ try_parse_http(struct feer_client *c, size_t last_read)
 #define READ_CHUNK 4096
 
 static void
-try_client_read(EV_P_ ev_io *w, int revents)
+try_conn_read(EV_P_ ev_io *w, int revents)
 {
-    dCLIENT;
+    dCONN;
 
     // TODO: handle errors in revents?
 
@@ -466,7 +466,7 @@ try_client_read(EV_P_ ev_io *w, int revents)
     if (got_n == -1) {
         if (errno == EAGAIN || errno == EINTR)
             goto try_read_again;
-        perror("try_client_read");
+        perror("try_conn_read");
         goto try_read_error;
     }
     else if (got_n == 0) {
@@ -533,16 +533,16 @@ accept_cb (EV_P_ ev_io *w, int revents)
         int fd = accept(w->fd, (struct sockaddr *)&sa, &sl);
         if (fd == -1) break;
 
-        // TODO: put the sockaddr in with the client
-        struct feer_client *c = new_feer_client(EV_A, fd);
+        // TODO: put the sockaddr in with the conn
+        struct feer_conn *c = new_feer_conn(EV_A, fd);
         // XXX: good idea to read right away?
-        // try_client_read(EV_A, &c->read_ev_io, EV_READ);
+        // try_conn_read(EV_A, &c->read_ev_io, EV_READ);
         ev_io_start(EV_A, &c->read_ev_io);
     }
 }
 
 static void
-sched_request_callback (struct feer_client *c)
+sched_request_callback (struct feer_conn *c)
 {
     trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
     rinq_push(&request_ready_rinq, c);
@@ -553,7 +553,7 @@ sched_request_callback (struct feer_client *c)
 }
 
 static bool
-process_request_headers (struct feer_client *c, int body_offset)
+process_request_headers (struct feer_conn *c, int body_offset)
 {
     int err_code;
     const char *err;
@@ -660,7 +660,7 @@ got_it_all:
 }
 
 static void
-client_write_ready (struct feer_client *c)
+conn_write_ready (struct feer_conn *c)
 {
     if (c->in_callback) return; // defer until out of callback
 
@@ -670,7 +670,7 @@ client_write_ready (struct feer_client *c)
 #else
         // attempt a non-blocking write immediately if we're not already
         // waiting for writability
-        try_client_write(c->loop, &c->write_ev_io, EV_WRITE);
+        try_conn_write(c->loop, &c->write_ev_io, EV_WRITE);
 #endif
     }
 }
@@ -691,7 +691,7 @@ offset_sv(SV *sv, int how_much)
 }
 
 static void
-add_sv_to_wbuf (struct feer_client *c, SV *sv, bool chunked)
+add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked)
 {
     if (sv == NULL || !SvOK(sv)) {
         if (chunked) {
@@ -740,7 +740,7 @@ add_sv_to_wbuf (struct feer_client *c, SV *sv, bool chunked)
 }
 
 static void
-respond_with_server_error (struct feer_client *c, const char *msg, STRLEN msg_len, int err_code)
+respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len, int err_code)
 {
     SV *tmp;
 
@@ -765,7 +765,7 @@ respond_with_server_error (struct feer_client *c, const char *msg, STRLEN msg_le
     shutdown(c->fd, SHUT_RD);
     c->responding = RESPOND_SHUTDOWN;
     c->receiving = RECEIVE_SHUTDOWN;
-    client_write_ready(c);
+    conn_write_ready(c);
 }
 
 INLINE_UNLESS_DEBUG bool
@@ -847,14 +847,14 @@ needs_decode:
 }
 
 void
-call_request_callback (struct feer_client *c)
+call_request_callback (struct feer_conn *c)
 {
     dSP;
     SV *sv_self;
 
     c->in_callback++;
 
-    sv_self = feer_client_2sv(c);
+    sv_self = feer_conn_2sv(c);
 
     trace("request callback c=%p self=%p\n", c, sv_self);
 
@@ -901,7 +901,7 @@ finish_shutdown(pTHX)
     ev_prepare_stop(EV_DEFAULT, &ep);
     ev_check_stop(EV_DEFAULT, &ec);
 
-    trace("... was last client, going to try shutdown\n");
+    trace("... was last conn, going to try shutdown\n");
     if (shutdown_cb_cv) {
         dSP;
         PUSHMARK(SP);
@@ -974,12 +974,12 @@ DESTROY (SV *self)
         SvREFCNT_dec(request_cb_cv);
 }
 
-MODULE = Feersum	PACKAGE = Feersum::Client
+MODULE = Feersum	PACKAGE = Feersum::Connection
 
 PROTOTYPES: ENABLE
 
 SV*
-read (struct feer_client *c, SV *buf, size_t len, ...)
+read (struct feer_conn *c, SV *buf, size_t len, ...)
     PROTOTYPE: $$$;$
     CODE:
 {
@@ -1045,7 +1045,7 @@ read (struct feer_client *c, SV *buf, size_t len, ...)
 }
 
 void
-start_response (struct feer_client *c, SV *message, AV *headers, int streaming)
+start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
     PPCODE:
 {
     const char *ptr;
@@ -1114,11 +1114,11 @@ start_response (struct feer_client *c, SV *message, AV *headers, int streaming)
 
     add_sv_to_wbuf(c,tmp,0);
     SvREFCNT_dec(tmp);
-    client_write_ready(c);
+    conn_write_ready(c);
 }
 
 void
-write_whole_body (struct feer_client *c, SV *body)
+write_whole_body (struct feer_conn *c, SV *body)
     PPCODE:
 {
     int i;
@@ -1131,7 +1131,7 @@ write_whole_body (struct feer_client *c, SV *body)
 
     if (!SvOK(body)) {
         sv_catpvn(c->wbuf, "Content-Length: 0" CRLFx2, 21);
-        client_write_ready(c);
+        conn_write_ready(c);
         PUTBACK;
         return;
     }
@@ -1193,11 +1193,11 @@ write_whole_body (struct feer_client *c, SV *body)
     }
 
     c->responding = RESPOND_SHUTDOWN;
-    client_write_ready(c);
+    conn_write_ready(c);
 }
 
 void
-write (struct feer_client *c, SV *body)
+write (struct feer_conn *c, SV *body)
     PPCODE:
 {
     if (c->responding != RESPOND_STREAMING)
@@ -1222,11 +1222,11 @@ write (struct feer_client *c, SV *body)
         add_sv_to_wbuf(c, body, 1);
     }
 
-    client_write_ready(c);
+    conn_write_ready(c);
 }
 
 void
-env (struct feer_client *c, HV *e)
+env (struct feer_conn *c, HV *e)
     PROTOTYPE: $\%
     PPCODE:
 {
@@ -1248,7 +1248,7 @@ env (struct feer_client *c, HV *e)
 
     if (c->expected_cl >= 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
-        hv_store(e, "psgi.input", 10, feer_client_2sv(c), 0);
+        hv_store(e, "psgi.input", 10, feer_conn_2sv(c), 0);
     }
     else {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
@@ -1320,15 +1320,15 @@ env (struct feer_client *c, HV *e)
 }
 
 int
-fileno (struct feer_client *c)
+fileno (struct feer_conn *c)
     PPCODE:
         XSRETURN_IV(c->fd);
 
 void
-DESTROY (struct feer_client *c)
+DESTROY (struct feer_conn *c)
     PPCODE:
 {
-    trace("DESTROY client %d %p\n", c->fd, c);
+    trace("DESTROY conn %d %p\n", c->fd, c);
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
     if (c->wbuf) SvREFCNT_dec(c->wbuf);
     if (c->req) {
@@ -1336,14 +1336,14 @@ DESTROY (struct feer_client *c)
         free(c->req);
     }
     if (c->fd) close(c->fd);
-    active_clients--;
-    if (shutting_down && active_clients == 0) {
+    active_conns--;
+    if (shutting_down && active_conns == 0) {
         finish_shutdown(aTHX);
     }
 #ifdef DEBUG
     sv_dump(c->self);
     // overwrite for debugging
-    Poison(c, 1, struct feer_client);
+    Poison(c, 1, struct feer_conn);
 #endif
 }
 
@@ -1352,7 +1352,7 @@ MODULE = Feersum	PACKAGE = Feersum
 BOOT:
     {
         feer_stash = gv_stashpv("Feersum", 1);
-        feer_client_stash = gv_stashpv("Feersum::Client", 1);
+        feer_conn_stash = gv_stashpv("Feersum::Connection", 1);
         I_EV_API("Feersum");
 
         SV *ver_svs[2];

@@ -27,7 +27,7 @@ my $evh = Feersum->new();
 
 $evh->request_handler(sub {
     my $r = shift;
-    isa_ok $r, 'Feersum::Client', 'got an object!';
+    isa_ok $r, 'Feersum::Connection', 'got an object!';
     ok ($r->fileno && !blessed($r->fileno));
     my $env = {};
     $r->env($env);
