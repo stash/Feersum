@@ -19,9 +19,11 @@
 #endif
 #define CRLFx2 CRLF CRLF
 
+// if you change these, also edit the LIMITS section in the POD
 #define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
-#define MAX_BODY_LENGTH IV_MAX - 1
+#define MAX_BODY_LENGTH 2147483647
+#define READ_CHUNK 4096
 
 // Setting this to true will wait for writability before calling write() (will
 // try to immediately write otherwise)
@@ -59,6 +61,7 @@ struct feer_req {
 
 // enough to hold a 64-bit signed integer (which is 20+1 chars) plus nul
 #define CONN_LABEL_LENGTH 24
+#define RESPOND_NOT_STARTED 0
 #define RESPOND_NORMAL 1
 #define RESPOND_STREAMING 2
 #define RESPOND_SHUTDOWN 3
@@ -74,6 +77,7 @@ struct feer_conn {
     int fd;
     struct ev_io read_ev_io;
     struct ev_io write_ev_io;
+    struct ev_timer read_ev_timer;
     struct ev_loop *loop;
 
     SV *rbuf, *wbuf;
@@ -81,9 +85,6 @@ struct feer_conn {
     struct feer_req *req;
     size_t expected_cl;
     size_t received_cl;
-
-    // SV *drain_cb; // async "done writing" callback
-    // SV *read_cb;  // async "data available" callback
 
     int16_t in_callback;
     int16_t responding;
@@ -96,6 +97,7 @@ typedef struct feer_conn feer_conn_handle; // for typemap
 
 static void try_conn_write(EV_P_ struct ev_io *w, int revents);
 static void try_conn_read(EV_P_ struct ev_io *w, int revents);
+static void conn_read_timeout(EV_P_ struct ev_timer *w, int revents);
 static bool process_request_headers(struct feer_conn *c, int body_offset);
 static void sched_request_callback(struct feer_conn *c);
 static void call_request_callback(struct feer_conn *c);
@@ -120,6 +122,7 @@ static SV *request_cb_cv = NULL;
 static SV *shutdown_cb_cv = NULL;
 static bool shutting_down = 0;
 static int active_conns = 0;
+static double read_timeout = 5.0;
 
 static ev_io accept_w;
 static ev_prepare ep;
@@ -282,9 +285,10 @@ new_feer_conn (EV_P_ int conn_fd)
     ev_io_init(&c->write_ev_io, try_conn_write, conn_fd, EV_WRITE);
     c->write_ev_io.data = (void *)c;
 
-#ifdef DEBUG
-    sv_dump(self);
-#endif
+    ev_init(&c->read_ev_timer, conn_read_timeout);
+    c->read_ev_timer.repeat = read_timeout;
+    c->read_ev_timer.data = (void *)c;
+
     trace("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
@@ -467,8 +471,6 @@ try_parse_http(struct feer_conn *c, size_t last_read)
         (SvCUR(c->rbuf)-last_read));
 }
 
-#define READ_CHUNK 4096
-
 static void
 try_conn_read(EV_P_ ev_io *w, int revents)
 {
@@ -478,6 +480,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
     if (c->receiving == RECEIVE_SHUTDOWN) {
         ev_io_stop(EV_A, w);
+        ev_timer_stop(EV_A, &c->read_ev_timer);
         return;
     }
 
@@ -486,9 +489,6 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     if (!c->rbuf) {
         trace("init rbuf for %d\n",w->fd);
         c->rbuf = newSV(2*READ_CHUNK + 1);
-#ifdef DEBUG
-        sv_dump(c->rbuf);
-#endif
     }
 
     if (SvLEN(c->rbuf) - SvCUR(c->rbuf) < READ_CHUNK) {
@@ -519,14 +519,14 @@ try_conn_read(EV_P_ ev_io *w, int revents)
         if (ret == -2) goto try_read_again;
 
         if (process_request_headers(c, ret))
-            goto try_read_again;
+            goto try_read_again_reset_timer;
         else
             goto dont_read_again;
     }
     else if (c->receiving == RECEIVE_BODY) {
         c->received_cl += got_n;
         if (c->received_cl < c->expected_cl)
-            goto try_read_again;
+            goto try_read_again_reset_timer;
         // body is complete
         sched_request_callback(c);
         goto dont_read_again;
@@ -548,14 +548,57 @@ dont_read_again:
     c->receiving = RECEIVE_SHUTDOWN;
     shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
     ev_io_stop(EV_A, w);
+    ev_timer_stop(EV_A, &c->read_ev_timer);
     return;
 
+try_read_again_reset_timer:
+    trace("(reset read timer) %d\n", w->fd);
+    ev_timer_again(EV_A, &c->read_ev_timer);
 try_read_again:
     trace("read again %d\n", w->fd);
     if (!ev_is_active(w)) {
         ev_io_start(EV_A,w);
     }
     return;
+}
+
+static void
+conn_read_timeout (EV_P_ ev_timer *w, int revents)
+{
+    dCONN;
+
+    trace("read timeout %d\n", c->fd);
+    if (revents != EV_TIMER || c->receiving == RECEIVE_SHUTDOWN) {
+        return;
+    }
+
+    c->receiving = RECEIVE_SHUTDOWN;
+    ev_io_stop(EV_A, &c->read_ev_io);
+
+    // always stop since, for efficiency, we set this up as a recurring timer.
+    ev_timer_stop(EV_A, w);
+
+
+    if (c->responding == RESPOND_NOT_STARTED) {
+        shutdown(c->fd, SHUT_RD);
+        const char *msg;
+        if (c->receiving == RECEIVE_HEADERS) {
+            msg = "Headers took too long.";
+        }
+        else {
+            msg = "Timeout reading body.";
+        }
+        respond_with_server_error(c, msg, 0, 408);
+        return;
+    }
+    else {
+        shutdown(c->fd, SHUT_RDWR);
+        c->responding = RESPOND_SHUTDOWN;
+    }
+
+    // TODO: trigger the Reader poll callback with an error, if present
+
+    SvREFCNT_dec(c->self);
 }
 
 static void
@@ -585,6 +628,8 @@ accept_cb (EV_P_ ev_io *w, int revents)
         // XXX: good idea to read right away?
         // try_conn_read(EV_A, &c->read_ev_io, EV_READ);
         ev_io_start(EV_A, &c->read_ev_io);
+        // alternative to ev_timer_start, from the libev man-page
+        ev_timer_again(EV_A, &c->read_ev_timer);
     }
 }
 
@@ -791,7 +836,7 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
 {
     SV *tmp;
 
-    if (c->responding) {
+    if (c->responding != RESPOND_NOT_STARTED) {
         trouble("Tried to send server error but already responding!");
         return;
     }
@@ -993,6 +1038,26 @@ graceful_shutdown (SV *self, SV *cb)
     ev_io_stop(EV_DEFAULT, &accept_w);
     close(accept_w.fd);
 }
+
+double
+read_timeout (SV *self, ...)
+    PROTOTYPE: $;$
+    CODE:
+{
+    if (items <= 1) {
+        RETVAL = read_timeout;
+    }
+    else if (items == 2) {
+        SV *duration = ST(1);
+        NV new_read_timeout = SvNV(duration);
+        if (!(new_read_timeout > 0.0)) {
+            croak("must set a positive (non-zero) value for the timeout");
+        }
+        read_timeout = (double) new_read_timeout;
+    }
+}
+    OUTPUT:
+        RETVAL
 
 void
 DESTROY (SV *self)
@@ -1452,6 +1517,11 @@ DESTROY (struct feer_conn *c)
         free(c->req);
     }
     if (c->fd) close(c->fd);
+
+    if (ev_is_active(&c->read_ev_timer)) {
+        trace("... hmm, read timer was still active");
+        ev_timer_stop(c->loop, &c->read_ev_timer);
+    }
 
     active_conns--;
 

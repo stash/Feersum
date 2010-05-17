@@ -133,7 +133,62 @@ any C<write> or C<start_response> calls.
 
 =head1 METHODS
 
-TODO
+B<Notice> some methods are not documented yet.
+
+=over 4
+
+=item use_socket ($sock)
+
+Use the file-descriptor attached to a listen-socket to accept connections.  If
+you create this using IO::Socket::INET, you should keep a reference to $sock
+to prevent closing the descriptor during garbage-collection.
+
+=item request_handler ($code->($connection))
+
+Sets the global request handler.  Any previous handler is replaced.
+
+The handler callback is passed a C<Feersum::Connection> object.  See above for
+how to use this for now.
+
+B<Subject to change>: if the request has an entity body then the handler will
+be called B<only> after receiving the body in its entirety.  The headers
+*must* specify a Content-Length of the body otherwise the request will be
+rejected.  The maximum size is hard coded to 2147483647 bytes (this may be
+considered a bug).
+
+=item read_timeout
+
+=item read_timeout ($duration)
+
+Get or set the global read timeout.
+
+Feersum will wait about this long to receive all headers of a request (within
+the tollerances provided by libev).  If an entity body is part of the request
+(e.g. POST or PUT) it will wait this long between successful C<read()> system
+calls.
+
+=item DIED
+
+Not really a method so much as a static function.  Works similar to
+EV's/AnyEvent's error handler.
+
+To install a handler:
+
+    no strict 'refs';
+    *{Feersum::DIED} = sub { warn "nuts $_[0]" };
+
+Will get called for any errors that happen before the request handler callback
+is called, when the request handler callback throws an exception and
+potentially for other not-in-a-request-context errors.
+
+It will not get called for read timeouts that occur while waiting for a
+complete header (and also, until Feersum supports otherwise, time-outs while
+waiting for a request entity body).
+
+Any exceptions thrown in the handler will generate a warning and not
+propagated.
+
+=back
 
 =cut
 
@@ -209,6 +264,40 @@ package Feersum;
 
 1;
 __END__
+
+=head1 LIMITS
+
+=over 4
+
+=item body length
+
+2147483647 - about 2GiB.
+
+=item request headers
+
+64
+
+=item request header name length
+
+128 bytes
+
+=item bytes read per read() system call
+
+4096 bytes
+
+=back
+
+=head1 BUGS
+
+Keep-alive is ignored completely.
+
+Chunked-encoding responses can be sent to HTTP/1.0 clients, which is only part
+of the HTTP/1.1 spec.
+
+Currently there's no way to limit the request entity length of a POST/PUT/etc.
+This could lead to a DoS attack on a Feersum server.  Suggested remedy is to
+only run Feersum behind some other web server and to use that to limit the
+entity size.
 
 =head1 SEE ALSO
 
