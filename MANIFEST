@@ -5,8 +5,11 @@ Makefile.PL
 README
 example/hello.pl
 lib/Feersum.pm
-picohttpparser/picohttpparser.c
-picohttpparser/picohttpparser.h
+picohttpparser-git/bench.c
+picohttpparser-git/picohttpparser.c
+picohttpparser-git/picohttpparser.h
+picohttpparser-git/test.c
+picohttpparser-git/test_response.c
 ppport.h
 rinq.c
 t/01-simple.t

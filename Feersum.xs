@@ -10,7 +10,7 @@
 
 #include "ppport.h"
 
-#include "picohttpparser/picohttpparser.c"
+#include "picohttpparser-git/picohttpparser.c"
 
 #include "rinq.c"
 
