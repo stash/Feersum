@@ -303,9 +303,15 @@ entity size.
 
 http://en.wikipedia.org/wiki/Feersum_Endjinn
 
+Feersum Git: C<http://github.com/stash/Feersum>
+C<git://github.com/stash/Feersum.git>
+
+picohttpparser Git: C<http://github.com/kazuho/picohttpparser>
+C<git://github.com/kazuho/picohttpparser.git>
+
 =head1 AUTHOR
 
-Jeremy Stashewsky, C<< jstash@cpan.org >>
+Jeremy Stashewsky, C<< stash@cpan.org >>
 
 =head1 COPYRIGHT AND LICENSE
 
@@ -315,7 +321,7 @@ This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.7 or,
 at your option, any later version of Perl 5 you may have available.
 
-picohttpparser is from C<HTTP::Parser::XS> and is Copyright 2009 Kazuho Oku.
-It is released under the same terms as Perl itself.
+picohttpparser is Copyright 2009 Kazuho Oku.  It is released under the same
+terms as Perl itself.
 
 =cut

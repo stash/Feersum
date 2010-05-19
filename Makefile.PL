@@ -7,6 +7,8 @@ use EV::MakeMaker qw/ev_args/;
 WriteMakefile(ev_args(
     NAME              => 'Feersum',
     VERSION_FROM      => 'lib/Feersum.pm',
+    ABSTRACT_FROM     => 'lib/Feersum.pm',
+    AUTHOR            => 'Jeremy Stashewsky <stash@cpan.org>',
     PREREQ_PM         => {
         'EV'    => 3.8,
         'Guard' => 1.012,
@@ -17,8 +19,6 @@ WriteMakefile(ev_args(
         'Test::Differences' => 0,
         'Test::Exception' => 0,
     },
-    ABSTRACT_FROM     => 'lib/Feersum.pm',
-    AUTHOR            => 'Jeremy Stashewsky <jstash@cpan.org>',
     LIBS              => [''], # e.g., '-lm'
     DEFINE            => '', # e.g., '-DHAVE_SOMETHING'
     INC               => '-I.', # e.g., '-I. -I/usr/include/other'
