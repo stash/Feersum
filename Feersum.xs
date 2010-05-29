@@ -43,7 +43,7 @@
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
 
 #ifdef DEBUG
-#define trace(f_, ...) trouble(f_, ##__VA_ARGS__)
+#define trace(f_, ...) warn("%s:%d: " f_, __FILE__, __LINE__, ##__VA_ARGS__)
 #else
 #define trace(...)
 #endif
@@ -107,7 +107,6 @@ static void respond_with_server_error(struct feer_conn *c, const char *msg, STRL
 
 static void add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked);
 static void uri_decode_sv (SV *sv);
-static void offset_sv(SV *sv, int how_much);
 
 static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
@@ -297,7 +296,7 @@ new_feer_conn (EV_P_ int conn_fd)
 }
 
 // for use in the typemap:
-INLINE_UNLESS_DEBUG static struct feer_conn *
+static struct feer_conn *
 sv_2feer_conn (SV *rv)
 {
     if (!sv_isa(rv,"Feersum::Connection"))
@@ -305,7 +304,7 @@ sv_2feer_conn (SV *rv)
     return (struct feer_conn *)SvPVX(SvRV(rv));
 }
 
-INLINE_UNLESS_DEBUG static SV*
+static SV*
 feer_conn_2sv (struct feer_conn *c)
 {
     SV *rv = newRV_inc(c->self);
@@ -319,7 +318,7 @@ feer_conn_2sv (struct feer_conn *c)
     return rv;
 }
 
-INLINE_UNLESS_DEBUG static feer_conn_handle *
+static feer_conn_handle *
 sv_2feer_conn_handle (SV *rv, bool can_croak)
 {
     trace("sv 2 conn_handle\n");
@@ -431,7 +430,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     trace("More work to do %d: cur=%d len=%d ivx=%d\n",w->fd, SvCUR(c->wbuf), SvLEN(c->wbuf), SvIVX(c->wbuf));
 
     // remove written bytes from the front of the string (using the OOK hack)
-    offset_sv(c->wbuf, wrote);
+    sv_chop(c->wbuf, SvPVX(c->wbuf) + wrote);
 
 try_write_again:
     trace("write again %d\n",w->fd);
@@ -765,21 +764,6 @@ conn_write_ready (struct feer_conn *c)
         try_conn_write(c->loop, &c->write_ev_io, EV_WRITE);
 #endif
     }
-}
-
-static void
-offset_sv(SV *sv, int how_much)
-{
-    if (!SvOOK(sv)) {
-        if (SvTYPE(sv) < SVt_PVIV)
-            SvUPGRADE(sv, SVt_PVIV);
-        SvOOK_on(sv);
-        SvIVX(sv) = 0;
-    }
-    SvIVX(sv) += how_much;
-    SvPVX(sv) += how_much;
-    SvCUR(sv) -= how_much;
-    SvLEN(sv) -= how_much;
 }
 
 static void
@@ -1153,7 +1137,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
         // partial append
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
-        offset_sv(c->rbuf, len);
+        sv_chop(c->rbuf, SvPVX(c->rbuf) + len);
         XSRETURN_IV(len);
     }
 
