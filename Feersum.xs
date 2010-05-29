@@ -780,10 +780,6 @@ add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked)
         return;
     }
 
-    if (SvUTF8(sv)) {
-        sv_utf8_encode(sv);
-    }
-
     if (chunked) {
         STRLEN len;
         const char *ptr = SvPV(sv, len); // invoke magic if any
@@ -1099,12 +1095,14 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
         SvUPGRADE(buf, SVt_PV);
     }
 
-    if (SvUTF8(buf)) 
-        croak("buffer must have unicode flag turned off");
+    if (SvREADONLY(buf))
+        croak("buffer must not be read-only");
 
     buf_ptr = SvPV(buf, buf_len);
-    if (c->rbuf)
+    if (c->rbuf) {
+        trace("getting rbuf src_ptr\n");
         src_ptr = SvPV(c->rbuf, src_len);
+    }
 
     if (!c->rbuf || src_len == 0) {
         trace("rbuf empty during read %d\n", c->fd);
@@ -1133,7 +1131,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
         XSRETURN_IV(src_len);
     }
     else {
-        trace("appending partial rbuf %d\n", c->fd);
+        trace("appending partial rbuf %d len=%d ptr=%p\n", c->fd, len, SvPVX(c->rbuf));
         // partial append
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
@@ -1347,10 +1345,6 @@ write_whole_body (struct feer_conn *c, SV *body)
 
             SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
             trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(sv), 0+SvUTF8(sv));
-            if (SvUTF8(sv)) {
-                sv_utf8_encode(sv); // convert to utf-8 bytes
-                trace("... encoded utf8, cur=%d\n", SvCUR(sv));
-            }
             cl += SvCUR(sv);
             svs[actual++] = sv;
         }
