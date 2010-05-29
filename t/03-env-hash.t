@@ -39,9 +39,7 @@ $evh->request_handler(sub {
     ok $env->{'psgi.multithreaded'}, 'got psgi.multithreaded';
     my $errfh = $env->{'psgi.errors'};
     ok $errfh, 'got psgi.errors';
-    lives_ok {
-        $errfh->print("# foo!\n");
-    } "errors fh can print()";
+    lives_ok { $errfh->print() } "errors fh can print()";
 
     is $env->{REQUEST_METHOD}, 'GET', "got req method";
     like $env->{HTTP_USER_AGENT}, qr/AnyEvent-HTTP/, "got UA";
