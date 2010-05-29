@@ -1119,14 +1119,13 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
 
     if (len >= src_len) {
         trace("appending entire rbuf %d\n", c->fd);
-        SvTEMP_on(c->rbuf);
+        sv_2mortal(c->rbuf); // allow pv to be stolen
         if (buf_len == 0) {
             sv_setsv(buf, c->rbuf);
         }
         else {
             sv_catsv(buf, c->rbuf);
         }
-        SvREFCNT_dec(c->rbuf);
         c->rbuf = NULL;
         XSRETURN_IV(src_len);
     }
