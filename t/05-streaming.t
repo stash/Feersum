@@ -53,7 +53,8 @@ $evh->request_handler(sub {
             eval {
                 ok blessed($w), "still blessed? $cnum";
                 if ($n++ < 2) {
-                    $w->write("Hello streaming world! chunk $n\n");
+                    $w->write("Hello streaming world! chunk ".
+                        ($n==1?"one":"'two'")."\n");
                     pass "wrote chunk $n $cnum";
                 }
                 else {
@@ -114,10 +115,10 @@ my $expect = join("\015\012",
     "Content-Type: text/plain",
     "Transfer-Encoding: chunked",
     "",
-    "1f",
-    "Hello streaming world! chunk 1\n",
-    "1f",
-    "Hello streaming world! chunk 2\n",
+    "21",
+    "Hello streaming world! chunk one\n",
+    "23",
+    "Hello streaming world! chunk 'two'\n",
     "0"
 );
 $expect .= "\015\012\015\012";

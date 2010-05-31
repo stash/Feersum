@@ -48,6 +48,15 @@
 #define trace(...)
 #endif
 
+#include <sys/uio.h>
+#define IOMATRIX_SIZE 64
+struct iomatrix {
+    uint16_t offset;
+    uint16_t count;
+    struct iovec iov[IOMATRIX_SIZE];
+    SV *sv[IOMATRIX_SIZE];
+};
+
 struct feer_req {
     SV *buf;
     const char* method;
@@ -80,7 +89,8 @@ struct feer_conn {
     struct ev_timer read_ev_timer;
     struct ev_loop *loop;
 
-    SV *rbuf, *wbuf;
+    SV *rbuf;
+    struct rinq *wbuf_rinq;
 
     struct feer_req *req;
     size_t expected_cl;
@@ -105,9 +115,12 @@ static void call_request_callback(struct feer_conn *c);
 static void conn_write_ready (struct feer_conn *c);
 static void respond_with_server_error(struct feer_conn *c, const char *msg, STRLEN msg_len, int code);
 
-static void add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked);
-static void uri_decode_sv (SV *sv);
+static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
+static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
+static void add_chunk_sv_to_wbuf (struct feer_conn *c, SV *sv);
+static void add_placeholder_to_wbuf (struct feer_conn *c, SV **sv, struct iovec **iov_ref);
 
+static void uri_decode_sv (SV *sv);
 static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 
@@ -131,7 +144,90 @@ struct ev_idle    ei;
 static struct rinq *request_ready_rinq = NULL;
 
 static AV *psgi_ver;
-static SV *psgi_serv10, *psgi_serv11;
+static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
+
+INLINE_UNLESS_DEBUG
+static struct iomatrix *
+next_iomatrix (struct feer_conn *c)
+{
+    bool add_iomatrix = 0;
+    struct iomatrix *m;
+
+    if (!c->wbuf_rinq) {
+        add_iomatrix = 1;
+    }
+    else {
+        // get the tail-end struct
+        m = (struct iomatrix *)c->wbuf_rinq->prev->ref;
+        if (m->count >= IOMATRIX_SIZE) {
+            add_iomatrix = 1;
+        }
+    }
+
+    if (add_iomatrix) {
+        New(0,m,1,struct iomatrix);
+        Zero(m,1,struct iomatrix);
+        rinq_push(&c->wbuf_rinq, m);
+    }
+
+    return m;
+}
+
+INLINE_UNLESS_DEBUG
+static STRLEN
+add_sv_to_wbuf(struct feer_conn *c, SV *sv)
+{
+    struct iomatrix *m = next_iomatrix(c);
+    int idx = m->count++;
+    STRLEN cur;
+    m->iov[idx].iov_base = SvPV(sv, cur);
+    m->iov[idx].iov_len = cur;
+    SvREFCNT_inc(sv);
+    m->sv[idx] = sv;
+
+    return cur;
+}
+
+INLINE_UNLESS_DEBUG
+static STRLEN
+add_const_to_wbuf(struct feer_conn *c, const char const *str, size_t str_len)
+{
+    struct iomatrix *m = next_iomatrix(c);
+    int idx = m->count++;
+    m->iov[idx].iov_base = (void*)str;
+    m->iov[idx].iov_len = str_len;
+    return str_len;
+}
+
+INLINE_UNLESS_DEBUG
+static void
+add_placeholder_to_wbuf(struct feer_conn *c, SV **sv, struct iovec **iov_ref)
+{
+    struct iomatrix *m = next_iomatrix(c);
+    int idx = m->count++;
+    *sv = newSV(31);
+    m->sv[idx] = *sv;
+    *iov_ref = &m->iov[idx];
+}
+
+#define update_wbuf_placeholder(c,sv,iov) iov->iov_base = SvPV(sv, iov->iov_len)
+
+static void
+add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
+{
+    if (!sv) {
+        add_const_to_wbuf(c, "0\r\n\r\n", 5);
+        return;
+    }
+    SV *chunk;
+    struct iovec *chunk_iov;
+    add_placeholder_to_wbuf(c, &chunk, &chunk_iov);
+    STRLEN cur = add_sv_to_wbuf(c, sv);
+    add_const_to_wbuf(c, CRLF, 2);
+
+    sv_setpvf(chunk, "%x" CRLF, cur);
+    update_wbuf_placeholder(c, chunk, chunk_iov);
+}
 
 static const char const *
 http_code_to_msg (int code) {
@@ -363,7 +459,7 @@ process_request_ready_rinq (void)
 
         call_request_callback(c);
 
-        if (c->wbuf && SvCUR(c->wbuf) > 0) {
+        if (c->wbuf_rinq) {
             // this was deferred until after the perl callback
             conn_write_ready(c);
         }
@@ -400,19 +496,25 @@ static void
 try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
     dCONN;
+    int i;
 
-    if (!c->wbuf || SvCUR(c->wbuf) == 0) {
+    if (!c->wbuf_rinq) {
         trace("tried to write with an empty buffer %d\n",w->fd);
         ev_io_stop(EV_A, w);
         return;
     }
+    
+    struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
+#if DEBUG >= 2
+    for (i=0; i < m->count; i++) {
+        fprintf(stderr,"%.*s",m->iov[i].iov_len, m->iov[i].iov_base);
+    }
+#endif
 
     // TODO: handle errors in revents?
 
-    trace("going to write %d %ld %p\n",w->fd, SvCUR(c->wbuf), SvPVX(c->wbuf));
-    STRLEN buflen;
-    const char *bufptr = SvPV(c->wbuf, buflen);
-    ssize_t wrote = write(w->fd, bufptr, buflen);
+    trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
+    ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
     trace("wrote %d bytes to %d\n", wrote, w->fd);
     if (wrote == -1) {
         if (errno == EAGAIN || errno == EINTR)
@@ -420,17 +522,38 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         perror("try_conn_write");
         goto try_write_finished;
     }
+    if (wrote == 0) goto try_write_again;
+    
+    for (i = 0; i < m->count; i++) {
+        struct iovec *v = &m->iov[i];
+        if (v->iov_len > wrote) {
+            // offset within vector
+#if DEBUG >= 2
+            trace("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
+#endif
+            v->iov_base += wrote;
+            v->iov_len  -= wrote;
+        }
+        else {
+            // done with vector
+#if DEBUG >= 2
+            trace("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
+#endif
+            wrote -= v->iov_len;
+            m->offset++;
+            if (m->sv[i]) {
+                SvREFCNT_dec(m->sv[i]);
+                m->sv[i] = NULL;
+            }
+        }
+    }
 
-    // check for more work
-    if (SvCUR(c->wbuf) == wrote) {
-        trace("All done with %d\n",w->fd);
-        SvREFCNT_dec(c->wbuf); c->wbuf = NULL;
+    if (m->offset >= m->count) {
+        trace("all done with iomatrix %d\n",w->fd);
+        rinq_shift(&c->wbuf_rinq);
+        Safefree(m);
         goto try_write_finished;
     }
-    trace("More work to do %d: cur=%d len=%d ivx=%d\n",w->fd, SvCUR(c->wbuf), SvLEN(c->wbuf), SvIVX(c->wbuf));
-
-    // remove written bytes from the front of the string (using the OOK hack)
-    sv_chop(c->wbuf, SvPVX(c->wbuf) + wrote);
 
 try_write_again:
     trace("write again %d\n",w->fd);
@@ -767,51 +890,6 @@ conn_write_ready (struct feer_conn *c)
 }
 
 static void
-add_sv_to_wbuf (struct feer_conn *c, SV *sv, bool chunked)
-{
-    if (sv == NULL || !SvOK(sv)) {
-        if (chunked) {
-            // last-chunk = 1*"0" CRLF CRLF
-            if (!c->wbuf)
-                c->wbuf =  newSVpv("0" CRLFx2, 5);
-            else
-                sv_catpvn(c->wbuf, "0" CRLFx2, 5);
-        }
-        return;
-    }
-
-    if (chunked) {
-        STRLEN len;
-        const char *ptr = SvPV(sv, len); // invoke magic if any
-        if (!c->wbuf) {
-            // make a buffer that can fit the data plus chunk envelope
-            STRLEN need = (len > READ_CHUNK) ? len+32 : READ_CHUNK-1;
-            c->wbuf = newSV(need);
-            SvPOK_on(c->wbuf);
-        }
-        /*
-            From http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.6.1
-
-            chunk-size = [0-9a-f]+
-            chunk = chunk-size CRLF chunk-data CRLF
-        */
-        sv_catpvf(c->wbuf, "%x" CRLF, len);
-        sv_catpvn(c->wbuf, ptr, len);
-        sv_catpvn(c->wbuf, CRLF, 2);
-    }
-    else {
-        if (c->wbuf)
-            sv_catsv(c->wbuf, sv);
-        else {
-            // use newSV+sv_setsv instead of newSVsv so that we can steal the
-            // buffer if possible
-            c->wbuf = newSV(0);
-            sv_setsv(c->wbuf, sv);
-        }
-    }
-}
-
-static void
 respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len, int err_code)
 {
     SV *tmp;
@@ -822,17 +900,14 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
     }
 
     if (!msg_len) msg_len = strlen(msg);
-    tmp = newSV(255);
-    sv_catpvf(tmp, "HTTP/1.1 %d %s" CRLF
+
+    tmp = newSVpvf("HTTP/1.1 %d %s" CRLF
                    "Content-Type: text/plain" CRLF
                    "Connection: close" CRLF
-                   "Content-Length: %d" CRLFx2,
-              err_code, http_code_to_msg(err_code), msg_len);
-    sv_catpvn(tmp, msg, msg_len);
-
-    SvTEMP_on(tmp); // so add_sv_to_wbuf can optimize
-    add_sv_to_wbuf(c,tmp,0);
-    SvREFCNT_dec(tmp);
+                   "Content-Length: %d" CRLFx2
+                   "%.*s",
+              err_code, http_code_to_msg(err_code), msg_len, msg_len, msg);
+    add_sv_to_wbuf(c, sv_2mortal(tmp));
 
     shutdown(c->fd, SHUT_RD);
     c->responding = RESPOND_SHUTDOWN;
@@ -1163,7 +1238,7 @@ write (feer_conn_handle *hdl, SV *body, ...)
         }
     }
     RETVAL = SvCUR(body);
-    add_sv_to_wbuf(c, body, 1);
+    add_chunk_sv_to_wbuf(c, body);
     conn_write_ready(c);
 }
     OUTPUT:
@@ -1187,7 +1262,7 @@ _close (feer_conn_handle *hdl)
         break;
     case 2:
         trace("close writer fd=%d, c=%p\n", c->fd, c);
-        add_sv_to_wbuf(c, NULL, 1);   
+        add_chunk_sv_to_wbuf(c, NULL);
         conn_write_ready(c);
         c->responding = RESPOND_SHUTDOWN;
         RETVAL = 1;
@@ -1242,10 +1317,6 @@ start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
         croak("expected even-length array");
     }
 
-    SV *tmp = newSV((2*READ_CHUNK)-1);
-    SvPOK_on(tmp);
-    SvTEMP_on(tmp);
-
     // int or 3 chars? use a stock message
     if (SvIOK(message) || (SvPOK(message) && SvCUR(message) == 3)) {
         int code = SvIV(message);
@@ -1254,41 +1325,40 @@ start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
         message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
     }
 
-    ptr = SvPV(message, len);
-    sv_catpvf(tmp, "HTTP/1.%d %.*s" CRLF, streaming ? 1 : 0, len, ptr);
+    add_const_to_wbuf(c, streaming ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
+    add_sv_to_wbuf(c, message);
+    add_const_to_wbuf(c, CRLF, 2);
 
     for (i=0; i<avl; i+= 2) {
-        const char *hp, *vp;
-        STRLEN hlen, vlen;
         SV **hdr = av_fetch(headers, i, 0);
-        SV **val = av_fetch(headers, i+1, 0);
-
         if (!hdr || !SvOK(*hdr)) {
-            trouble("skipping undef header");
+            trouble("skipping undef header key");
             continue;
         }
+
+        SV **val = av_fetch(headers, i+1, 0);
         if (!val || !SvOK(*val)) {
             trouble("skipping undef header value");
             continue;
         }
 
-        hp = SvPV(*hdr, hlen);
-        vp = SvPV(*val, vlen);
-
+        STRLEN hlen;
+        const char *hp = SvPV(*hdr, hlen);
         if (str_case_eq("content-length",14,hp,hlen)) {
             trouble("ignoring content-length header in the response");
             continue; 
         }
 
-        sv_catpvf(tmp, "%.*s: %.*s" CRLF, hlen, hp, vlen, vp);
+        add_sv_to_wbuf(c, *hdr);
+        add_const_to_wbuf(c, ": ", 2);
+        add_sv_to_wbuf(c, *val);
+        add_const_to_wbuf(c, CRLF, 2);
     }
 
     if (streaming) {
-        sv_catpvn(tmp, "Transfer-Encoding: chunked" CRLFx2, 30);
+        add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
     }
 
-    add_sv_to_wbuf(c,tmp,0);
-    SvREFCNT_dec(tmp);
     conn_write_ready(c);
 }
 
@@ -1298,9 +1368,8 @@ write_whole_body (struct feer_conn *c, SV *body)
     CODE:
 {
     int i;
-    const char *ptr;
-    STRLEN len;
     bool body_is_string = 0;
+    STRLEN cur;
 
     if (c->responding != RESPOND_NORMAL)
         croak("can't use write_whole_body when in streaming mode");
@@ -1323,46 +1392,31 @@ write_whole_body (struct feer_conn *c, SV *body)
         body_is_string = 1;
     }
 
-    RETVAL = c->wbuf ? SvCUR(c->wbuf) : 0;
+    SV *cl_sv; // content-length future
+    struct iovec *cl_iov;
+    add_placeholder_to_wbuf(c, &cl_sv, &cl_iov);
 
     if (body_is_string) {
-        if (!c->wbuf) c->wbuf = newSV(SvCUR(body) + 32);
-        sv_catpvf(c->wbuf, "Content-Length: %d" CRLFx2, SvCUR(body));
-        add_sv_to_wbuf(c,body,0);
+        cur = add_sv_to_wbuf(c,body);
+        RETVAL = cur;
     }
     else {
         AV *abody = (AV*)SvRV(body);
         I32 amax = av_len(abody);
-        SV **svs;
-        New(0,svs,amax+1,SV*);
-        unsigned int cl = 0;
-        int actual = 0;
+        RETVAL = 0;
         for (i=0; i<=amax; i++) {
             SV **elt = av_fetch(abody, i, 0);
-            if (!elt || !SvOK(*elt))
-                continue;
-
+            if (elt == NULL || !SvOK(*elt)) continue;
             SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
-            trace("body part i=%d cur=%d utf=%d\n", i, SvCUR(sv), 0+SvUTF8(sv));
-            cl += SvCUR(sv);
-            svs[actual++] = sv;
+            cur = add_sv_to_wbuf(c,sv);
+            trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
+            RETVAL += cur;
         }
-
-        if (!c->wbuf) {
-            c->wbuf = newSV(cl + 32);
-        }
-        else {
-            SvGROW(c->wbuf, SvCUR(c->wbuf) + cl + 32);
-        }
-        sv_catpvf(c->wbuf, "Content-Length: %u" CRLFx2, cl);
-
-        for (i=0; i<actual; i++) {
-            add_sv_to_wbuf(c, svs[i], 0);
-        }
-        Safefree(svs);
     }
 
-    RETVAL = SvCUR(c->wbuf) - RETVAL;
+    sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
+    update_wbuf_placeholder(c, cl_sv, cl_iov);
+
     c->responding = RESPOND_SHUTDOWN;
     conn_write_ready(c);
 }
@@ -1486,13 +1540,26 @@ void
 DESTROY (struct feer_conn *c)
     PPCODE:
 {
+    int i;
     trace("DESTROY conn %d %p\n", c->fd, c);
+
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
-    if (c->wbuf) SvREFCNT_dec(c->wbuf);
+
+    if (c->wbuf_rinq) {
+        struct iomatrix *m;
+        while ((m = (struct iomatrix *)rinq_shift(&c->wbuf_rinq)) != NULL) {
+            for (i=0; i < m->count; i++) {
+                if (m->sv[i]) SvREFCNT_dec(m->sv[i]);
+            }
+            Safefree(m);
+        }
+    }
+
     if (c->req) {
         if (c->req->buf) SvREFCNT_dec(c->req->buf);
         free(c->req);
     }
+
     if (c->fd) close(c->fd);
 
     if (ev_is_active(&c->read_ev_timer)) {
@@ -1543,5 +1610,7 @@ BOOT:
         SvREADONLY_on((SV*)psgi_ver);
 
         psgi_serv10 = newSVpvn("HTTP/1.0",8);
+        SvREADONLY_on(psgi_serv10);
         psgi_serv11 = newSVpvn("HTTP/1.1",8);
+        SvREADONLY_on(psgi_serv11);
     }
