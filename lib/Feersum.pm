@@ -289,6 +289,8 @@ __END__
 
 =head1 BUGS
 
+Please report bugs using http://github.com/stash/Feersum/issues/
+
 Keep-alive is ignored completely.
 
 Chunked-encoding responses can be sent to HTTP/1.0 clients, which is only part
