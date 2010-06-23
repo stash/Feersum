@@ -1487,10 +1487,10 @@ env (struct feer_conn *c, HV *e)
     }
 
     SV *val = NULL;
-    SV *keybuf = newSV(48 - 1);
-    SvPOK_on(keybuf);
-    char *key = SvPVX(keybuf);
-    key[0] = 'H'; key[1] = 'T'; key[2] = 'T'; key[3] = 'P'; key[4] = '_';
+    char *kbuf;
+    size_t kbuflen = 64;
+    Newx(kbuf, kbuflen, char);
+    kbuf[0]='H'; kbuf[1]='T'; kbuf[2]='T'; kbuf[3]='P'; kbuf[4]='_';
 
     for (i=0; i<r->num_headers; i++) {
         struct phr_header *hdr = &(r->headers[i]);
@@ -1504,17 +1504,20 @@ env (struct feer_conn *c, HV *e)
             continue;
         }
         else {
-            SvGROW(keybuf,5+hdr->name_len);
-            SvLEN_set(keybuf,5+hdr->name_len);
-            key = SvPVX(keybuf) + 5;
+            size_t klen = 5+hdr->name_len;
+            if (kbuflen < klen) {
+                kbuflen = klen;
+                kbuf = Renew(kbuf, kbuflen, char);
+            }
+            char *key = kbuf + 5;
             for (j=0; j<hdr->name_len; j++) {
                 char n = hdr->name[j];
                 *key++ = (n == '-') ? '_' : toupper(n);
             }
 
-            SV **val = hv_fetch(e, SvPVX(keybuf), hdr->name_len + 5, 1);
+            SV **val = hv_fetch(e, kbuf, klen, 1);
             trace("adding header to env %.*s: %.*s\n",
-                SvLEN(keybuf), SvPVX(keybuf), hdr->value_len, hdr->value);
+                klen, kbuf, hdr->value_len, hdr->value);
 
             assert(val != NULL); // "fetch is store" flag should ensure this
             if (SvPOK(*val)) {
@@ -1528,6 +1531,8 @@ env (struct feer_conn *c, HV *e)
             }
         }
     }
+
+    Safefree(kbuf);
 }
 
 int
