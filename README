@@ -1,11 +1,19 @@
 INSTALLATION
 
+If you downloaded this module from a git repository, be sure to run:
+
+   git submodule init
+   git submodule update
+
 To install this module type the following:
 
    perl Makefile.PL
-   make
    make test
    make install
+
+Please report any bugs using the github issue tracker:
+
+   http://github.com/stash/Feersum/issues/
 
 COPYRIGHT AND LICENCE
 

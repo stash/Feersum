@@ -30,4 +30,8 @@ $evh->request_handler(sub {
     ], "Hello customer number $n\n");
 });
 
+my $t = EV::timer 1, 1, sub {
+    print "served $counter\n";
+};
+
 EV::loop;

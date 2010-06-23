@@ -383,6 +383,7 @@ new_feer_conn (EV_P_ int conn_fd)
     ev_init(&c->read_ev_timer, conn_read_timeout);
     c->read_ev_timer.repeat = read_timeout;
     c->read_ev_timer.data = (void *)c;
+    ev_timer_again(EV_A, &c->read_ev_timer);
 
     trace("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
@@ -659,18 +660,20 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
 try_read_error:
     trace("try read error %d\n", w->fd);
-    ev_io_stop(EV_A, w);
     c->receiving = RECEIVE_SHUTDOWN;
     c->responding = RESPOND_SHUTDOWN;
+    ev_io_stop(EV_A, w);
+    ev_timer_stop(EV_A, &c->read_ev_timer);
     shutdown(c->fd, SHUT_RDWR);
     SvREFCNT_dec(c->self);
     return;
 
 dont_read_again:
+    trace("done reading %d\n", w->fd);
     c->receiving = RECEIVE_SHUTDOWN;
-    shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
     ev_io_stop(EV_A, w);
     ev_timer_stop(EV_A, &c->read_ev_timer);
+    shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
     return;
 
 try_read_again_reset_timer:
@@ -750,8 +753,6 @@ accept_cb (EV_P_ ev_io *w, int revents)
         // XXX: good idea to read right away?
         // try_conn_read(EV_A, &c->read_ev_io, EV_READ);
         ev_io_start(EV_A, &c->read_ev_io);
-        // alternative to ev_timer_start, from the libev man-page
-        ev_timer_again(EV_A, &c->read_ev_timer);
     }
 }
 
@@ -1561,11 +1562,6 @@ DESTROY (struct feer_conn *c)
     }
 
     if (c->fd) close(c->fd);
-
-    if (ev_is_active(&c->read_ev_timer)) {
-        trace("... hmm, read timer was still active");
-        ev_timer_stop(c->loop, &c->read_ev_timer);
-    }
 
     active_conns--;
 
