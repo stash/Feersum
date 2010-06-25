@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 10;
+use constant CLIENTS => 101;
 use Test::More tests => 7 + 16 * CLIENTS;
 use Test::Exception;
 use Test::Differences;
@@ -45,7 +45,7 @@ $evh->request_handler(sub {
         $started++;
         my $start = shift;
         is ref($start), 'CODE', "streaming handler got a code ref $cnum";
-        my $w = $start->("200 OK", ['Content-Type' => 'text/plain']);
+        my $w = $start->("200 OK", ['Content-Type' => 'text/plain', 'X-Client' => $cnum]);
         isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
         isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
         my $n = 0;
@@ -53,8 +53,17 @@ $evh->request_handler(sub {
             eval {
                 ok blessed($w), "still blessed? $cnum";
                 if ($n++ < 2) {
-                    $w->write("Hello streaming world! chunk ".
-                        ($n==1?"one":"'two'")."\n");
+                    if ($n == 1) {
+                        # cover PADTMP case
+                        $w->write("$cnum Hello streaming world! chunk ".
+                                  ($n==1?"one":"WTF")."\n");
+                    }
+                    else {
+                        # cover PADMY case
+                        my $d = "$cnum Hello streaming world! chunk ".
+                                ($n==1?"WTF":"'two'")."\n";
+                        $w->write($d);
+                    }
                     pass "wrote chunk $n $cnum";
                 }
                 else {
@@ -81,12 +90,13 @@ lives_ok {
 my @got;
 sub client {
     my $client_no = shift;
+    my $cnum = sprintf("%04d",$client_no);
     my $data;
     $cv->begin;
     my $h1; $h1 = AnyEvent::Handle->new(
         connect => ["localhost", $port],
         on_connect => sub {
-            my $to_write = qq{GET /foo HTTP/1.1\nAccept: */*\nX-Client: $client_no\n\n};
+            my $to_write = qq{GET /foo HTTP/1.1\nAccept: */*\nX-Client: $cnum\n\n};
             $to_write =~ s/\n/\015\012/smg;
             $h1->push_write($to_write);
             undef $to_write;
@@ -110,20 +120,24 @@ is $started, CLIENTS, 'handlers started';
 is $finished, CLIENTS, 'handlers finished';
 
 use Test::Differences;
-my $expect = join("\015\012",
+my $template = join("\015\012",
     "HTTP/1.1 200 OK",
     "Content-Type: text/plain",
+    "X-Client: CNUM",
     "Transfer-Encoding: chunked",
     "",
-    "21",
-    "Hello streaming world! chunk one\n",
-    "23",
-    "Hello streaming world! chunk 'two'\n",
-    "0"
+    "26",
+    "CNUM Hello streaming world! chunk one\n",
+    "28",
+    "CNUM Hello streaming world! chunk 'two'\n",
+    "0",
+    "\015\012",
 );
-$expect .= "\015\012\015\012";
 for my $data (@got) {
-    eq_or_diff $data, $expect, "got correctly formatted chunked encoding";
+    my $cnum = '??';
+    if ($data =~ /X-Client: (\d{4})/s) { $cnum = $1 }
+    (my $expect = $template) =~ s/CNUM/$cnum/sg; # doesn't change chunk size
+    eq_or_diff $data, $expect, "got correctly formatted chunked encoding $cnum";
 }
 
 pass "all done";

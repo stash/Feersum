@@ -2,6 +2,10 @@ use 5.008007;
 use ExtUtils::MakeMaker;
 use EV::MakeMaker qw/ev_args/;
 
+# Set this to false if you get core-dumps. 
+# Look for FEERSUM_STEAL in the code to see what this does.
+my $steal = 1;
+
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 WriteMakefile(ev_args(
@@ -20,7 +24,7 @@ WriteMakefile(ev_args(
         'Test::Exception' => 0,
     },
     LIBS              => [''], # e.g., '-lm'
-    DEFINE            => '', # e.g., '-DHAVE_SOMETHING'
+    DEFINE            => ($steal ? '-DFEERSUM_STEAL' : ''),
     INC               => '-I.', # e.g., '-I. -I/usr/include/other'
 	# Un-comment this if you add C files to link with later:
     # OBJECT            => '$(O_FILES)', # link all the C files too

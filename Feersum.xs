@@ -166,7 +166,8 @@ next_iomatrix (struct feer_conn *c)
 
     if (add_iomatrix) {
         New(0,m,1,struct iomatrix);
-        Zero(m,1,struct iomatrix);
+        Poison(m,1,struct iomatrix);
+        m->offset = m->count = 0;
         rinq_push(&c->wbuf_rinq, m);
     }
 
@@ -180,9 +181,45 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
     struct iomatrix *m = next_iomatrix(c);
     int idx = m->count++;
     STRLEN cur;
+    if (SvPADTMP(sv) || SvTEMP(sv)) {
+        // PADTMPs have their PVs re-used, so we can't simply keep a
+        // reference.  TEMPs maybe behave in a similar way and are potentially
+        // stealable.
+#ifdef FEERSUM_STEAL
+        if (SvFLAGS(sv) == SVs_PADTMP|SVf_POK|SVp_POK) {
+            // XXX: EGREGIOUS HACK THAT MAKES THINGS A LOT FASTER
+            // steal the PV from a PADTMP PV
+            SV *theif = newSV(0);
+            sv_upgrade(theif, SVt_PV);
+
+            SvPV_set(theif, SvPVX(sv));
+            SvLEN_set(theif, SvLEN(sv));
+            SvCUR_set(theif, SvCUR(sv));
+
+            // make the temp null
+            (void)SvOK_off(sv);
+            SvPV_set(sv, NULL);
+            SvLEN_set(sv, 0);
+            SvCUR_set(sv, 0);
+
+            SvFLAGS(theif) |= SVf_READONLY|SVf_POK|SVp_POK;
+
+            sv = theif;
+        }
+        else {
+            // be safe an just make a simple copy
+            sv = newSVsv(sv);
+        }
+#else
+        // Make a simple copy (which duplicates the PV almost all of the time)
+        sv = newSVsv(sv);
+#endif
+    }
+    else {
+        sv = SvREFCNT_inc(sv);
+    }
     m->iov[idx].iov_base = SvPV(sv, cur);
     m->iov[idx].iov_len = cur;
-    SvREFCNT_inc(sv);
     m->sv[idx] = sv;
 
     return cur;
@@ -196,6 +233,7 @@ add_const_to_wbuf(struct feer_conn *c, const char const *str, size_t str_len)
     int idx = m->count++;
     m->iov[idx].iov_base = (void*)str;
     m->iov[idx].iov_len = str_len;
+    m->sv[idx] = NULL;
     return str_len;
 }
 
@@ -1217,7 +1255,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     XSRETURN_UNDEF;
 }
 
-int
+STRLEN
 write (feer_conn_handle *hdl, SV *body, ...)
     CODE:
 {
@@ -1238,7 +1276,7 @@ write (feer_conn_handle *hdl, SV *body, ...)
             croak("body must be a scalar, scalar ref or undef");
         }
     }
-    RETVAL = SvCUR(body);
+    (void)SvPV(body, RETVAL);
     add_chunk_sv_to_wbuf(c, body);
     conn_write_ready(c);
 }
