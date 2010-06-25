@@ -18,22 +18,23 @@ my $socket = IO::Socket::INET->new(
     ReusePort => 1,
 );
 
-my $counter = 0;
 my $evh = Feersum->new();
 $evh->use_socket($socket);
 $evh->request_handler(sub {
     my $r = shift;
-    my $n = $counter++;
+    my $n = "only";
     my %env;
     $r->env(\%env);
-    $r->send_response("200 OK", [
+    $r->start_response("200 OK", [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
-    ], \"Hello customer number $n\n");
+    ], 1);
+    my $w = $r->write_handle;
+    $w->write("Hello customer number ");
+    $w->write(\$n);
+    $w->write("\n");
+    $w->close();
+    $evh->graceful_shutdown(sub { EV::unloop });
 });
-
-my $t = EV::timer 1, 1, sub {
-    print "served $counter\n";
-};
 
 EV::loop;
