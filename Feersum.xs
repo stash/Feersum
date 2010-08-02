@@ -87,7 +87,6 @@ struct feer_conn {
     struct ev_io read_ev_io;
     struct ev_io write_ev_io;
     struct ev_timer read_ev_timer;
-    struct ev_loop *loop;
 
     SV *rbuf;
     struct rinq *wbuf_rinq;
@@ -145,6 +144,9 @@ static struct rinq *request_ready_rinq = NULL;
 
 static AV *psgi_ver;
 static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
+
+// TODO: make this thread-local if and when there are multiple C threads:
+struct ev_loop *feersum_ev_loop = NULL;
 
 INLINE_UNLESS_DEBUG
 static struct iomatrix *
@@ -408,8 +410,6 @@ new_feer_conn (EV_P_ int conn_fd)
         perror("prep_socket");
         trace("prep_socket failed for %d", c->fd);
     }
-
-    c->loop = loop; // from EV_P_
 
     // TODO: these initializations should be Lazy
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
@@ -801,7 +801,7 @@ sched_request_callback (struct feer_conn *c)
     rinq_push(&request_ready_rinq, c);
     SvREFCNT_inc(c->self); // for the rinq
     if (!ev_is_active(&ei)) {
-        ev_idle_start(c->loop, &ei);
+        ev_idle_start(feersum_ev_loop, &ei);
     }
 }
 
@@ -919,11 +919,11 @@ conn_write_ready (struct feer_conn *c)
 
     if (!ev_is_active(&c->write_ev_io)) {
 #if AUTOCORK_WRITES
-        ev_io_start(c->loop, &c->write_ev_io);
+        ev_io_start(feersum_ev_loop, &c->write_ev_io);
 #else
         // attempt a non-blocking write immediately if we're not already
         // waiting for writability
-        try_conn_write(c->loop, &c->write_ev_io, EV_WRITE);
+        try_conn_write(feersum_ev_loop, &c->write_ev_io, EV_WRITE);
 #endif
     }
 }
@@ -1089,12 +1089,13 @@ accept_on_fd(SV *self, int fd)
     PPCODE:
 {
     trace("going to accept on %d\n",fd);
+    feersum_ev_loop = EV_DEFAULT;
 
     ev_prepare_init(&ep, prepare_cb);
-    ev_prepare_start(EV_DEFAULT, &ep);
+    ev_prepare_start(feersum_ev_loop, &ep);
 
     ev_check_init(&ec, check_cb);
-    ev_check_start(EV_DEFAULT, &ec);
+    ev_check_start(feersum_ev_loop, &ec);
 
     ev_idle_init(&ei, idle_cb);
 
@@ -1129,7 +1130,7 @@ graceful_shutdown (SV *self, SV *cb)
     trace("assigned shutdown handler %p\n", SvRV(cb));
 
     shutting_down = 1;
-    ev_io_stop(EV_DEFAULT, &accept_w);
+    ev_io_stop(feersum_ev_loop, &accept_w);
     close(accept_w.fd);
 }
 
@@ -1609,9 +1610,9 @@ DESTROY (struct feer_conn *c)
     active_conns--;
 
     if (shutting_down && active_conns <= 0) {
-        ev_idle_stop(EV_DEFAULT, &ei);
-        ev_prepare_stop(EV_DEFAULT, &ep);
-        ev_check_stop(EV_DEFAULT, &ec);
+        ev_idle_stop(feersum_ev_loop, &ei);
+        ev_prepare_stop(feersum_ev_loop, &ep);
+        ev_check_stop(feersum_ev_loop, &ec);
 
         trace("... was last conn, going to try shutdown\n");
         if (shutdown_cb_cv) {
