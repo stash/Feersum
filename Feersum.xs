@@ -104,8 +104,8 @@ struct feer_conn {
     struct rinq *wbuf_rinq;
 
     struct feer_req *req;
-    size_t expected_cl;
-    size_t received_cl;
+    ssize_t expected_cl;
+    ssize_t received_cl;
 
     int16_t in_callback;
     int16_t responding;
@@ -900,7 +900,7 @@ got_bad_request:
     return 0;
 
 got_cl:
-    c->expected_cl = expected;
+    c->expected_cl = (ssize_t)expected;
     c->received_cl = SvCUR(c->rbuf);
 
     // don't have enough bytes to schedule immediately?
