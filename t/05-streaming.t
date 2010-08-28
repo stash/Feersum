@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 2;
+use constant CLIENTS => 50;
 use Test::More tests => 7 + 18 * CLIENTS;
 use Test::Exception;
 use Test::Differences;

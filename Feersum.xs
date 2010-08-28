@@ -553,16 +553,16 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     dCONN;
     int i;
 
-    if (c->poll_write_cb) {
-        // TODO: call the callback, check if any data was buffered, be sure
-        // not to recurse in calls to ->write (conn_write_ready)
-        call_poll_callback(c, 1);
-    }
-
     if (!c->wbuf_rinq) {
-        trace("tried to write with an empty buffer %d\n",w->fd);
-        ev_io_stop(EV_A, w);
-        return;
+        if (!c->poll_write_cb) {
+            trace("tried to write with an empty buffer %d\n",w->fd);
+            ev_io_stop(EV_A, w);
+            return;
+        }
+
+        call_poll_callback(c, 1);
+        // callback didn't write anything:
+        if (!c->wbuf_rinq) goto try_write_again;
     }
     
     struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
@@ -606,12 +606,13 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     }
 
     if (m->offset >= m->count) {
-        trace("all done with iomatrix %d\n",w->fd);
+        trace2("all done with iomatrix %d\n",w->fd);
         rinq_shift(&c->wbuf_rinq);
         Safefree(m);
         goto try_write_finished;
     }
 
+    // fallthrough:
 try_write_again:
     trace("write again %d\n",w->fd);
     if (!ev_is_active(w)) {
@@ -620,15 +621,18 @@ try_write_again:
     return;
 
 try_write_finished:
-    // TODO: call a drain callback with success/error
-    ev_io_stop(EV_A, w);
     // should always be responding, but just in case
     if (!c->responding || c->responding == RESPOND_SHUTDOWN) {
         shutdown(c->fd, SHUT_WR);
-        // sleep(1);
-        trace("ref dec after write %d\n", c->fd);
+        trace3("ref dec after write %d\n", c->fd);
         // TODO: call a completion callback instead of just GCing
         SvREFCNT_dec(c->self);
+    }
+    else if (c->poll_write_cb) {
+        goto try_write_again;
+    }
+    else {
+        ev_io_stop(EV_A, w);
     }
     return;
 }
