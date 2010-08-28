@@ -1,8 +1,8 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 101;
-use Test::More tests => 7 + 16 * CLIENTS;
+use constant CLIENTS => 2;
+use Test::More tests => 7 + 18 * CLIENTS;
 use Test::Exception;
 use Test::Differences;
 use Scalar::Util qw/blessed/;
@@ -50,21 +50,31 @@ $evh->request_handler(sub {
         isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
         my $n = 0;
         my $t; $t = AE::timer rand(),rand(), sub {
+            $n++;
             eval {
                 ok blessed($w), "still blessed? $cnum";
-                if ($n++ < 2) {
-                    if ($n == 1) {
-                        # cover PADTMP case
-                        $w->write("$cnum Hello streaming world! chunk ".
-                                  ($n==1?"one":"WTF")."\n");
-                    }
-                    else {
-                        # cover PADMY case
-                        my $d = "$cnum Hello streaming world! chunk ".
-                                ($n==1?"WTF":"'two'")."\n";
-                        $w->write($d);
-                    }
+                if ($n == 1) {
+                    # cover PADTMP case
+                    $w->write("$cnum Hello streaming world! chunk ".
+                              ($n==1?"one":"WTF")."\n");
                     pass "wrote chunk $n $cnum";
+                }
+                elsif ($n == 2) {
+                    # cover PADMY case
+                    my $d = "$cnum Hello streaming world! chunk ".
+                            ($n==1?"WTF":"'two'")."\n";
+                    $w->write($d);
+                    pass "wrote chunk $n $cnum";
+                }
+                elsif ($n == 3) {
+                    my $buf = "$cnum Hello streaming world! chunk three\n";
+                    $w->poll_cb(sub {
+                        my $w2 = shift;
+                        isa_ok($w2, 'Feersum::Connection::Writer',
+                            "got another writer $cnum");
+                        $w2->write($buf);
+                        $w2->poll_cb(undef); # unset
+                    });
                 }
                 else {
                     $w->close();
@@ -130,6 +140,8 @@ my $template = join("\015\012",
     "CNUM Hello streaming world! chunk one\n",
     "28",
     "CNUM Hello streaming world! chunk 'two'\n",
+    "28",
+    "CNUM Hello streaming world! chunk three\n",
     "0",
     "\015\012",
 );

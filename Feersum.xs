@@ -103,6 +103,8 @@ struct feer_conn {
     SV *rbuf;
     struct rinq *wbuf_rinq;
 
+    SV *poll_write_cb;
+
     struct feer_req *req;
     ssize_t expected_cl;
     ssize_t received_cl;
@@ -121,7 +123,9 @@ static void try_conn_read(EV_P_ struct ev_io *w, int revents);
 static void conn_read_timeout(EV_P_ struct ev_timer *w, int revents);
 static bool process_request_headers(struct feer_conn *c, int body_offset);
 static void sched_request_callback(struct feer_conn *c);
+static void call_died (pTHX_ struct feer_conn *c, const char *cb_type);
 static void call_request_callback(struct feer_conn *c);
+static void call_poll_callback (struct feer_conn *c, bool is_write);
 
 static void conn_write_ready (struct feer_conn *c);
 static void respond_with_server_error(struct feer_conn *c, const char *msg, STRLEN msg_len, int code);
@@ -548,6 +552,12 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
     dCONN;
     int i;
+
+    if (c->poll_write_cb) {
+        // TODO: call the callback, check if any data was buffered, be sure
+        // not to recurse in calls to ->write (conn_write_ready)
+        call_poll_callback(c, 1);
+    }
 
     if (!c->wbuf_rinq) {
         trace("tried to write with an empty buffer %d\n",w->fd);
@@ -1039,10 +1049,28 @@ needs_decode:
     SvCUR_set(sv, decoded-ptr);
 }
 
-void
+static void
+call_died (pTHX_ struct feer_conn *c, const char *cb_type)
+{
+    dSP;
+    STRLEN err_len;
+    char *err = SvPV(ERRSV,err_len);
+    trace("An error was thrown in the %s callback: %.*s\n",cb_type,err_len,err);
+    PUSHMARK(SP);
+    XPUSHs(sv_2mortal(newSVsv(ERRSV)));
+    PUTBACK;
+    call_pv("Feersum::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
+    SPAGAIN;
+
+    respond_with_server_error(c,"Request handler exception.\n",0,500);
+    sv_setsv(ERRSV, &PL_sv_undef);
+}
+
+static void
 call_request_callback (struct feer_conn *c)
 {
     dSP;
+    dTHX;
     SV *sv_self;
 
     c->in_callback++;
@@ -1057,8 +1085,6 @@ call_request_callback (struct feer_conn *c)
     PUSHMARK(SP);
     XPUSHs(sv_2mortal(sv_self));
 
-    trace("calling request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
-
     PUTBACK;
     call_sv(request_cb_cv, G_DISCARD|G_EVAL|G_VOID);
     SPAGAIN;
@@ -1066,20 +1092,49 @@ call_request_callback (struct feer_conn *c)
     trace("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
     if (SvTRUE(ERRSV)) {
-        STRLEN err_len;
-        char *err = SvPV(ERRSV,err_len);
-        trace("an error was thrown in the request callback: %.*s\n",err_len,err);
-        PUSHMARK(SP);
-        XPUSHs(sv_2mortal(newSVsv(ERRSV)));
-        PUTBACK;
-        call_pv("Feersum::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
-        SPAGAIN;
-
-        respond_with_server_error(c,"Request handler exception.\n",0,500);
-        sv_setsv(ERRSV, &PL_sv_undef);
+        call_died(aTHX_ c, "request");
     }
 
     trace("leaving request callback\n");
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+
+    c->in_callback--;
+}
+
+static void
+call_poll_callback (struct feer_conn *c, bool is_write)
+{
+    dSP;
+    dTHX;
+
+    SV *cbrv = (is_write) ? c->poll_write_cb : NULL;
+    if (!cbrv) return;
+
+    c->in_callback++;
+
+    trace("%s poll callback c=%p cbrv=%p\n",
+        is_write ? "write" : "read", c, cbrv);
+
+    ENTER;
+    SAVETMPS;
+
+    PUSHMARK(SP);
+    XPUSHs(sv_2mortal(new_feer_conn_handle(c, is_write)));
+
+    PUTBACK;
+    call_sv(cbrv, G_DISCARD|G_EVAL|G_VOID);
+    SPAGAIN;
+
+    trace("called %s poll callback, errsv? %d\n",
+        is_write ? "write" : "read", SvTRUE(ERRSV) ? 1 : 0);
+
+    if (SvTRUE(ERRSV)) {
+        call_died(aTHX_ c, is_write ? "write poll" : "read poll");
+    }
+
+    trace("leaving %s poll callback\n", is_write ? "write" : "read");
     PUTBACK;
     FREETMPS;
     LEAVE;
@@ -1299,16 +1354,19 @@ _close (feer_conn_handle *hdl)
         Feersum::Connection::Writer::close = 2
     CODE:
 {
-    SV *hdl_sv = SvRV(ST(0));
-
     switch (ix) {
     case 1:
         trace("close reader fd=%d, c=%p\n", c->fd, c);
+        // TODO: ref-dec poll_read_cb
         RETVAL = shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
         c->receiving = RECEIVE_SHUTDOWN;
         break;
     case 2:
         trace("close writer fd=%d, c=%p\n", c->fd, c);
+        if (c->poll_write_cb) {
+            SvREFCNT_dec(c->poll_write_cb);
+            c->poll_write_cb = NULL;
+        }
         add_chunk_sv_to_wbuf(c, NULL);
         conn_write_ready(c);
         c->responding = RESPOND_SHUTDOWN;
@@ -1326,14 +1384,36 @@ _close (feer_conn_handle *hdl)
         RETVAL
 
 void
-_poll_cb (feer_conn_handle *hdl, CV *cb)
-    PROTOTYPE: $&
+_poll_cb (feer_conn_handle *hdl, SV *cb)
+    PROTOTYPE: $$
     ALIAS:
         Feersum::Connection::Reader::poll_cb = 1
         Feersum::Connection::Writer::poll_cb = 2
     PPCODE:
 {
-    croak("poll_cb is not yet supported (ix=%d)", ix);
+    if (ix < 1 || ix > 2)
+        croak("can't call _poll_cb directly");
+    else if (ix == 1)
+        croak("poll_cb for reading not yet supported"); // TODO poll_read_cb
+
+    if (c->poll_write_cb != NULL) {
+        SvREFCNT_dec(c->poll_write_cb);
+        c->poll_write_cb = NULL;
+    }
+
+    if (!SvOK(cb)) {
+        trace("unset poll_cb ix=%d\n", ix);
+        return;
+    }
+    else if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV) {
+        croak("must supply a code reference to poll_cb");
+    }
+
+    c->poll_write_cb = newRV_inc(SvRV(cb));
+
+    // start the write-watcher unless it's already activated.
+    if (!ev_is_active(&c->write_ev_io))
+        ev_io_start(feersum_ev_loop, &c->write_ev_io);
 }
 
 MODULE = Feersum	PACKAGE = Feersum::Connection
@@ -1615,6 +1695,8 @@ DESTROY (struct feer_conn *c)
     }
 
     if (c->fd) close(c->fd);
+
+    if (c->poll_write_cb) SvREFCNT_dec(c->poll_write_cb);
 
     active_conns--;
 
