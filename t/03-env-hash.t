@@ -36,7 +36,7 @@ $evh->request_handler(sub {
     is_deeply $env->{'psgi.version'}, [1,0], 'got psgi.version';
     is $env->{'psgi.url_scheme'}, "http", 'got psgi.url_scheme';
     ok $env->{'psgi.nonblocking'}, 'got psgi.nonblocking';
-    ok $env->{'psgi.multithreaded'}, 'got psgi.multithreaded';
+    ok exists $env->{'psgi.multithreaded'}, 'got psgi.multithreaded';
     my $errfh = $env->{'psgi.errors'};
     ok $errfh, 'got psgi.errors';
     lives_ok { $errfh->print() } "errors fh can print()";
