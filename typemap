@@ -6,6 +6,7 @@ T_feer_conn
     $var = sv_2feer_conn($arg);
 
 T_feer_conn_handle
+    SV *hdl_sv = SvRV($arg);
     $var = sv_2feer_conn_handle($arg,1);
     /* handle is really just a feer_conn struct: */
     struct feer_conn *c = (struct feer_conn *)$var;

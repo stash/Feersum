@@ -48,6 +48,18 @@
 #define trace(...)
 #endif
 
+#if DEBUG >= 2
+#define trace2(f_, ...) trace(f_, ##__VA_ARGS__)
+#else
+#define trace2(...)
+#endif
+
+#if DEBUG >= 3
+#define trace3(f_, ...) trace(f_, ##__VA_ARGS__)
+#else
+#define trace3(...)
+#endif
+
 #include <sys/uio.h>
 #define IOMATRIX_SIZE 64
 struct iomatrix {
@@ -423,7 +435,7 @@ new_feer_conn (EV_P_ int conn_fd)
     c->read_ev_timer.data = (void *)c;
     ev_timer_again(EV_A, &c->read_ev_timer);
 
-    trace("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
+    trace3("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
     active_conns++;
@@ -444,7 +456,7 @@ feer_conn_2sv (struct feer_conn *c)
 {
     SV *rv = newRV_inc(c->self);
     if (!SvOBJECT(c->self)) {
-        trace("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
+        trace3("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
         SvREADONLY_off(c->self);
         // XXX: should this block use newRV_noinc instead?
         sv_bless(rv, feer_conn_stash);
@@ -456,7 +468,7 @@ feer_conn_2sv (struct feer_conn *c)
 static feer_conn_handle *
 sv_2feer_conn_handle (SV *rv, bool can_croak)
 {
-    trace("sv 2 conn_handle\n");
+    trace3("sv 2 conn_handle\n");
     if (!SvROK(rv))
         croak("Expected a reference");
     // do not allow subclassing
@@ -494,7 +506,7 @@ process_request_ready_rinq (void)
     while (request_ready_rinq) {
         struct feer_conn *c =
             (struct feer_conn *)rinq_shift(&request_ready_rinq);
-        trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
+        //trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
 
         call_request_callback(c);
 
@@ -509,7 +521,7 @@ process_request_ready_rinq (void)
 static void
 prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
-    trace("prepare!\n");
+    //trace("prepare!\n");
     if (!ev_is_active(&accept_w) && !shutting_down) {
         ev_io_start(EV_A, &accept_w);
         //ev_prepare_stop(EV_A, w);
@@ -519,7 +531,7 @@ prepare_cb (EV_P_ ev_prepare *w, int revents)
 static void
 check_cb (EV_P_ ev_check *w, int revents)
 {
-    trace("check! head=%p\n", request_ready_rinq);
+    //trace("check! head=%p\n", request_ready_rinq);
     process_request_ready_rinq();
 }
 
@@ -567,17 +579,13 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         struct iovec *v = &m->iov[i];
         if (v->iov_len > wrote) {
             // offset within vector
-#if DEBUG >= 2
-            trace("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
-#endif
+            trace2("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
             v->iov_base += wrote;
             v->iov_len  -= wrote;
         }
         else {
             // done with vector
-#if DEBUG >= 2
-            trace("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
-#endif
+            trace2("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
             wrote -= v->iov_len;
             m->offset++;
             if (m->sv[i]) {
@@ -740,7 +748,6 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
 
     // always stop since, for efficiency, we set this up as a recurring timer.
     ev_timer_stop(EV_A, w);
-
 
     if (c->responding == RESPOND_NOT_STARTED) {
         shutdown(c->fd, SHUT_RD);
@@ -1158,7 +1165,7 @@ void
 DESTROY (SV *self)
     PPCODE:
 {
-    trace("DESTROY server\n");
+    trace3("DESTROY server\n");
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
 }
@@ -1180,11 +1187,11 @@ DESTROY (SV *self)
 {
     feer_conn_handle *hdl = sv_2feer_conn_handle(self, 0);
     if (hdl == NULL) {
-        trace("DESTROY handle (closed) class=%s\n", HvNAME(SvSTASH(SvRV(ST(0)))));
+        trace3("DESTROY handle (closed) class=%s\n", HvNAME(SvSTASH(SvRV(ST(0)))));
     }
     else {
         struct feer_conn *c = (struct feer_conn *)hdl;
-        trace("DESTROY handle fd=%d, class=%s\n", c->fd, HvNAME(SvSTASH(SvRV(ST(0)))));
+        trace3("DESTROY handle fd=%d, class=%s\n", c->fd, HvNAME(SvSTASH(SvRV(ST(0)))));
         SvREFCNT_dec(c->self);
     }
 }
@@ -1586,7 +1593,7 @@ DESTROY (struct feer_conn *c)
     PPCODE:
 {
     int i;
-    trace("DESTROY conn %d %p\n", c->fd, c);
+    trace3("DESTROY conn %d %p\n", c->fd, c);
 
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
 
@@ -1614,18 +1621,18 @@ DESTROY (struct feer_conn *c)
         ev_prepare_stop(feersum_ev_loop, &ep);
         ev_check_stop(feersum_ev_loop, &ec);
 
-        trace("... was last conn, going to try shutdown\n");
+        trace3("... was last conn, going to try shutdown\n");
         if (shutdown_cb_cv) {
             PUSHMARK(SP);
             call_sv(shutdown_cb_cv, G_EVAL|G_VOID|G_DISCARD|G_NOARGS|G_KEEPERR);
             PUTBACK;
-            trace("... ok, called that handler\n");
+            trace3("... ok, called that handler\n");
             SvREFCNT_dec(shutdown_cb_cv);
             shutdown_cb_cv = NULL;
         }
     }
 #ifdef DEBUG
-    sv_dump(c->self);
+    // sv_dump(c->self);
     // overwrite for debugging
     Poison(c, 1, struct feer_conn);
 #endif
