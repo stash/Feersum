@@ -5,13 +5,42 @@ use warnings;
 use EV ();
 use Carp ();
 
+our $VERSION = '0.03';
+
+require XSLoader;
+XSLoader::load('Feersum', $VERSION);
+require Feersum::Connection;
+require Feersum::Connection::Handle;
+
+our $INSTANCE;
+
+sub new {
+    unless ($INSTANCE) {
+        $INSTANCE = bless {}, __PACKAGE__;
+    }
+    return $INSTANCE;
+}
+*endjinn = \&new;
+
+sub use_socket {
+    my ($self, $sock) = @_;
+    $self->{socket} = $sock;
+    my $fd = fileno($sock);
+    $self->accept_on_fd($fd);
+}
+
+# overload this to catch Feersum errors and exceptions thrown by request
+# callbacks.
+sub DIED { warn "DIED: $@"; }
+
+package Feersum;
+
+1;
+__END__
+
 =head1 NAME
 
 Feersum - A scary-fast HTTP engine for Perl based on EV/libev
-
-=cut
-
-our $VERSION = '0.02';
 
 =head1 SYNOPSIS
 
@@ -33,8 +62,8 @@ our $VERSION = '0.02';
 
 A C<PSGI>-like HTTP server framework based on EV/libev.
 
-B<These interfaces are highly experimental and will most likely change.>
-B<Please consider this module a proof-of-concept at best.>
+B<WARNING: These interfaces are STILL highly experimental and will most likely
+change.  Please consider this module a proof-of-concept at best.>
 
 All of the request-parsing and I/O marshalling is done using C callbacks to
 the libev library.  This is made possible by C<EV::MakeMaker>, which allows
@@ -64,35 +93,58 @@ in the works, hopefully).
 
 There are a number of ways you can respond to a request.
 
+First there's a PSGI-like response triplet.
+
+    my $req = shift;
+    $req->send_response(200, \@headers, ["body ", \"parts"]);
+
+Or, if all you've got is a simple body, you can pass it in via scalar-ref.
+
+    my $req = shift;
+    $req->send_response(200, \@headers, \"whole body");
+
+(Scalar refs in the response body are indicated by the
+C<psgix.body.scalar_refs> PSGI env variable. Passing by reference rather than
+copying onto the stack or into an array is B<significantly> faster.)
+
 Delayed responses are perfectly fine, just don't block the main thread or
 other requests/responses won't get processed.
 
     # "0" tells Feersum to not use chunked encoding and to emit a
     # Content-Length header
     my $req = shift;
-    $req->start_responding(200, \@headers, 0);
+    $req->start_response(200, \@headers, 0);
     my $t; $t = EV::timer 2, 0, sub {
         $req->write_whole_body(\@chunks);
         undef $t;
     };
 
 Chunked responses are possible.  Starting a response in chunked mode enables
-the C<write()> method (which really acts more like a buffered 'print').
+the C<write()> method (which really acts more like a buffered 'print').  Calls
+to C<write()> will never block (as indicated by C<psgix.output.buffered> in
+the PSGI env hash).
 
     # "1" tells Feersum to send a Transfer-Encoding: chunked response
     my $req = shift;
-    $req->start_responding(200, \@headers, 1);
+    $req->start_response(200, \@headers, 1);
     my $w = $req->write_handle;
     $w->write(\"this is a reference to some shared chunk\n");
     $w->write("regular scalars are OK too\n");
     # close off the stream
     $w->close()
 
-A PSGI-like environment hash is easy to obtain.  Currently POST/PUT does not
-stream input, but read() can be called on C<psgi.input> to get the body (which
-has been buffered up before the request callback is called (and therefore will
-never block).  Likely C<read()> will change to give EAGAIN responses and allow
-for a callback to be registered on the arrival of more data.
+A PSGI-like environment hash is easy to obtain.
+
+    my $req = shift;
+    my %env;
+    $req->env(\%env);
+
+Currently POST/PUT does not stream input, but read() can be called on
+C<psgi.input> to get the body (which has been buffered up before the request
+callback is called and therefore will never block).  Likely C<read()> will
+change to give EAGAIN responses and allow for a callback to be registered on
+the arrival of more data. (The C<psgix.input.buffered> env var is set to
+reflect this).
 
     my $req = shift;
     my %env;
@@ -131,24 +183,48 @@ any C<write> or C<start_response> calls.
         };
     });
 
-=head1 METHODS
+The writer object supports C<poll_cb> as specified in PSGI 1.03.  Feersum will
+call this method only when all data has been flushed out at the socket level.
+Use C<close()> or unset the handler (C<< $w->poll_cb(undef) >>) to stop the
+callback from getting called.
 
-B<Notice> some methods are not documented yet.
+    my $req = shift;
+    $req->initiate_streaming(sub {
+        my $starter = shift;
+        my $w = $starter->(
+            "200 OK", ['Content-Type' => 'application/json']);
+        my $n = 0;
+        $w->poll_cb(sub {
+            $_[0]->write(get_next_chunk());
+            $_[0]->close if ($n++ >= 100);
+        });
+    });
+
+=head1 METHODS
 
 =over 4
 
-=item use_socket ($sock)
+=item C<< use_socket($sock) >>
 
-Use the file-descriptor attached to a listen-socket to accept connections.  If
-you create this using IO::Socket::INET, you should keep a reference to $sock
-to prevent closing the descriptor during garbage-collection.
+Use the file-descriptor attached to a listen-socket to accept connections.
 
-=item request_handler ($code->($connection))
+TLS sockets are B<NOT> supported nor are they detected. Feersum needs to use
+the socket at a low level and will ignore any encryption that has been
+established (data is always sent in the clear).  The intented use of Feersum
+is over localhost-only sockets.
+
+A reference to C<$sock> is kept as C<< Feersum->endjinn->{socket} >>.
+
+=item C<< accept_on_fd($fileno) >>
+
+Use the specified fileno to accept connections.  May be used as an alternative
+to C<use_socket>.
+
+=item C<< request_handler(sub { my $req = shift; ... }) >>
 
 Sets the global request handler.  Any previous handler is replaced.
 
-The handler callback is passed a C<Feersum::Connection> object.  See above for
-how to use this for now.
+The handler callback is passed a L<Feersum::Connection> object.
 
 B<Subject to change>: if the request has an entity body then the handler will
 be called B<only> after receiving the body in its entirety.  The headers
@@ -156,9 +232,9 @@ be called B<only> after receiving the body in its entirety.  The headers
 rejected.  The maximum size is hard coded to 2147483647 bytes (this may be
 considered a bug).
 
-=item read_timeout
+=item C<< read_timeout() >>
 
-=item read_timeout ($duration)
+=item C<< read_timeout($duration) >>
 
 Get or set the global read timeout.
 
@@ -167,7 +243,29 @@ the tollerances provided by libev).  If an entity body is part of the request
 (e.g. POST or PUT) it will wait this long between successful C<read()> system
 calls.
 
-=item DIED
+=item C<< graceful_shutdown(sub { .... }) >>
+
+Causes Feersum to initiate a graceful shutdown of all outstanding connections.
+No new connections will be accepted.  The reference to the socket provided
+in use_socket() is kept.
+
+The sub parameter is a completion callback.  It will be called when all
+connections have been flushed and closed.  This allows you to do something
+like this:
+
+    my $cv = AE::cv;
+    my $death = AE::timer 2.5, 0, sub {
+        fail "SHUTDOWN TOOK TOO LONG";
+        exit 1;
+    };
+    Feersum->endjinn->graceful_shutdown(sub {
+        pass "all gracefully shut down, supposedly";
+        undef $death;
+        $cv->send;
+    });
+    $cv->recv;
+
+=item C<< DIED >>
 
 Not really a method so much as a static function.  Works similar to
 EV's/AnyEvent's error handler.
@@ -175,7 +273,7 @@ EV's/AnyEvent's error handler.
 To install a handler:
 
     no strict 'refs';
-    *{Feersum::DIED} = sub { warn "nuts $_[0]" };
+    *{'Feersum::DIED'} = sub { warn "nuts $_[0]" };
 
 Will get called for any errors that happen before the request handler callback
 is called, when the request handler callback throws an exception and
@@ -192,78 +290,6 @@ propagated.
 
 =cut
 
-require XSLoader;
-XSLoader::load('Feersum', $VERSION);
-
-our $INSTANCE;
-
-sub new {
-    unless ($INSTANCE) {
-        $INSTANCE = bless {}, __PACKAGE__;
-    }
-    return $INSTANCE;
-}
-*endjinn = \&new;
-
-sub use_socket {
-    my ($self, $sock) = @_;
-    $self->{socket} = $sock;
-    my $fd = fileno($sock);
-    $self->accept_on_fd($fd);
-}
-
-# overload this to catch Feersum errors and exceptions thrown by request
-# callbacks.
-sub DIED {
-    warn "DIED: $@";
-}
-
-package Feersum::Connection;
-use strict;
-
-sub send_response {
-    # my ($self, $msg, $hdrs, $body) = @_;
-    $_[0]->start_response($_[1], $_[2], 0);
-    $_[0]->write_whole_body(ref($_[3]) ? $_[3] : \$_[3]);
-}
-
-sub initiate_streaming {
-    my $self = shift;
-    my $streamer = shift;
-    Carp::croak "Feersum: Expected coderef"
-        unless ref($streamer) eq 'CODE';
-    @_ = (sub {
-        $self->start_response($_[0],$_[1],1);
-        return $self->write_handle;
-    });
-    goto &$streamer;
-}
-
-package Feersum::Connection::Handle;
-use strict;
-
-sub new {
-    Carp::croak "Cannot instantiate Feersum::Connection::Handles directly";
-}
-
-package Feersum::Connection::Reader;
-use strict;
-use base 'Feersum::Connection::Handle';
-
-sub write { Carp::croak "can't call write method on a read-only handle" }
-
-sub seek { Carp::carp "seek not supported."; return 0 }
-
-package Feersum::Connection::Writer;
-use strict;
-use base 'Feersum::Connection::Handle';
-
-sub read { Carp::croak "can't call read method on a write-only handle" }
-
-package Feersum;
-
-1;
-__END__
 
 =head1 LIMITS
 

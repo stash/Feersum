@@ -1,10 +1,15 @@
 Changes
 Feersum.xs
 MANIFEST
+MANIFEST.SKIP
 Makefile.PL
 README
+TODO
 example/hello.pl
+example/oneshot.pl
 lib/Feersum.pm
+lib/Feersum/Connection.pm
+lib/Feersum/Connection/Handle.pm
 picohttpparser-git/bench.c
 picohttpparser-git/picohttpparser.c
 picohttpparser-git/picohttpparser.h
