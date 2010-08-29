@@ -1582,8 +1582,9 @@ env (struct feer_conn *c, HV *e)
     hv_store(e, "psgi.multithreaded", 18, &PL_sv_no, 0);
     hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
     hv_store(e, "psgi.errors", 11, newRV((SV*)PL_stderrgv), 0);
-    hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0); 
-    hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0); 
+    hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
+    hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0);
+    hv_store(e, "psgix.body.scalar_refs", 22, &PL_sv_yes, 0);
     hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
     hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
     hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
