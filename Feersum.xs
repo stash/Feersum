@@ -1295,9 +1295,24 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
             call_died(aTHX_ c, "request");
         }
     }
-//         else if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVCV) {
-//             // TODO streaming mode
-//         }
+    else if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVCV) {
+        dSP;
+        ENTER;
+        SAVETMPS;
+        PUSHMARK(SP);
+        SV *conn_sv = sv_2mortal(feer_conn_2sv(c));
+        XPUSHs(conn_sv);
+        XPUSHs(ret);
+        PUTBACK;
+        call_method("_initiate_streaming_psgi", G_DISCARD|G_EVAL|G_VOID);
+        SPAGAIN;
+        if (SvTRUE(ERRSV)) {
+            call_died(aTHX_ c, "initiate streaming");
+        }
+        PUTBACK;
+        FREETMPS;
+        LEAVE;
+    }
     else {
         sv_setpv(ERRSV, "Unsupported PSGI response");
         call_died(aTHX_ c, "request");
@@ -1335,7 +1350,6 @@ call_request_callback (struct feer_conn *c)
     SAVETMPS;
     PUSHMARK(SP);
 
-
     if (request_cb_is_psgi) {
         SV *env = feersum_env(aTHX_ c,newHV());
 //         SV *conn_sv = feer_conn_2sv(c);
@@ -1360,14 +1374,21 @@ call_request_callback (struct feer_conn *c)
         call_died(aTHX_ c, "request");
     }
 
+    SV *psgi_response;
     if (request_cb_is_psgi) {
-        feersum_handle_psgi_response(aTHX_ c, POPs);
+        psgi_response = *sp;
+        SvREFCNT_inc(psgi_response);
     }
 
     trace("leaving request callback\n");
     PUTBACK;
     FREETMPS;
     LEAVE;
+
+    if (request_cb_is_psgi) {
+        feersum_handle_psgi_response(aTHX_ c, psgi_response);
+        SvREFCNT_dec(psgi_response);
+    }
 
     c->in_callback--;
 }

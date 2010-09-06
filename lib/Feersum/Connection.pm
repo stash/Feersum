@@ -23,6 +23,26 @@ sub initiate_streaming {
     goto &$streamer;
 }
 
+sub _initiate_streaming_psgi {
+    my ($self, $streamer) = @_;
+    @_ = (sub {
+        my $strm = shift;
+        if ($#$strm == 2) {
+            $self->start_response($strm->[0],$strm->[1],0);
+            $self->write_whole_body(ref($strm->[2]) ? $strm->[2] : \$strm->[2]);
+        }
+        elsif ($#$strm == 1) {
+            $self->start_response($strm->[0],$strm->[1],1);
+            return $self->write_handle;
+        }
+        else {
+            die "streaming responder expected array";
+        }
+        return;
+    });
+    goto &$streamer;
+}
+
 1;
 __END__
 
