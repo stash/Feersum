@@ -1346,7 +1346,6 @@ call_request_callback (struct feer_conn *c)
     }
     else {
         SV *conn_sv = feer_conn_2sv(c);
-        Perl_sv_dump(aTHX_ conn_sv);
         XPUSHs(sv_2mortal(conn_sv));
         flags = G_DISCARD|G_EVAL|G_VOID;
     }
