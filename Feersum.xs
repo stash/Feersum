@@ -80,8 +80,6 @@ struct feer_req {
     struct phr_header headers[MAX_HEADERS];
 };
 
-// enough to hold a 64-bit signed integer (which is 20+1 chars) plus nul
-#define CONN_LABEL_LENGTH 24
 #define RESPOND_NOT_STARTED 0
 #define RESPOND_NORMAL 1
 #define RESPOND_STREAMING 2
@@ -92,10 +90,9 @@ struct feer_req {
 #define RECEIVE_SHUTDOWN 3
 
 struct feer_conn {
-    char label[CONN_LABEL_LENGTH];
+    int fd;
     SV *self;
 
-    int fd;
     struct ev_io read_ev_io;
     struct ev_io write_ev_io;
     struct ev_timer read_ev_timer;
@@ -401,8 +398,6 @@ prep_socket(int fd)
 static struct feer_conn *
 new_feer_conn (EV_P_ int conn_fd)
 {
-    // allocate an SV that can hold the feer_conn PLUS a string for the fd
-    // so that dumping the SV from interpreter-land 
     SV *self = newSV(0);
     SvUPGRADE(self, SVt_PVMG); // ensures sv_bless doesn't reallocate
     SvGROW(self, sizeof(struct feer_conn));
@@ -413,11 +408,6 @@ new_feer_conn (EV_P_ int conn_fd)
     struct feer_conn *c = (struct feer_conn *)SvPVX(self);
     Zero(c, 1, struct feer_conn);
 
-    STRLEN label_len = snprintf(
-        c->label, CONN_LABEL_LENGTH, "%"IVdf, conn_fd);
-
-    // make the var readonly and make the visible portion just the fd number
-    SvCUR_set(self, label_len);
     SvREADONLY_on(self); // turn off later for blessing
 
     c->self = self;
@@ -460,7 +450,7 @@ feer_conn_2sv (struct feer_conn *c)
 {
     SV *rv = newRV_inc(c->self);
     if (!SvOBJECT(c->self)) {
-        trace3("c->self not yet an object, SvCUR:%d\n",SvCUR(c->self));
+        trace3("c->self not yet an object\n");
         SvREADONLY_off(c->self);
         // XXX: should this block use newRV_noinc instead?
         sv_bless(rv, feer_conn_stash);
