@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.03';
+our $VERSION = '0.90';
 
 require XSLoader;
 XSLoader::load('Feersum', $VERSION);
@@ -33,8 +33,6 @@ sub use_socket {
 # callbacks.
 sub DIED { warn "DIED: $@"; }
 
-package Feersum;
-
 1;
 __END__
 
@@ -45,8 +43,10 @@ Feersum - A scary-fast HTTP engine for Perl based on EV/libev
 =head1 SYNOPSIS
 
     use Feersum;
-    my $ngn = Feersum->new();
+    my $ngn = Feersum->endjinn; # singleton
     $ngn->use_socket($io_socket);
+    
+    # register a Feersum handler:
     $ngn->request_handler(sub {
         my $req = shift;
         my $t; $t = EV::timer 2, 0, sub {
@@ -57,6 +57,9 @@ Feersum - A scary-fast HTTP engine for Perl based on EV/libev
             undef $t;
         };
     });
+    
+    # register a PSGI handler
+    $ngn->psgi_request_handler($app);
 
 =head1 DESCRIPTION
 
@@ -200,6 +203,11 @@ callback from getting called.
         });
     });
 
+And, finally, you can register a PSGI "app" reference:
+
+    my $app = do $filename;
+    Feersum->endjinn->psgi_request_handler($app);
+
 =head1 METHODS
 
 =over 4
@@ -326,6 +334,8 @@ Currently there's no way to limit the request entity length of a POST/PUT/etc.
 This could lead to a DoS attack on a Feersum server.  Suggested remedy is to
 only run Feersum behind some other web server and to use that to limit the
 entity size.
+
+IO::Handle-like PSGI responses are not supported.
 
 =head1 SEE ALSO
 

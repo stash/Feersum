@@ -11,6 +11,7 @@ psgi.input streaming
 
 IO::Handle-like responses
 
+    * allow them!
     * check if it's got a real file descriptor, optimize (libeio for
     non-blocking sendfile?)
     * pump the getline() method when connection-writable

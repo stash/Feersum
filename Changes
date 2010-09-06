@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.90  Mon Sep  6 16:35:00 2010
+        PSGI 1.03 support (except for IO::Handle-like responses)
+
 0.02  Fri Apr 23 10:55:54 2010
         Renamed a good chunk of the functions & classes.
         Made psgi.input and stream-writer objects separate from the main connection class.
