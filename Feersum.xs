@@ -115,6 +115,12 @@ typedef struct feer_conn feer_conn_handle; // for typemap
 
 #define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 
+static SV* feersum_env(pTHX_ struct feer_conn *c, HV *e);
+static void feersum_start_response
+    (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
+static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
+static void feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret);
+
 static void try_conn_write(EV_P_ struct ev_io *w, int revents);
 static void try_conn_read(EV_P_ struct ev_io *w, int revents);
 static void conn_read_timeout(EV_P_ struct ev_timer *w, int revents);
@@ -143,6 +149,7 @@ static HV *feer_stash, *feer_conn_stash;
 static HV *feer_conn_reader_stash = NULL, *feer_conn_writer_stash = NULL;
 
 static SV *request_cb_cv = NULL;
+static bool request_cb_is_psgi = 0;
 static SV *shutdown_cb_cv = NULL;
 static bool shutting_down = 0;
 static int active_conns = 0;
@@ -578,14 +585,12 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     for (i = 0; i < m->count; i++) {
         struct iovec *v = &m->iov[i];
         if (v->iov_len > wrote) {
-            // offset within vector
-            trace2("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
+            trace3("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
             v->iov_base += wrote;
             v->iov_len  -= wrote;
         }
         else {
-            // done with vector
-            trace2("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
+            trace3("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
             wrote -= v->iov_len;
             m->offset++;
             if (m->sv[i]) {
@@ -601,8 +606,8 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         Safefree(m);
         goto try_write_finished;
     }
+    // else, fallthrough:
 
-    // fallthrough:
 try_write_again:
     trace("write again %d\n",w->fd);
     if (!ev_is_active(w)) {
@@ -613,6 +618,7 @@ try_write_again:
 try_write_finished:
     // should always be responding, but just in case
     if (!c->responding || c->responding == RESPOND_SHUTDOWN) {
+        ev_io_stop(EV_A, w);
         shutdown(c->fd, SHUT_WR);
         trace3("ref dec after write %d\n", c->fd);
         // TODO: call a completion callback instead of just GCing
@@ -1043,6 +1049,261 @@ needs_decode:
     SvCUR_set(sv, decoded-ptr);
 }
 
+static SV*
+feersum_env(pTHX_ struct feer_conn *c, HV *e)
+{
+    SV **hsv;
+    int i,j;
+    struct feer_req *r = c->req;
+
+    //  strlen: 0123456789012345678901
+    hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
+    hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
+    hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
+    hv_store(e, "psgi.multithreaded", 18, &PL_sv_no, 0);
+    hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
+    hv_store(e, "psgi.errors", 11, newRV((SV*)PL_stderrgv), 0);
+    hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
+    hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0);
+    hv_store(e, "psgix.body.scalar_refs", 22, &PL_sv_yes, 0);
+    hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
+    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
+    hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
+    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ? newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+
+    if (c->expected_cl >= 0) {
+        hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
+        hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
+    }
+    else {
+        hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
+        hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
+    }
+
+    {
+        const char *qpos = r->path;
+        SV *pinfo, *qstr;
+        while (*qpos != '?' && qpos < r->path + r->path_len) {
+            qpos++;
+        }
+        if (*qpos == '?') {
+            pinfo = newSVpvn(r->path, (qpos - r->path));
+            qpos++;
+            qstr = newSVpvn(qpos, r->path_len - (qpos - r->path));
+        }
+        else {
+            pinfo = newSVpvn(r->path, r->path_len);
+            qstr = newSVpvn("",0);
+        }
+        uri_decode_sv(pinfo);
+        hv_store(e, "PATH_INFO", 9, pinfo, 0);
+        hv_store(e, "QUERY_STRING", 12, qstr, 0);
+    }
+
+    SV *val = NULL;
+    char *kbuf;
+    size_t kbuflen = 64;
+    Newx(kbuf, kbuflen, char);
+    kbuf[0]='H'; kbuf[1]='T'; kbuf[2]='T'; kbuf[3]='P'; kbuf[4]='_';
+
+    for (i=0; i<r->num_headers; i++) {
+        struct phr_header *hdr = &(r->headers[i]);
+        if (hdr->name == NULL && val != NULL) {
+            trace("... multiline %.*s\n", hdr->value_len, hdr->value);
+            sv_catpvn(val, hdr->value, hdr->value_len);
+        }
+        else if (str_case_eq("content-length", 14, hdr->name, hdr->name_len)) {
+            // content length shouldn't show up as HTTP_CONTENT_LENGTH but
+            // as CONTENT_LENGTH in the env-hash.
+            continue;
+        }
+        else {
+            size_t klen = 5+hdr->name_len;
+            if (kbuflen < klen) {
+                kbuflen = klen;
+                kbuf = Renew(kbuf, kbuflen, char);
+            }
+            char *key = kbuf + 5;
+            for (j=0; j<hdr->name_len; j++) {
+                char n = hdr->name[j];
+                *key++ = (n == '-') ? '_' : toupper(n);
+            }
+
+            SV **val = hv_fetch(e, kbuf, klen, 1);
+            trace("adding header to env %.*s: %.*s\n",
+                klen, kbuf, hdr->value_len, hdr->value);
+
+            assert(val != NULL); // "fetch is store" flag should ensure this
+            if (SvPOK(*val)) {
+                trace("... is multivalue\n");
+                // extend header with comma
+                sv_catpvf(*val, ", %.*s", hdr->value_len, hdr->value);
+            }
+            else {
+                // change from undef to a real value
+                sv_setpvn(*val, hdr->value, hdr->value_len);
+            }
+        }
+    }
+
+    Safefree(kbuf);
+    return (SV*)e;
+}
+
+static void
+feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
+                        int streaming)
+{
+    const char *ptr;
+    STRLEN len;
+    I32 i;
+
+    trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
+
+    if (c->responding)
+        croak("already responding!");
+    c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
+
+    if (!SvOK(message) || !(SvIOK(message) || SvPOK(message))) {
+        croak("Must define an HTTP status code or message");
+    }
+
+    I32 avl = av_len(headers);
+    if (avl < 0 || (avl % 2 != 1)) {
+        croak("expected even-length array");
+    }
+
+    // int or 3 chars? use a stock message
+    if (SvIOK(message) || (SvPOK(message) && SvCUR(message) == 3)) {
+        int code = SvIV(message);
+        ptr = http_code_to_msg(code);
+        len = strlen(ptr);
+        message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
+    }
+
+    add_const_to_wbuf(c, streaming ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
+    add_sv_to_wbuf(c, message);
+    add_const_to_wbuf(c, CRLF, 2);
+
+    for (i=0; i<avl; i+= 2) {
+        SV **hdr = av_fetch(headers, i, 0);
+        if (!hdr || !SvOK(*hdr)) {
+            trouble("skipping undef header key");
+            continue;
+        }
+
+        SV **val = av_fetch(headers, i+1, 0);
+        if (!val || !SvOK(*val)) {
+            trouble("skipping undef header value");
+            continue;
+        }
+
+        STRLEN hlen;
+        const char *hp = SvPV(*hdr, hlen);
+        if (str_case_eq("content-length",14,hp,hlen)) {
+            trouble("ignoring content-length header in the response");
+            continue; 
+        }
+
+        add_sv_to_wbuf(c, *hdr);
+        add_const_to_wbuf(c, ": ", 2);
+        add_sv_to_wbuf(c, *val);
+        add_const_to_wbuf(c, CRLF, 2);
+    }
+
+    if (streaming) {
+        add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
+    }
+
+    conn_write_ready(c);
+}
+
+static int
+feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
+{
+    int RETVAL;
+    int i;
+    bool body_is_string = 0;
+    STRLEN cur;
+
+    if (c->responding != RESPOND_NORMAL)
+        croak("can't use write_whole_body when in streaming mode");
+
+    if (!SvOK(body)) {
+        body = sv_2mortal(newSVpvn("",0));
+        body_is_string = 1;
+    }
+    else if (SvROK(body)) {
+        SV *refd = SvRV(body);
+        if (SvOK(refd) && !SvROK(refd)) {
+            body = refd;
+            body_is_string = 1;
+        }
+        else if (SvTYPE(refd) != SVt_PVAV) {
+            croak("body must be a scalar, scalar reference or array reference");
+        }
+    }
+    else {
+        body_is_string = 1;
+    }
+
+    SV *cl_sv; // content-length future
+    struct iovec *cl_iov;
+    add_placeholder_to_wbuf(c, &cl_sv, &cl_iov);
+
+    if (body_is_string) {
+        cur = add_sv_to_wbuf(c,body);
+        RETVAL = cur;
+    }
+    else {
+        AV *abody = (AV*)SvRV(body);
+        I32 amax = av_len(abody);
+        RETVAL = 0;
+        for (i=0; i<=amax; i++) {
+            SV **elt = av_fetch(abody, i, 0);
+            if (elt == NULL || !SvOK(*elt)) continue;
+            SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
+            cur = add_sv_to_wbuf(c,sv);
+            trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
+            RETVAL += cur;
+        }
+    }
+
+    sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
+    update_wbuf_placeholder(c, cl_sv, cl_iov);
+
+    c->responding = RESPOND_SHUTDOWN;
+    conn_write_ready(c);
+    return RETVAL;
+}
+
+static void
+feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
+{
+    if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVAV) {
+        AV *rav = (AV*)SvRV(ret);
+        if (av_len(rav)+1 == 3) { // standard response triplet
+            trace("PSGI response triplet, c=%p av=%p len=%d\n", c, rav, av_len(rav));
+            SV *msg = av_shift(rav);
+            SV *hdrs = SvRV(av_shift(rav)); // XXX no typecheck for speed
+            feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 0);
+            SV *body = av_shift(rav); // XXX no typecheck for speed
+            feersum_write_whole_body(aTHX_ c, body);
+        }
+        else {
+            sv_setpv(ERRSV, "Unsupported PSGI array response");
+            call_died(aTHX_ c, "request");
+        }
+    }
+//         else if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVCV) {
+//             // TODO streaming mode
+//         }
+    else {
+        sv_setpv(ERRSV, "Unsupported PSGI response");
+        call_died(aTHX_ c, "request");
+    }
+}
+
 static void
 call_died (pTHX_ struct feer_conn *c, const char *cb_type)
 {
@@ -1065,28 +1326,43 @@ call_request_callback (struct feer_conn *c)
 {
     dSP;
     dTHX;
-    SV *sv_self;
-
+    int flags;
     c->in_callback++;
 
-    sv_self = feer_conn_2sv(c);
-
-    trace("request callback c=%p self=%p\n", c, sv_self);
+    trace("request callback c=%p\n", c);
 
     ENTER;
     SAVETMPS;
-
     PUSHMARK(SP);
-    XPUSHs(sv_2mortal(sv_self));
+
+
+    if (request_cb_is_psgi) {
+        SV *env = feersum_env(aTHX_ c,newHV());
+//         SV *conn_sv = feer_conn_2sv(c);
+//         hv_store((HV*)env, "psgix.feersum", 13, conn_sv, 0);
+        env = sv_2mortal(newRV_noinc(env));
+        XPUSHs(env);
+        flags = G_EVAL|G_SCALAR;
+    }
+    else {
+        SV *conn_sv = feer_conn_2sv(c);
+        Perl_sv_dump(aTHX_ conn_sv);
+        XPUSHs(sv_2mortal(conn_sv));
+        flags = G_DISCARD|G_EVAL|G_VOID;
+    }
 
     PUTBACK;
-    call_sv(request_cb_cv, G_DISCARD|G_EVAL|G_VOID);
+    call_sv(request_cb_cv, flags);
     SPAGAIN;
 
     trace("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
     if (SvTRUE(ERRSV)) {
         call_died(aTHX_ c, "request");
+    }
+
+    if (request_cb_is_psgi) {
+        feersum_handle_psgi_response(aTHX_ c, POPs);
     }
 
     trace("leaving request callback\n");
@@ -1161,6 +1437,8 @@ accept_on_fd(SV *self, int fd)
 void
 request_handler(SV *self, SV *cb)
     PROTOTYPE: $&
+    ALIAS:
+        psgi_request_handler = 1
     PPCODE:
 {
     if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV)
@@ -1169,7 +1447,9 @@ request_handler(SV *self, SV *cb)
         SvREFCNT_dec(request_cb_cv);
     request_cb_cv = SvRV(cb);
     SvREFCNT_inc(request_cb_cv);
-    trace("assigned request handler %p\n", SvRV(cb));
+    request_cb_is_psgi = ix;
+    trace("assigned %s request handler %p\n",
+        request_cb_is_psgi?"PSGI":"Feersum", request_cb_cv);
 }
 
 void
@@ -1418,129 +1698,13 @@ void
 start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
     PROTOTYPE: $$\@$
     PPCODE:
-{
-    const char *ptr;
-    STRLEN len;
-    I32 i;
-
-    trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
-
-    if (c->responding)
-        croak("already responding!");
-    c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
-
-    if (!SvOK(message) || !(SvIOK(message) || SvPOK(message))) {
-        croak("Must define an HTTP status code or message");
-    }
-
-    I32 avl = av_len(headers);
-    if (avl < 0 || (avl % 2 != 1)) {
-        croak("expected even-length array");
-    }
-
-    // int or 3 chars? use a stock message
-    if (SvIOK(message) || (SvPOK(message) && SvCUR(message) == 3)) {
-        int code = SvIV(message);
-        ptr = http_code_to_msg(code);
-        len = strlen(ptr);
-        message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
-    }
-
-    add_const_to_wbuf(c, streaming ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
-    add_sv_to_wbuf(c, message);
-    add_const_to_wbuf(c, CRLF, 2);
-
-    for (i=0; i<avl; i+= 2) {
-        SV **hdr = av_fetch(headers, i, 0);
-        if (!hdr || !SvOK(*hdr)) {
-            trouble("skipping undef header key");
-            continue;
-        }
-
-        SV **val = av_fetch(headers, i+1, 0);
-        if (!val || !SvOK(*val)) {
-            trouble("skipping undef header value");
-            continue;
-        }
-
-        STRLEN hlen;
-        const char *hp = SvPV(*hdr, hlen);
-        if (str_case_eq("content-length",14,hp,hlen)) {
-            trouble("ignoring content-length header in the response");
-            continue; 
-        }
-
-        add_sv_to_wbuf(c, *hdr);
-        add_const_to_wbuf(c, ": ", 2);
-        add_sv_to_wbuf(c, *val);
-        add_const_to_wbuf(c, CRLF, 2);
-    }
-
-    if (streaming) {
-        add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
-    }
-
-    conn_write_ready(c);
-}
+        feersum_start_response(aTHX_ c, message, headers, streaming);
 
 int
 write_whole_body (struct feer_conn *c, SV *body)
     PROTOTYPE: $$
     CODE:
-{
-    int i;
-    bool body_is_string = 0;
-    STRLEN cur;
-
-    if (c->responding != RESPOND_NORMAL)
-        croak("can't use write_whole_body when in streaming mode");
-
-    if (!SvOK(body)) {
-        body = sv_2mortal(newSVpvn("",0));
-        body_is_string = 1;
-    }
-    else if (SvROK(body)) {
-        SV *refd = SvRV(body);
-        if (SvOK(refd) && !SvROK(refd)) {
-            body = refd;
-            body_is_string = 1;
-        }
-        else if (SvTYPE(refd) != SVt_PVAV) {
-            croak("body must be a scalar, scalar reference or array reference");
-        }
-    }
-    else {
-        body_is_string = 1;
-    }
-
-    SV *cl_sv; // content-length future
-    struct iovec *cl_iov;
-    add_placeholder_to_wbuf(c, &cl_sv, &cl_iov);
-
-    if (body_is_string) {
-        cur = add_sv_to_wbuf(c,body);
-        RETVAL = cur;
-    }
-    else {
-        AV *abody = (AV*)SvRV(body);
-        I32 amax = av_len(abody);
-        RETVAL = 0;
-        for (i=0; i<=amax; i++) {
-            SV **elt = av_fetch(abody, i, 0);
-            if (elt == NULL || !SvOK(*elt)) continue;
-            SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
-            cur = add_sv_to_wbuf(c,sv);
-            trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
-            RETVAL += cur;
-        }
-    }
-
-    sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
-    update_wbuf_placeholder(c, cl_sv, cl_iov);
-
-    c->responding = RESPOND_SHUTDOWN;
-    conn_write_ready(c);
-}
+        RETVAL = feersum_write_whole_body(aTHX_ c, body);
     OUTPUT:
         RETVAL
 
@@ -1560,103 +1724,7 @@ void
 env (struct feer_conn *c, HV *e)
     PROTOTYPE: $\%
     PPCODE:
-{
-    SV **hsv;
-    int i,j;
-    struct feer_req *r = c->req;
-
-    //  strlen: 0123456789012345678901
-    hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
-    hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
-    hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
-    hv_store(e, "psgi.multithreaded", 18, &PL_sv_no, 0);
-    hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
-    hv_store(e, "psgi.errors", 11, newRV((SV*)PL_stderrgv), 0);
-    hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
-    hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0);
-    hv_store(e, "psgix.body.scalar_refs", 22, &PL_sv_yes, 0);
-    hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
-    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
-    hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
-    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ? newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
-
-    if (c->expected_cl >= 0) {
-        hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
-        hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
-    }
-    else {
-        hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
-        hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
-    }
-
-    {
-        const char *qpos = r->path;
-        SV *pinfo, *qstr;
-        while (*qpos != '?' && qpos < r->path + r->path_len) {
-            qpos++;
-        }
-        if (*qpos == '?') {
-            pinfo = newSVpvn(r->path, (qpos - r->path));
-            qpos++;
-            qstr = newSVpvn(qpos, r->path_len - (qpos - r->path));
-        }
-        else {
-            pinfo = newSVpvn(r->path, r->path_len);
-            qstr = newSVpvn("",0);
-        }
-        uri_decode_sv(pinfo);
-        hv_store(e, "PATH_INFO", 9, pinfo, 0);
-        hv_store(e, "QUERY_STRING", 12, qstr, 0);
-    }
-
-    SV *val = NULL;
-    char *kbuf;
-    size_t kbuflen = 64;
-    Newx(kbuf, kbuflen, char);
-    kbuf[0]='H'; kbuf[1]='T'; kbuf[2]='T'; kbuf[3]='P'; kbuf[4]='_';
-
-    for (i=0; i<r->num_headers; i++) {
-        struct phr_header *hdr = &(r->headers[i]);
-        if (hdr->name == NULL && val != NULL) {
-            trace("... multiline %.*s\n", hdr->value_len, hdr->value);
-            sv_catpvn(val, hdr->value, hdr->value_len);
-        }
-        else if (str_case_eq("content-length", 14, hdr->name, hdr->name_len)) {
-            // content length shouldn't show up as HTTP_CONTENT_LENGTH but
-            // as CONTENT_LENGTH in the env-hash.
-            continue;
-        }
-        else {
-            size_t klen = 5+hdr->name_len;
-            if (kbuflen < klen) {
-                kbuflen = klen;
-                kbuf = Renew(kbuf, kbuflen, char);
-            }
-            char *key = kbuf + 5;
-            for (j=0; j<hdr->name_len; j++) {
-                char n = hdr->name[j];
-                *key++ = (n == '-') ? '_' : toupper(n);
-            }
-
-            SV **val = hv_fetch(e, kbuf, klen, 1);
-            trace("adding header to env %.*s: %.*s\n",
-                klen, kbuf, hdr->value_len, hdr->value);
-
-            assert(val != NULL); // "fetch is store" flag should ensure this
-            if (SvPOK(*val)) {
-                trace("... is multivalue\n");
-                // extend header with comma
-                sv_catpvf(*val, ", %.*s", hdr->value_len, hdr->value);
-            }
-            else {
-                // change from undef to a real value
-                sv_setpvn(*val, hdr->value, hdr->value_len);
-            }
-        }
-    }
-
-    Safefree(kbuf);
-}
+        feersum_env(aTHX_ c,e);
 
 int
 fileno (struct feer_conn *c)
