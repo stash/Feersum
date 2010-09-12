@@ -1,0 +1,64 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+require Getopt::Long;
+
+my $native = 0;
+Getopt::Long::Configure("no_ignore_case", "no_auto_abbrev", "pass_through");
+Getopt::Long::GetOptions(
+    "native!" => \$native,
+);
+
+my $runner;
+
+if ($native) {
+    my $listen = 'localhost:5000';
+    Getopt::Long::GetOptions(
+        "listen=s" => \$listen,
+    );
+    require Feersum::Runner;
+    my $app_file = pop @ARGV || 'app.feersum';
+    my $app = do $app_file
+        or die "Error while loading $app_file\: $! $@\n";
+    $runner = Feersum::Runner->new('listen' => [$listen], app => $app);
+}
+else {
+    my @args = (
+        server => 'Feersum',
+        env => 'deployment',
+        version_cb => sub {
+            require Feersum;
+            print "Feersum $Feersum::VERSION\n";
+        }
+    );
+    require Plack::Runner;
+    $runner = Plack::Runner->new(@args);
+    $runner->parse_options(@ARGV);
+    $runner->set_options(argv => \@ARGV);
+}
+
+$runner->run;
+
+__END__
+
+=head1 NAME
+
+feersum - feersum app loader
+
+=head1 SYNOPSIS
+
+  feersum [plackup opts] [app.psgi]
+  feersum --native [--listen host:port] [app.feersum]
+
+=head1 DESCRIPTION
+
+Loads the specified app file into a Feersum server.
+
+If in native mode (when running C<feersum --native>), currently only a
+C<--listen> parameter is accepted.  By default, the server will listen on
+localhost port 5000.
+
+When running in PSGI mode (non-native), L<Plack::Runner> is used.  See that
+module for documentation and defaults.
+
+=cut

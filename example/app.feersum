@@ -1,0 +1,17 @@
+#!perl
+#
+# Compare and contrast to app.psgi
+#
+my $counter = 0;
+sub {
+    my $r = shift;
+    my $n = $counter++;
+    # loading the env is optional under Feersum.  For a "fair" speed
+    # comparison to app.psgi, uncomment these two lines:
+#     my %env;
+#     $r->env(\%env);
+    $r->send_response("200 OK", [
+        'Content-Type' => 'text/plain',
+        'Connection' => 'close',
+    ], \"Hello customer number $n\n");
+};
