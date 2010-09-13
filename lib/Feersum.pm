@@ -27,6 +27,10 @@ sub use_socket {
     $self->{socket} = $sock;
     my $fd = fileno($sock);
     $self->accept_on_fd($fd);
+
+    my $host = eval { $sock->sockhost() } || 'localhost';
+    my $port = eval { $sock->sockport() } || 80;
+    $self->set_server_name_and_port($host,$port);
 }
 
 # overload this to catch Feersum errors and exceptions thrown by request

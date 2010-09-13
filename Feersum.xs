@@ -155,6 +155,9 @@ static bool shutting_down = 0;
 static int active_conns = 0;
 static double read_timeout = 5.0;
 
+static SV *feer_server_name = NULL;
+static SV *feer_server_port = NULL;
+
 static ev_io accept_w;
 static ev_prepare ep;
 static ev_check   ec;
@@ -1060,7 +1063,8 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
     hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
     hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
     hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
-    hv_store(e, "psgi.multithreaded", 18, &PL_sv_no, 0);
+    hv_store(e, "psgi.multithread", 16, &PL_sv_no, 0);
+    hv_store(e, "psgi.multiprocess", 17, &PL_sv_no, 0);
     hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
     hv_store(e, "psgi.errors", 11, newRV((SV*)PL_stderrgv), 0);
     hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
@@ -1069,7 +1073,13 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
     hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
     hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
     hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
-    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ? newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+
+    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ?
+        newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+    SvREFCNT_inc(feer_server_name);
+    hv_store(e, "SERVER_NAME", 11, feer_server_name, 0);
+    SvREFCNT_inc(feer_server_port);
+    hv_store(e, "SERVER_PORT", 11, feer_server_port, 0);
 
     if (c->expected_cl >= 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
@@ -1077,6 +1087,8 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
     }
     else {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
+        // TODO: make psgi.input a valid, but always empty stream for PSGI
+        // mode?
         hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
     }
 
@@ -1435,6 +1447,21 @@ call_poll_callback (struct feer_conn *c, bool is_write)
 MODULE = Feersum		PACKAGE = Feersum		
 
 PROTOTYPES: ENABLE
+
+void
+set_server_name_and_port(SV *self, SV *name, SV *port)
+    PPCODE:
+{
+    if (feer_server_name)
+        SvREFCNT_DEC(feer_server_name);
+    feer_server_name = newSVsv(name);
+    SvREADONLY_on(feer_server_name);
+
+    if (feer_server_port)
+        SvREFCNT_DEC(feer_server_port);
+    feer_server_port = newSVsv(port);
+    SvREADONLY_on(feer_server_port);
+}
 
 void
 accept_on_fd(SV *self, int fd)

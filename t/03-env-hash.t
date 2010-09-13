@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 53;
+use Test::More tests => 59;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
@@ -36,7 +36,8 @@ $evh->request_handler(sub {
     is_deeply $env->{'psgi.version'}, [1,0], 'got psgi.version';
     is $env->{'psgi.url_scheme'}, "http", 'got psgi.url_scheme';
     ok $env->{'psgi.nonblocking'}, 'got psgi.nonblocking';
-    ok exists $env->{'psgi.multithreaded'}, 'got psgi.multithreaded';
+    is $env->{'psgi.multithread'}, '', 'got psgi.multithread';
+    is $env->{'psgi.multiprocess'}, '', 'got psgi.multiprocess';
     ok $env->{'psgix.body.scalar_refs'}, 'Feersum supports scalar-refs in the body part of the response (psgix.body.scalar_refs)';
 
     my $errfh = $env->{'psgi.errors'};
@@ -62,6 +63,9 @@ $evh->request_handler(sub {
         is $env->{PATH_INFO}, '/what% is good?%2', "got decoded path info string";
         is $env->{REQUEST_URI}, '/what%%20is%20good%3F%2?dlux=sonice', "got full URI string";
     }
+
+    is $env->{SERVER_NAME}, '127.0.0.1', "got server name";
+    is $env->{SERVER_PORT}, $port, "got server port";
 
     lives_ok {
         $r->send_response("200 OK", [
