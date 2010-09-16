@@ -1,7 +1,8 @@
 #!perl
 use warnings;
 use strict;
-use Test::More qw/no_plan/;
+use constant CLIENTS => 15;
+use Test::More tests => 4 + 5*CLIENTS;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -26,7 +27,7 @@ my $APP = <<'EOAPP';
         return [
             200,
             ['Content-Type' => 'text/plain'],
-            ['Hello World']
+            ['Hello ','World']
         ];
     };
 EOAPP
@@ -35,17 +36,21 @@ my $app = eval $APP;
 ok $app, 'got an app' || diag $@;
 $evh->psgi_request_handler($app);
 
-use AnyEvent::HTTP;
 my $cv = AE::cv;
 
-my $r = http_get "http://localhost:$port/", timeout => 300, sub {
-    my ($body, $headers) = @_;
-    is $headers->{'Status'}, 200, "Response OK";
-    is $headers->{'content-type'}, 'text/plain', "... is text";
-    is $body, 'Hello World', '... correct body';
-    pass 'done client';
-    $cv->send;
-};
-ok $r, 'started http request';
+for my $n (1 .. CLIENTS) {
+    $cv->begin;
+    my $h; $h = simple_client GET => '/',
+        name => "($n)",
+    sub {
+        my ($body, $headers) = @_;
+        is $headers->{'Status'}, 200, "($n) Response OK";
+        is $headers->{'content-type'}, 'text/plain', "... ($n) is text";
+        is $body, 'Hello World', "... ($n) correct body";
+        $cv->end;
+        undef $h;
+    };
+}
+
 $cv->recv;
 pass "all done";

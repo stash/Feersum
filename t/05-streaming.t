@@ -1,11 +1,9 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 50;
-use Test::More tests => 7 + 18 * CLIENTS;
+use constant CLIENTS => 15;
+use Test::More tests => 7 + 21 * CLIENTS;
 use Test::Exception;
-use Test::Differences;
-use Scalar::Util qw/blessed/;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -97,59 +95,34 @@ lives_ok {
     $evh->use_socket($socket);
 } 'assigned socket';
 
-my @got;
 sub client {
-    my $client_no = shift;
-    my $cnum = sprintf("%04d",$client_no);
-    my $data;
+    my $cnum = sprintf("%04d",shift);
     $cv->begin;
-    my $h1; $h1 = AnyEvent::Handle->new(
-        connect => ["localhost", $port],
-        on_connect => sub {
-            my $to_write = qq{GET /foo HTTP/1.1\nAccept: */*\nX-Client: $cnum\n\n};
-            $to_write =~ s/\n/\015\012/smg;
-            $h1->push_write($to_write);
-            undef $to_write;
-            $h1->on_read(sub {
-#             diag "GOT $h1->{rbuf}";
-                $data .= delete $h1->{rbuf};
-            });
-            $h1->on_eof(sub {
-                $cv->end;
-                push @got, $data;
-            });
+    my $h; $h = simple_client GET => '/foo',
+        name => $cnum,
+        timeout => 3,
+        headers => {
+            "Accept" => "*/*",
+            'X-Client' => $cnum,
         },
-    );
+    sub {
+        my ($body, $headers) = @_;
+        is $headers->{Status}, 200, "$cnum got 200";
+        is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
+        is_deeply [split /\n/,$body], [
+            "$cnum Hello streaming world! chunk one",
+            "$cnum Hello streaming world! chunk 'two'",
+            "$cnum Hello streaming world! chunk three",
+        ], "$cnum got all three chunks";
+        $cv->end;
+        undef $h;
+    };
 }
-
 
 client($_) for (1..CLIENTS);
 
 $cv->recv;
 is $started, CLIENTS, 'handlers started';
 is $finished, CLIENTS, 'handlers finished';
-
-use Test::Differences;
-my $template = join("\015\012",
-    "HTTP/1.1 200 OK",
-    "Content-Type: text/plain",
-    "X-Client: CNUM",
-    "Transfer-Encoding: chunked",
-    "",
-    "26",
-    "CNUM Hello streaming world! chunk one\n",
-    "28",
-    "CNUM Hello streaming world! chunk 'two'\n",
-    "28",
-    "CNUM Hello streaming world! chunk three\n",
-    "0",
-    "\015\012",
-);
-for my $data (@got) {
-    my $cnum = '??';
-    if ($data =~ /X-Client: (\d{4})/s) { $cnum = $1 }
-    (my $expect = $template) =~ s/CNUM/$cnum/sg; # doesn't change chunk size
-    eq_or_diff $data, $expect, "got correctly formatted chunked encoding $cnum";
-}
 
 pass "all done";

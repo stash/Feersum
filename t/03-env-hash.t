@@ -1,15 +1,12 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 59;
+use Test::More tests => 61;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
-use Scalar::Util qw/blessed/;
 
 BEGIN { use_ok('Feersum') };
-
-use AnyEvent::HTTP;
 
 my ($socket, $port) = get_listen_socket();
 ok $socket, "made listen socket";
@@ -45,14 +42,14 @@ $evh->request_handler(sub {
     lives_ok { $errfh->print() } "errors fh can print()";
 
     is $env->{REQUEST_METHOD}, 'GET', "got req method";
-    like $env->{HTTP_USER_AGENT}, qr/AnyEvent-HTTP/, "got UA";
+    like $env->{HTTP_USER_AGENT}, qr/FeersumSimpleClient/, "got UA";
 
     is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
     ok !exists $env->{HTTP_CONTENT_LENGTH}, "no duplicate C-L header";
 
     ok $env->{HTTP_X_TEST_NUM}, "got a test number header";
     if ($env->{HTTP_X_TEST_NUM} == 1) {
-        like $env->{HTTP_REFERER}, qr/wrong/, "got the AE Referer";
+        like $env->{HTTP_REFERER}, qr/wrong/, "got the Referer";
         is $env->{QUERY_STRING}, 'blar', "got query string";
         is $env->{PATH_INFO}, '/what is wrong?', "got decoded path info string";
         is $env->{REQUEST_URI}, '/what%20is%20wrong%3f?blar', "got full URI string";
@@ -81,8 +78,8 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get "http://localhost:$port/what%20is%20wrong%3f?blar",
-    headers => {'x-test-num' => 1},
+my $w = simple_client GET => "/what%20is%20wrong%3f?blar",
+    headers => {'x-test-num' => 1, 'Referer' => '/wrong'},
     timeout => 3,
 sub {
     my ($body, $headers) = @_;
@@ -99,8 +96,8 @@ sub {
 };
 
 $cv->begin;
-my $w2 = http_get "http://localhost:$port/what%%20is%20good%3F%2?dlux=sonice", 
-    headers => {'x-test-num' => 2},
+my $w2 = simple_client GET => "/what%%20is%20good%3F%2?dlux=sonice", 
+    headers => {'x-test-num' => 2, 'Referer' => 'good'},
     timeout => 3,
 sub {
     my ($body, $headers) = @_;

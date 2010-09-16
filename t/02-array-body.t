@@ -1,14 +1,12 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 11;
+use Test::More tests => 12;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
-
-use AnyEvent::HTTP;
 
 my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
@@ -33,20 +31,22 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get "http://localhost:$port/?blar", timeout => 3, sub {
-    my ($body, $headers) = @_;
-    is $headers->{Status}, 200, "client got 200";
-    is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
+my $w = simple_client GET => '/?blar',
+    timeout => 3,
+    sub {
+        my ($body, $headers) = @_;
+        is $headers->{Status}, 200, "client got 200";
+        is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
 
-    $body = Encode::decode_utf8($body) unless Encode::is_utf8($body);
+        $body = Encode::decode_utf8($body) unless Encode::is_utf8($body);
 
-    is $headers->{'content-length'}, bytes::length($body),
-        'content-length was calculated correctly';
+        is $headers->{'content-length'}, bytes::length($body),
+            'content-length was calculated correctly';
 
-    is $body, 'this should be cøncātenated.',
-        'body was concatenated together';
-    $cv->end;
-};
+        is $body, 'this should be cøncātenated.',
+            'body was concatenated together';
+        $cv->end;
+    };
 
 $cv->recv;
 pass "all done";

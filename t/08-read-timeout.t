@@ -1,14 +1,12 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 5;
 use constant POST_CLIENTS => 5;
+use constant GET_CLIENTS => 5;
 use constant GOOD_CLIENTS => 5;
 use Test::More tests =>
-    17 + 4*CLIENTS + 4*POST_CLIENTS + 3*GOOD_CLIENTS;
+    17 + 2*POST_CLIENTS + 2*GET_CLIENTS + 4*GOOD_CLIENTS;
 use Test::Exception;
-use Test::Differences;
-use Scalar::Util qw/blessed/;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -48,100 +46,81 @@ is $evh->read_timeout, 8.0, "new timeout set";
 lives_ok { $evh->read_timeout($default) } "NV is OK";
 is $evh->read_timeout, $default, "reset to default";
 
-use AnyEvent::Handle;
 
 my $cv = AE::cv;
-my $CRLF = "\015\012";
 
-sub start_client {
+sub timeout_get_client {
     my $n = shift;
-    my $on_conn = shift || sub {};
     $cv->begin;
-    my $h;
-    my $done = sub {
-        $cv->end;
-        $h->destroy;
+    my $ot; $ot = AE::timer rand(1), 0, sub {
+        my $h; $h = simple_client GET => '/',
+            name => "(get $n)",
+            timeout => 10,
+            skip_head => 1,
+        sub {
+            my ($body,$headers) = @_;
+            is $headers->{Status}, 408, "(get $n) got timeout";
+            $cv->end;
+            undef $h;
+        };
+        undef $ot;
     };
-    $h = AnyEvent::Handle->new(
-        connect => ['127.0.0.1',$port],
-        on_error => sub {
-            my $hdl = shift;
-            fail "handle error";
-            $hdl->destroy;
-            $cv->croak(join(" ",@_));
-        },
-        on_connect => sub {
-            pass "connected $n";
-            $on_conn->($h);
-        },
-        on_read => sub {
-            diag "ignoring extra bytes $n";
-        },
-    );
-    $h->push_read(line => "$CRLF$CRLF", sub {
-        my $header = $_[1];
-        like $header, qr{^HTTP/1\.\d 408 Request Timeout}, "got a timeout response $n";
-        my $cl;
-        if ($header =~ m{^Content-Length: (\d+)}m) {
-            $cl = $1;
-            pass "got a c-l header $n";
-        }
-        else {
-            fail "no c-l header?! $n";
-            $done->();
-        }
-
-        if ($cl == 0) {
-            pass "alright, empty error body $n";
-            $done->();
-        }
-        else {
-            $h->push_read(chunk => $cl, sub {
-                pass "got error body $n";
-                $done->();
-            });
-        }
-    });
-    return $h;
 }
 
-sub post_client {
+sub timeout_post_client {
     my $n = shift;
-    my $t;
-    start_client("(post $n)", sub {
-        my $h = shift;
-        $h->push_write("POST / HTTP/1.0$CRLF");
-        $h->push_write("Content-Length: 8$CRLF$CRLF");
-        $t = AE::timer 3,0,sub {
-            $h->push_write("o hai"); # 5 out of 8 bytes
+    $cv->begin;
+    my $ot; $ot = AE::timer rand(1), 0, sub {
+        my $h; $h = simple_client POST => '/',
+            name => "(post $n)",
+            timeout => 10,
+            headers => {
+                # C-L with no body puts simple_client into stream mode
+                'Content-Length' => 8,
+                'Content-Type' => 'text/plain',
+            },
+        sub {
+            my ($body,$headers) = @_;
+            is $headers->{Status}, 408, "(post $n) got timeout";
+            $cv->end;
+            undef $h;
+        };
+        $h->push_write("o "); # 2 out of claimed 8 bytes
+        my $t; $t = AE::timer rand(2.5),0,sub {
+            $h->push_write("hai"); # 3 more out of claimed 8 bytes
             undef $t; # keep ref
         };
-    });
+        undef $ot;
+    };
 }
 
 sub good_client {
     my $n = "(good $_[0])";
     $cv->begin;
-    my $h; $h = http_get "http://localhost:$port/rad", 
-        headers => {'X-Good-Client' => 1},
-    sub {
-        my ($body,$headers) = @_;
-        is $headers->{Status}, 200, "got 200 $n";
-        is $body, "thx.", "got body $n";
-        $cv->end;
-        undef $h; # keep ref
+    my $ot; $ot = AE::timer rand(1),0,sub {
+        my $h; $h = simple_client POST => "/rad", 
+            name => $n,
+            headers => {'X-Good-Client' => 1},
+            body => 'Here it is!',
+        sub {
+            my ($body,$headers) = @_;
+            is $headers->{Status}, 200, "$n got 200";
+            is $body, "thx.", "$n got body";
+            $cv->end;
+            undef $h; # keep ref
+        };
+        undef $ot;
     };
 }
 
 my $t; $t = AE::timer 20, 0, sub {
-    fail "TOO LONG";
     $cv->croak("TOO LONG");
 };
 
 $cv->begin;
+timeout_get_client($_) for (1 .. GET_CLIENTS);
+timeout_post_client($_) for (1 .. POST_CLIENTS);
 good_client($_) for (1 .. GOOD_CLIENTS);
-start_client("(get $_)") for (1 .. CLIENTS);
-post_client($_) for (1 .. POST_CLIENTS);
 $cv->end;
 
 lives_ok { $cv->recv } "no client errors";

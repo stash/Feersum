@@ -1,14 +1,11 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 9;
+use Test::More tests => 10;
 use Test::Exception;
-use Scalar::Util qw/blessed/;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
-
-use AnyEvent::HTTP;
 
 my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
@@ -35,7 +32,7 @@ lives_ok {
 
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get "http://localhost:$port/?blar", timeout => 3, sub {
+my $w = simple_client GET => "/?blar", timeout => 3, sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 500, "client got 500";
     is $headers->{'content-type'}, 'text/plain';

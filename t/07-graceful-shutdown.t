@@ -1,18 +1,12 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 12;
-use Test::More tests => 10 + 9 * CLIENTS;
+use constant CLIENTS => 15;
+use Test::More tests => 10 + 12 * CLIENTS;
 use Test::Exception;
-use Test::Differences;
-use Scalar::Util qw/blessed/;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
-
-use IO::Socket::INET;
-use AnyEvent;
-use AnyEvent::HTTP;
 
 my ($socket,$port) = get_listen_socket();
 ok $socket, "made listen socket";
@@ -70,28 +64,24 @@ lives_ok {
 
 my @got;
 sub client {
-    my $client_no = shift;
-    my $data;
+    my $cnum = sprintf("%04d",shift);
     $cv->begin;
-    my $h; $h = AnyEvent::Handle->new(
-        connect => ["localhost", $port],
-        on_connect => sub {
-            my $to_write = qq{GET /foo HTTP/1.1\nAccept: */*\nX-Client: $client_no\n\n};
-            $to_write =~ s/\n/\015\012/smg;
-            $h->push_write($to_write);
-            undef $to_write;
-            $h->on_read(sub {
-#             diag "GOT $h->{rbuf}";
-                $data .= delete $h->{rbuf};
-            });
-            $h->on_eof(sub {
-                $cv->end;
-                push @got, $data;
-            });
+    my $h; $h = simple_client GET => '/foo',
+        name => $cnum,
+        timeout => 3,
+        headers => {
+            "Accept" => "*/*",
+            'X-Client' => $cnum,
         },
-    );
+    sub {
+        my ($body, $headers) = @_;
+        is $headers->{Status}, 200, "$cnum got 200";
+        is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
+        is $body, "So graceful!\n", "$cnum got body";
+        $cv->end;
+        undef $h;
+    };
 }
-
 
 client($_) for (1..CLIENTS);
 
@@ -109,6 +99,7 @@ my $grace_t = AE::timer 1.0, 0, sub {
         $cv->end;
     });
 };
+
 $cv->begin;
 my $try_connect = AE::timer 1.4, 0, sub {
     my $h; $h = AnyEvent::Handle->new(
@@ -129,20 +120,5 @@ my $try_connect = AE::timer 1.4, 0, sub {
 $cv->recv;
 is $started, CLIENTS, 'handlers started';
 is $finished, CLIENTS, 'handlers finished';
-
-use Test::Differences;
-my $expect = join("\015\012",
-    "HTTP/1.1 200 OK",
-    "Content-Type: text/plain",
-    "Transfer-Encoding: chunked",
-    "",
-    "d",
-    "So graceful!\n",
-    "0"
-);
-$expect .= "\015\012\015\012";
-for my $data (@got) {
-    eq_or_diff $data, $expect, "got correctly formatted chunked encoding";
-}
 
 pass "all done";

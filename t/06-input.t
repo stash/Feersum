@@ -1,8 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 13;
-use Scalar::Util qw/blessed/;
+use Test::More tests => 14;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -12,7 +11,6 @@ ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
 my $evh = Feersum->new();
-use AnyEvent;
 
 my $cv = AE::cv;
 
@@ -43,10 +41,9 @@ $evh->request_handler(sub {
 });
 
 
-use AnyEvent::HTTP;
-
 $cv->begin;
-my $w = http_post "http://localhost:$port/uppercase", 'this is the post body',
+my $w = simple_client POST => "/uppercase", 
+body => 'this is the post body',
 timeout => 3,
 sub {
     my ($body, $headers) = @_;

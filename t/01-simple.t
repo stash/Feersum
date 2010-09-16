@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 30;
+use Test::More tests => 32;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
@@ -44,13 +44,13 @@ $cb = sub {
     my %env;
     $r->env(\%env);
     ok %env, "got env";
-    like $env{HTTP_USER_AGENT}, qr/AnyEvent-HTTP/, "got anyevent-http's UA";
+    is $env{HTTP_USER_AGENT}, 'FeersumSimpleClient/1.0', 'got a ua!';
     my $utf8 = exists $env{HTTP_X_UNICODE_PLEASE};
     eval {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain'.($utf8 ? '; charset=UTF-8' : ''),
             'Connection' => 'close',
-            'X-Client' => 0+$$r,
+            'X-Client' => 1234,
             'Content-Length' => 666, # should be ignored
         ], $utf8 ? 'Bāz!' : 'Baz!');
     }; warn $@ if $@;
@@ -61,36 +61,36 @@ lives_ok {
     $evh->request_handler($cb);
 } "can assign another code block";
 
-use AnyEvent::HTTP;
-
 my $cv = AE::cv;
 $cv->begin;
-my $w = http_get "http://localhost:$port/?qqqqq", timeout => 3,
-sub {
-    my ($body, $headers) = @_;
-    is $headers->{Status}, 200, "client 1 got 200";
-    like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
-    is $headers->{'content-length'}, 4, 'content-length was overwritten by the engine';
-    is $headers->{'content-type'}, 'text/plain';
-    is $body, 'Baz!', 'plain old body';
-    $cv->end;
-};
+
+my $w = simple_client GET => '/?qqqqq',
+    name => 'ascii',
+    timeout => 3,
+    sub {
+        my ($body, $hdr) = @_;
+        is $hdr->{Status}, 200, "client 1 got 200";
+        like $hdr->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
+        is $hdr->{'content-length'}, 4, 'content-length was overwritten by the engine';
+        is $hdr->{'content-type'}, 'text/plain';
+        is $body, 'Baz!', 'plain old body';
+        $cv->end;
+    };
 
 $cv->begin;
-my $w2 = http_get "http://localhost:$port/?zzzzz",
-    headers => {
-        'X-Unicode-Please'=> 1,
-    },
+my $w2 = simple_client GET => "/?zzzzz",
+    name => 'unicode',
+    headers => { 'X-Unicode-Please' => 1 },
     timeout => 3,
-sub {
-    my ($body, $headers) = @_;
-    is $headers->{Status}, 200, "client 2 got 200";
-    like $headers->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
-    is $headers->{'content-length'}, 5, 'content-length was overwritten by the engine';
-    is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
-    is Encode::decode_utf8($body), 'Bāz!', 'unicode body!';
-    $cv->end;
-};
+    sub {
+        my ($body, $hdr) = @_;
+        is $hdr->{Status}, 200, "client 2 got 200";
+        like $hdr->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
+        is $hdr->{'content-length'}, 5, 'content-length was overwritten by the engine';
+        is $hdr->{'content-type'}, 'text/plain; charset=UTF-8';
+        is Encode::decode_utf8($body), 'Bāz!', 'unicode body!';
+        $cv->end;
+    };
 
 $cv->recv;
 pass "all done";

@@ -1,9 +1,8 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 21;
+use Test::More tests => 36;
 use lib 't'; use Utils;
-use AnyEvent::HTTP;
 
 BEGIN { use_ok('Feersum') };
 
@@ -67,12 +66,14 @@ returning_body: {
     my $cv = AE::cv;
 
     $cv->begin;
-    http_request GET => "http://localhost:$port/", timeout => 300, sub {
+    my $h; $h = simple_client GET => '/', sub {
         my ($body, $headers) = @_;
         is $headers->{'Status'}, 200, "Response OK";
         is $headers->{'content-type'}, 'application/json', "... is JSON";
+        ok !$headers->{'transfer-encoding'}, '... no T-E header';
         is $body, q({"message":"O hai 1"}), '... correct body';
         $cv->end;
+        undef $h;
     };
 
     $cv->recv;
@@ -109,20 +110,36 @@ $evh->psgi_request_handler($app2);
 
 using_writer: {
     my $cv = AE::cv;
-
     $cv->begin;
-    http_request GET => "http://localhost:$port/", timeout => 300, sub {
+    my $h; $h = simple_client GET => '/', sub {
         my ($body, $headers) = @_;
         is $headers->{'Status'}, 200, "Response OK";
         is $headers->{'content-type'}, 'application/json', "... is JSON";
-        ok(
-            ($body eq "15\r\n".q({"message":"O hai 2"})."\r\n0\r\n\r\n"
-                or
-             $body eq q({"message":"O hai 2"})),
-            '... correct body (maybe AE::HTTP doesn\'t decode chunked)');
+        is $headers->{'transfer-encoding'}, 'chunked', '... was chunked';
+        is $body, q({"message":"O hai 2"}), "... correct de-chunked body";
         $cv->end;
+        undef $h;
     };
-
     $cv->recv;
-    pass "all done app 2";
 }
+
+using_writer_and_1_0: {
+    my $cv = AE::cv;
+    $cv->begin;
+    my $h2; $h2 = simple_client GET => '/', proto => '1.0', sub {
+        my ($body, $headers) = @_;
+        is $headers->{'Status'}, 200, "Response OK";
+        is $headers->{'content-type'}, 'application/json', "... is JSON";
+        TODO: {
+            local $TODO = "haven't implemented 1.0-style streaming yet";
+            ok !$headers->{'transfer-encoding'}, '... was not chunked';
+            is $headers->{'connection'}, 'close', '... got close';
+        }
+        is $body, q({"message":"O hai 3"}), "... correct body";
+        $cv->end;
+        undef $h2;
+    };
+    $cv->recv;
+}
+
+pass "all done app 2";
