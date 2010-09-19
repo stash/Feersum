@@ -1081,14 +1081,13 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
     SvREFCNT_inc(feer_server_port);
     hv_store(e, "SERVER_PORT", 11, feer_server_port, 0);
 
-    if (c->expected_cl >= 0) {
+    if (c->expected_cl > 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
         hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
     }
     else {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
-        // TODO: make psgi.input a valid, but always empty stream for PSGI
-        // mode?
+        // TODO: make this a valid, but always empty stream for PSGI mode?
         hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
     }
 
