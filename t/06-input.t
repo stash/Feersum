@@ -17,10 +17,9 @@ my $cv = AE::cv;
 $evh->use_socket($socket);
 $evh->request_handler(sub {
     my $r = shift;
-    my %env;
-    $r->env(\%env);
-    my $cl = $env{CONTENT_LENGTH};
-    my $input = $env{'psgi.input'};
+    my $env = $r->env();
+    my $cl = $env->{CONTENT_LENGTH};
+    my $input = $env->{'psgi.input'};
     ok blessed($input) && $input->can('read'), "got input handle";
 
     # once streaming input is in place the test method here may need to change

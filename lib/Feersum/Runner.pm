@@ -37,7 +37,10 @@ sub _prepare {
 sub run {
     my $self = shift;
     $self->_prepare();
-    $self->{endjinn}->request_handler(shift || delete $self->{app});
+    my $rh = shift || delete $self->{app};
+    die "not a code ref" unless ref($rh) eq 'CODE';
+    $self->{endjinn}->request_handler($rh);
+    undef $rh;
     EV::loop;
 }
 

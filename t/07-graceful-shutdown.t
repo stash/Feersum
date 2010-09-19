@@ -28,8 +28,7 @@ my $finished = 0;
 $evh->request_handler(sub {
     my $r = shift;
     isa_ok $r, 'Feersum::Connection', 'got an object!';
-    my $env = {};
-    $r->env($env);
+    my $env = $r->env();
     ok $env && ref($env) eq 'HASH';
 
     ok $env->{'psgi.streaming'}, 'got psgi.streaming';

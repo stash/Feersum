@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.90';
+our $VERSION = '0.91';
 
 require XSLoader;
 XSLoader::load('Feersum', $VERSION);
@@ -143,8 +143,7 @@ the PSGI env hash).
 A PSGI-like environment hash is easy to obtain.
 
     my $req = shift;
-    my %env;
-    $req->env(\%env);
+    my $env = $req->env();
 
 Currently POST/PUT does not stream input, but read() can be called on
 C<psgi.input> to get the body (which has been buffered up before the request
@@ -154,12 +153,11 @@ the arrival of more data. (The C<psgix.input.buffered> env var is set to
 reflect this).
 
     my $req = shift;
-    my %env;
-    $req->env(\%env);
+    my $env = $req->env();
     if ($req->{REQUEST_METHOD} eq 'POST') {
         my $body = '';
-        my $r = delete $env{'psgi.input'};
-        $r->read($body, $env{CONTENT_LENGTH});
+        my $r = delete $env->{'psgi.input'};
+        $r->read($body, $env->{CONTENT_LENGTH});
         # optional: choose to stop receiving further input:
         # $r->close();
     }

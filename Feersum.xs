@@ -115,7 +115,7 @@ typedef struct feer_conn feer_conn_handle; // for typemap
 
 #define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 
-static SV* feersum_env(pTHX_ struct feer_conn *c, HV *e);
+static HV* feersum_env(pTHX_ struct feer_conn *c);
 static void feersum_start_response
     (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
 static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
@@ -170,6 +170,7 @@ static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
 
 // TODO: make this thread-local if and when there are multiple C threads:
 struct ev_loop *feersum_ev_loop = NULL;
+static HV *feersum_tmpl_env = NULL;
 
 INLINE_UNLESS_DEBUG
 static struct iomatrix *
@@ -1060,14 +1061,15 @@ needs_decode:
     SvCUR_set(sv, decoded-ptr);
 }
 
-static SV*
-feersum_env(pTHX_ struct feer_conn *c, HV *e)
+static void
+feersum_init_tmpl_env(pTHX)
 {
-    SV **hsv;
-    int i,j;
-    struct feer_req *r = c->req;
+    HV *e;
+    e = newHV();
 
-    //  strlen: 0123456789012345678901
+    //  strlen: 012345678901234567890123456789
+
+    // constants
     hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
     hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
     hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
@@ -1078,45 +1080,90 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
     hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
     hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0);
     hv_store(e, "psgix.body.scalar_refs", 22, &PL_sv_yes, 0);
-    hv_store(e, "REQUEST_URI", 11, newSVpvn(r->path,r->path_len),0);
-    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len),0);
     hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
 
+    // placeholders that get defined for every request
+    hv_store(e, "SERVER_PROTOCOL", 15, &PL_sv_undef, 0);
+    hv_store(e, "SERVER_NAME", 11, &PL_sv_undef, 0);
+    hv_store(e, "SERVER_PORT", 11, &PL_sv_undef, 0);
+    hv_store(e, "REQUEST_URI", 11, &PL_sv_undef, 0);
+    hv_store(e, "REQUEST_METHOD", 14, &PL_sv_undef, 0);
+    hv_store(e, "PATH_INFO", 9, &PL_sv_undef, 0);
+
+    // defaults that get changed for some requests
+    hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
+    hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
+    hv_store(e, "QUERY_STRING", 12, newSVpvn("",0), 0);
+
+    // anticipated headers
+    hv_store(e, "HTTP_HOST", 9, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_USER_AGENT", 15, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_ACCEPT", 11, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_ACCEPT_LANGUAGE", 20, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_ACCEPT_CHARSET", 19, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_KEEP_ALIVE", 15, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_CONNECTION", 15, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_REFERER", 12, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_COOKIE", 11, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_IF_MODIFIED_SINCE", 22, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_IF_NONE_MATCH", 18, &PL_sv_placeholder, 0);
+    hv_store(e, "HTTP_CACHE_CONTROL", 18, &PL_sv_placeholder, 0);
+    
+    feersum_tmpl_env = e;
+}
+
+static HV*
+feersum_env(pTHX_ struct feer_conn *c)
+{
+    HV *e;
+    SV **hsv;
+    int i,j;
+    struct feer_req *r = c->req;
+
+    if (!feersum_tmpl_env)
+        feersum_init_tmpl_env(aTHX);
+    e = newHVhv(feersum_tmpl_env);
+
+    trace("generating header (fd %d) %.*s\n",
+        c->fd, r->path_len, r->path);
+
+    SV *path = newSVpvn(r->path, r->path_len);
+    hv_store(e, "SERVER_NAME", 11, newSVsv(feer_server_name), 0);
+    hv_store(e, "SERVER_PORT", 11, newSVsv(feer_server_port), 0);
+    hv_store(e, "REQUEST_URI", 11, path, 0);
+    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len), 0);
     hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ?
         newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
-    SvREFCNT_inc(feer_server_name);
-    hv_store(e, "SERVER_NAME", 11, feer_server_name, 0);
-    SvREFCNT_inc(feer_server_port);
-    hv_store(e, "SERVER_PORT", 11, feer_server_port, 0);
 
     if (c->expected_cl > 0) {
         hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
         hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
     }
-    else {
-        hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
-        // TODO: make this a valid, but always empty stream for PSGI mode?
-        hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
+    else if (request_cb_is_psgi) {
+        // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
     }
 
     {
         const char *qpos = r->path;
         SV *pinfo, *qstr;
-        while (*qpos != '?' && qpos < r->path + r->path_len) {
+        
+        // rather than memchr, for speed:
+        while (*qpos != '?' && qpos < r->path + r->path_len)
             qpos++;
-        }
+
         if (*qpos == '?') {
             pinfo = newSVpvn(r->path, (qpos - r->path));
             qpos++;
             qstr = newSVpvn(qpos, r->path_len - (qpos - r->path));
         }
         else {
-            pinfo = newSVpvn(r->path, r->path_len);
-            qstr = newSVpvn("",0);
+            pinfo = newSVsv(path);
+            qstr = NULL; // use template default
         }
         uri_decode_sv(pinfo);
         hv_store(e, "PATH_INFO", 9, pinfo, 0);
-        hv_store(e, "QUERY_STRING", 12, qstr, 0);
+        if (qstr != NULL) // hv template defaults QUERY_STRING to empty
+            hv_store(e, "QUERY_STRING", 12, qstr, 0);
     }
 
     SV *val = NULL;
@@ -1149,8 +1196,8 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
             }
 
             SV **val = hv_fetch(e, kbuf, klen, 1);
-            trace("adding header to env %.*s: %.*s\n",
-                klen, kbuf, hdr->value_len, hdr->value);
+            trace("adding header to env (fd %d) %.*s: %.*s\n",
+                c->fd, klen, kbuf, hdr->value_len, hdr->value);
 
             assert(val != NULL); // "fetch is store" flag should ensure this
             if (SvPOK(*val)) {
@@ -1165,8 +1212,9 @@ feersum_env(pTHX_ struct feer_conn *c, HV *e)
         }
     }
 
+    // TODO: free c->req now that all the keys are copied to scalars?
     Safefree(kbuf);
-    return (SV*)e;
+    return e;
 }
 
 static void
@@ -1370,11 +1418,10 @@ call_request_callback (struct feer_conn *c)
     PUSHMARK(SP);
 
     if (request_cb_is_psgi) {
-        SV *env = feersum_env(aTHX_ c,newHV());
+        HV *env = feersum_env(aTHX_ c);
 //         SV *conn_sv = feer_conn_2sv(c);
 //         hv_store((HV*)env, "psgix.feersum", 13, conn_sv, 0);
-        env = sv_2mortal(newRV_noinc(env));
-        XPUSHs(env);
+        XPUSHs(sv_2mortal(newRV_noinc((SV*)env)));
         flags = G_EVAL|G_SCALAR;
     }
     else {
@@ -1774,11 +1821,13 @@ _handle (struct feer_conn *c)
     OUTPUT:
         RETVAL
 
-void
-env (struct feer_conn *c, HV *e)
-    PROTOTYPE: $\%
-    PPCODE:
-        feersum_env(aTHX_ c,e);
+SV *
+env (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        RETVAL = newRV_noinc((SV*)feersum_env(aTHX_ c));
+    OUTPUT:
+        RETVAL
 
 int
 fileno (struct feer_conn *c)

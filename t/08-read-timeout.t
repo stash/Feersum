@@ -19,9 +19,8 @@ my $evh = Feersum->new();
 lives_ok { $evh->use_socket($socket) };
 $evh->request_handler(sub {
     my $r = shift;
-    my %env;
-    $r->env(\%env);
-    ok $env{HTTP_X_GOOD_CLIENT}, "got a request from a good client";
+    my $env = $r->env();
+    ok $env->{HTTP_X_GOOD_CLIENT}, "got a request from a good client";
     $r->send_response(200, ["Content-Type" => "text/plain"], "thx.");
 });
 

@@ -41,11 +41,10 @@ $cb = sub {
     isa_ok $r, 'Feersum::Connection', 'got an object!';
 #     use Devel::Peek();
 #     Devel::Peek::Dump($r);
-    my %env;
-    $r->env(\%env);
-    ok %env, "got env";
-    is $env{HTTP_USER_AGENT}, 'FeersumSimpleClient/1.0', 'got a ua!';
-    my $utf8 = exists $env{HTTP_X_UNICODE_PLEASE};
+    my $env = $r->env();
+    ok $env, "got env";
+    is $env->{HTTP_USER_AGENT}, 'FeersumSimpleClient/1.0', 'got a ua!';
+    my $utf8 = exists $env->{HTTP_X_UNICODE_PLEASE};
     eval {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain'.($utf8 ? '; charset=UTF-8' : ''),
