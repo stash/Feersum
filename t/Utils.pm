@@ -119,7 +119,7 @@ sub simple_client ($$;@) {
                 (lc($k),$v);
             } @hdrs;
             # $hdrs{OrigHead} = $head;
-            if ($status_line =~ m{HTTP/(1.\d) (\d{3}) +(\S+)}) {
+            if ($status_line =~ m{HTTP/(1.\d) (\d{3}) +(.+)\s*}) {
                 $hdrs{HTTPVersion} = $1;
                 $hdrs{Status} = $2;
                 $hdrs{Reason} = $3;

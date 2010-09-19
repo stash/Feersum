@@ -685,7 +685,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     if (got_n == -1) {
         if (errno == EAGAIN || errno == EINTR)
             goto try_read_again;
-        perror("try_conn_read");
+        perror("try_conn_read error");
         goto try_read_error;
     }
     else if (got_n == 0) {
@@ -697,7 +697,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     SvCUR(c->rbuf) += got_n;
     if (c->receiving == RECEIVE_HEADERS) {
         int ret = try_parse_http(c, (size_t)got_n);
-        if (ret == -1) goto try_read_error;
+        if (ret == -1) goto try_read_bad;
         if (ret == -2) goto try_read_again;
 
         if (process_request_headers(c, ret))
@@ -717,8 +717,9 @@ try_conn_read(EV_P_ ev_io *w, int revents)
         warn("unknown read state %d %d", w->fd, c->receiving);
     }
 
+    // fallthrough:
 try_read_error:
-    trace("try read error %d\n", w->fd);
+    trace("READ ERROR %d\n", w->fd);
     c->receiving = RECEIVE_SHUTDOWN;
     c->responding = RESPOND_SHUTDOWN;
     ev_io_stop(EV_A, w);
@@ -727,6 +728,11 @@ try_read_error:
     SvREFCNT_dec(c->self);
     return;
 
+try_read_bad:
+    trace("bad request %d\n", w->fd);
+    respond_with_server_error(c, "Malformed request.\n", 0, 400);
+    // TODO: when keep-alive, close conn instead of fallthrough here.
+    // fallthrough:
 dont_read_again:
     trace("done reading %d\n", w->fd);
     c->receiving = RECEIVE_SHUTDOWN;
@@ -738,6 +744,7 @@ dont_read_again:
 try_read_again_reset_timer:
     trace("(reset read timer) %d\n", w->fd);
     ev_timer_again(EV_A, &c->read_ev_timer);
+    // fallthrough:
 try_read_again:
     trace("read again %d\n", w->fd);
     if (!ev_is_active(w)) {
@@ -963,6 +970,7 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
     tmp = newSVpvf("HTTP/1.1 %d %s" CRLF
                    "Content-Type: text/plain" CRLF
                    "Connection: close" CRLF
+                   "Cache-Control: no-cache, no-store" CRLF
                    "Content-Length: %d" CRLFx2
                    "%.*s",
               err_code, http_code_to_msg(err_code), msg_len, msg_len, msg);
