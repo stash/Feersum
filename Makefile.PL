@@ -26,8 +26,13 @@ if ($ARGV[0] eq '-DEBUG') {
 }
 elsif ($ARGV[0] eq '-PROFILE') {
     shift @ARGV;
-    unshift @ARGV, "OPTIMIZE=-g -pg -fprofile-arcs -ftest-coverage";
-    $otherldflags = '-lgcov';
+    unshift @ARGV, "OPTIMIZE=-g -O3 -fprofile-arcs -ftest-coverage -fprofile-generate";
+    $otherldflags = '-lgcov -fprofile-generate';
+}
+elsif ($ARGV[0] eq '-PROFILEUSE') {
+    shift @ARGV;
+    unshift @ARGV, "OPTIMIZE=-g -O3 -fprofile-use";
+    $otherldflags = '-fprofile-use';
 }
 
 
