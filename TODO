@@ -1,12 +1,7 @@
 CPAN!
-    * do developer-preview as 0.90_1
+    * do developer-preview as 0.91_1
     * remove AnyEvent::HTTP dep?
     * finish v1.0 tasks
-
-profiling & coverage
-    * gprof - does this need a perl built with `-pg`? Just setting
-    OPTIMIZE='-pg' for Makefile.PL doesn't seem to do it :/
-    * gcov? (v1.0)
 
 Timeouts
     * slow responses? (feasable? just let TCP do it?)
@@ -29,8 +24,7 @@ streamed responses
 
     * allow streaming responses to be HTTP/1.0 "Connection: close" rather than
     HTTP/1.1 "Transfer-Encoding: chunked".  Match up the streaming flavour
-    with the request version.  Will need to not use AnyEvent::HTTP as
-    test-client (v1.0)
+    with the request version.  (v1.0)
     * instead of an implicit "low water mark" of 0 for the poll_cb
     writer-object callback, a configurable number of bytes can be used.
 
@@ -57,9 +51,9 @@ Translate sockaddr/etc. and put in env-hash for PSGI
 
 Optimize env-hash
 
-    * allow Feersum apps to specify which vars will be needed (v1.0)
-    * use uvar magic for PSGI if using Perl v5.10.0 (Variable::Magic style?)
-    or a tied hash if v5.8 (v1.1)
+    * allow Feersum apps to specify which vars will be needed (v1.1)
+    * maybe use uvar magic for PSGI if using Perl v5.10.0 (Variable::Magic
+    style?) (v1.1)
 
 Perf idea: Un-corked reads - should newly accepted handles wait or just try
 read right away?
@@ -74,3 +68,4 @@ WebSocket support (v1.1)
     * requires random numbers (drand48?) and an MD5 implementation (link
     openssl? use the guts of Digest::MD5 somehow?)
     * make this a separate module since if it brings in an openssl deps.
+    * will this work for PSGI? psgix.web_socket or something?
