@@ -31,8 +31,6 @@ Handle requests that don't require a body (optional entities).
     start (not sure if there's a PSGI-compatible way to do this)
     * different request timeout logic will be needed.
 
-Lazy I/O watcher initialization?
-
 Per-client "drain" and "completion" callbacks?
 
     * drain sorta done as the $w->poll_cb()

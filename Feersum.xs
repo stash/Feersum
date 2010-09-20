@@ -433,12 +433,8 @@ new_feer_conn (EV_P_ int conn_fd)
         trace("prep_socket failed for %d\n", c->fd);
     }
 
-    // TODO: these initializations should be Lazy
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
-
-    ev_io_init(&c->write_ev_io, try_conn_write, conn_fd, EV_WRITE);
-    c->write_ev_io.data = (void *)c;
 
     ev_init(&c->read_ev_timer, conn_read_timeout);
     c->read_ev_timer.repeat = read_timeout;
@@ -989,6 +985,11 @@ static void
 conn_write_ready (struct feer_conn *c)
 {
     if (c->in_callback) return; // defer until out of callback
+
+    if (c->write_ev_io.data == NULL) {
+        ev_io_init(&c->write_ev_io, try_conn_write, c->fd, EV_WRITE);
+        c->write_ev_io.data = (void *)c;
+    }
 
     if (!ev_is_active(&c->write_ev_io)) {
 #if AUTOCORK_WRITES
