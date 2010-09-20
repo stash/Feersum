@@ -1113,47 +1113,47 @@ feersum_init_tmpl_env(pTHX)
     HV *e;
     e = newHV();
 
-    //  strlen: 012345678901234567890123456789
-
     // constants
-    hv_store(e, "psgi.version", 12, newRV((SV*)psgi_ver), 0);
-    hv_store(e, "psgi.url_scheme", 15, newSVpvn("http",4), 0);
-    hv_store(e, "psgi.nonblocking", 16, &PL_sv_yes, 0);
-    hv_store(e, "psgi.multithread", 16, &PL_sv_no, 0);
-    hv_store(e, "psgi.multiprocess", 17, &PL_sv_no, 0);
-    hv_store(e, "psgi.streaming", 14, &PL_sv_yes, 0);
-    hv_store(e, "psgi.errors", 11, newRV((SV*)PL_stderrgv), 0);
-    hv_store(e, "psgix.input.buffered", 20, &PL_sv_yes, 0);
-    hv_store(e, "psgix.output.buffered", 21, &PL_sv_yes, 0);
-    hv_store(e, "psgix.body.scalar_refs", 22, &PL_sv_yes, 0);
-    hv_store(e, "SCRIPT_NAME", 11, newSVpvn("",0),0);
+    hv_stores(e, "psgi.version", newRV((SV*)psgi_ver));
+    hv_stores(e, "psgi.url_scheme", newSVpvs("http"));
+    hv_stores(e, "psgi.nonblocking", &PL_sv_yes);
+    hv_stores(e, "psgi.multithread", &PL_sv_no);
+    hv_stores(e, "psgi.multiprocess", &PL_sv_no);
+    hv_stores(e, "psgi.streaming", &PL_sv_yes);
+    hv_stores(e, "psgi.errors", newRV((SV*)PL_stderrgv));
+    hv_stores(e, "psgix.input.buffered", &PL_sv_yes);
+    hv_stores(e, "psgix.output.buffered", &PL_sv_yes);
+    hv_stores(e, "psgix.body.scalar_refs", &PL_sv_yes);
+    hv_stores(e, "SCRIPT_NAME", newSVpvs(""));
 
     // placeholders that get defined for every request
-    hv_store(e, "SERVER_PROTOCOL", 15, &PL_sv_undef, 0);
-    hv_store(e, "SERVER_NAME", 11, &PL_sv_undef, 0);
-    hv_store(e, "SERVER_PORT", 11, &PL_sv_undef, 0);
-    hv_store(e, "REQUEST_URI", 11, &PL_sv_undef, 0);
-    hv_store(e, "REQUEST_METHOD", 14, &PL_sv_undef, 0);
-    hv_store(e, "PATH_INFO", 9, &PL_sv_undef, 0);
+    hv_stores(e, "SERVER_PROTOCOL", &PL_sv_undef);
+    hv_stores(e, "SERVER_NAME", &PL_sv_undef);
+    hv_stores(e, "SERVER_PORT", &PL_sv_undef);
+    hv_stores(e, "REQUEST_URI", &PL_sv_undef);
+    hv_stores(e, "REQUEST_METHOD", &PL_sv_undef);
+    hv_stores(e, "PATH_INFO", &PL_sv_undef);
+    hv_stores(e, "REMOTE_ADDR", &PL_sv_placeholder);
+    hv_stores(e, "REMOTE_PORT", &PL_sv_placeholder);
 
     // defaults that get changed for some requests
-    hv_store(e, "psgi.input", 10, &PL_sv_undef, 0);
-    hv_store(e, "CONTENT_LENGTH", 14, newSViv(0), 0);
-    hv_store(e, "QUERY_STRING", 12, newSVpvn("",0), 0);
+    hv_stores(e, "psgi.input", &PL_sv_undef);
+    hv_stores(e, "CONTENT_LENGTH", newSViv(0));
+    hv_stores(e, "QUERY_STRING", newSVpvs(""));
 
     // anticipated headers
-    hv_store(e, "HTTP_HOST", 9, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_USER_AGENT", 15, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_ACCEPT", 11, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_ACCEPT_LANGUAGE", 20, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_ACCEPT_CHARSET", 19, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_KEEP_ALIVE", 15, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_CONNECTION", 15, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_REFERER", 12, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_COOKIE", 11, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_IF_MODIFIED_SINCE", 22, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_IF_NONE_MATCH", 18, &PL_sv_placeholder, 0);
-    hv_store(e, "HTTP_CACHE_CONTROL", 18, &PL_sv_placeholder, 0);
+    hv_stores(e, "HTTP_HOST", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_USER_AGENT", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_ACCEPT", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_ACCEPT_LANGUAGE", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_ACCEPT_CHARSET", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_KEEP_ALIVE", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_CONNECTION", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_REFERER", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_COOKIE", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_IF_MODIFIED_SINCE", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_IF_NONE_MATCH", &PL_sv_placeholder);
+    hv_stores(e, "HTTP_CACHE_CONTROL", &PL_sv_placeholder);
     
     feersum_tmpl_env = e;
 }
@@ -1174,16 +1174,16 @@ feersum_env(pTHX_ struct feer_conn *c)
         c->fd, r->path_len, r->path);
 
     SV *path = newSVpvn(r->path, r->path_len);
-    hv_store(e, "SERVER_NAME", 11, newSVsv(feer_server_name), 0);
-    hv_store(e, "SERVER_PORT", 11, newSVsv(feer_server_port), 0);
-    hv_store(e, "REQUEST_URI", 11, path, 0);
-    hv_store(e, "REQUEST_METHOD", 14, newSVpvn(r->method,r->method_len), 0);
-    hv_store(e, "SERVER_PROTOCOL", 15, (r->minor_version == 1) ?
-        newSVsv(psgi_serv11) : newSVsv(psgi_serv10), 0);
+    hv_stores(e, "SERVER_NAME", newSVsv(feer_server_name));
+    hv_stores(e, "SERVER_PORT", newSVsv(feer_server_port));
+    hv_stores(e, "REQUEST_URI", path);
+    hv_stores(e, "REQUEST_METHOD", newSVpvn(r->method,r->method_len));
+    hv_stores(e, "SERVER_PROTOCOL", (r->minor_version == 1) ?
+        newSVsv(psgi_serv11) : newSVsv(psgi_serv10));
 
     if (c->expected_cl > 0) {
-        hv_store(e, "CONTENT_LENGTH", 14, newSViv(c->expected_cl), 0);
-        hv_store(e, "psgi.input", 10, new_feer_conn_handle(c,0), 0);
+        hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
+        hv_stores(e, "psgi.input", new_feer_conn_handle(c,0));
     }
     else if (request_cb_is_psgi) {
         // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
@@ -1207,9 +1207,9 @@ feersum_env(pTHX_ struct feer_conn *c)
             qstr = NULL; // use template default
         }
         uri_decode_sv(pinfo);
-        hv_store(e, "PATH_INFO", 9, pinfo, 0);
+        hv_stores(e, "PATH_INFO", pinfo);
         if (qstr != NULL) // hv template defaults QUERY_STRING to empty
-            hv_store(e, "QUERY_STRING", 12, qstr, 0);
+            hv_stores(e, "QUERY_STRING", qstr);
     }
 
     SV *val = NULL;
@@ -1346,7 +1346,7 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         croak("can't use write_whole_body when in streaming mode");
 
     if (!SvOK(body)) {
-        body = sv_2mortal(newSVpvn("",0));
+        body = sv_2mortal(newSVpvs(""));
         body_is_string = 1;
     }
     else if (SvROK(body)) {
@@ -1407,7 +1407,7 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
             feersum_write_whole_body(aTHX_ c, body);
         }
         else {
-            sv_setpv(ERRSV, "Unsupported PSGI array response");
+            sv_setpvs(ERRSV, "Unsupported PSGI array response");
             call_died(aTHX_ c, "request");
         }
     }
@@ -1430,7 +1430,7 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
         LEAVE;
     }
     else {
-        sv_setpv(ERRSV, "Unsupported PSGI response");
+        sv_setpvs(ERRSV, "Unsupported PSGI response");
         call_died(aTHX_ c, "request");
     }
 }
@@ -1469,7 +1469,7 @@ call_request_callback (struct feer_conn *c)
     if (request_cb_is_psgi) {
         HV *env = feersum_env(aTHX_ c);
 //         SV *conn_sv = feer_conn_2sv(c);
-//         hv_store((HV*)env, "psgix.feersum", 13, conn_sv, 0);
+//         hv_stores((HV*)env, "psgix.feersum", conn_sv);
         XPUSHs(sv_2mortal(newRV_noinc((SV*)env)));
         flags = G_EVAL|G_SCALAR;
     }
@@ -1968,8 +1968,8 @@ BOOT:
         SvREFCNT_dec(ver_svs[1]);
         SvREADONLY_on((SV*)psgi_ver);
 
-        psgi_serv10 = newSVpvn("HTTP/1.0",8);
+        psgi_serv10 = newSVpvs("HTTP/1.0");
         SvREADONLY_on(psgi_serv10);
-        psgi_serv11 = newSVpvn("HTTP/1.1",8);
+        psgi_serv11 = newSVpvs("HTTP/1.1");
         SvREADONLY_on(psgi_serv11);
     }
