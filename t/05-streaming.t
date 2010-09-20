@@ -1,8 +1,10 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 15;
-use Test::More tests => 7 + 21 * CLIENTS;
+use constant CLIENTS_11 => 15;
+use constant CLIENTS_10 => 15;
+use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
+use Test::More tests => 7 + 22 * CLIENTS_11 + 23 * CLIENTS_10;
 use Test::Exception;
 use lib 't'; use Utils;
 
@@ -96,29 +98,42 @@ lives_ok {
 
 sub client {
     my $cnum = sprintf("%04d",shift);
+    my $is_chunked = shift || 0;
     $cv->begin;
     my $h; $h = simple_client GET => '/foo',
         name => $cnum,
-        timeout => 3,
+        timeout => 15,
+        proto => $is_chunked ? '1.1' : '1.0',
         headers => {
             "Accept" => "*/*",
             'X-Client' => $cnum,
         },
     sub {
         my ($body, $headers) = @_;
-        is $headers->{Status}, 200, "$cnum got 200";
-        is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
+        is $headers->{Status}, 200, "$cnum got 200"
+            or diag $headers->{Reason};
+        if ($is_chunked) {
+            is $headers->{HTTPVersion}, '1.1';
+            is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
+        }
+        else {
+            is $headers->{HTTPVersion}, '1.0';
+            ok !exists $headers->{'transfer-encoding'}, "$cnum not chunked!";
+            is $headers->{'connection'}, 'close', "$cnum conn closed";
+        }
         is_deeply [split /\n/,$body], [
             "$cnum Hello streaming world! chunk one",
             "$cnum Hello streaming world! chunk 'two'",
             "$cnum Hello streaming world! chunk three",
-        ], "$cnum got all three chunks";
+        ], "$cnum got all three lines";
         $cv->end;
         undef $h;
     };
 }
 
-client($_) for (1..CLIENTS);
+
+client(1000+$_,1) for (1..CLIENTS_11);
+client(2000+$_,0) for (1..CLIENTS_10); # HTTP/1.0 style
 
 $cv->recv;
 is $started, CLIENTS, 'handlers started';

@@ -109,6 +109,8 @@ struct feer_conn {
     int16_t in_callback;
     int16_t responding;
     int16_t receiving;
+
+    bool    is_http11;
 };
 
 typedef struct feer_conn feer_conn_handle; // for typemap
@@ -135,6 +137,7 @@ static void respond_with_server_error(struct feer_conn *c, const char *msg, STRL
 
 static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
+static void finish_wbuf (struct feer_conn *c);
 static void add_chunk_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static void add_placeholder_to_wbuf (struct feer_conn *c, SV **sv, struct iovec **iov_ref);
 
@@ -274,21 +277,23 @@ add_placeholder_to_wbuf(struct feer_conn *c, SV **sv, struct iovec **iov_ref)
     *iov_ref = &m->iov[idx];
 }
 
+static void
+finish_wbuf(struct feer_conn *c)
+{
+    if (!c->is_http11) return; // nothing required
+    add_const_to_wbuf(c, "0\r\n\r\n", 5); // terminating chunk
+}
+
 #define update_wbuf_placeholder(c,sv,iov) iov->iov_base = SvPV(sv, iov->iov_len)
 
 static void
 add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
 {
-    if (!sv) {
-        add_const_to_wbuf(c, "0\r\n\r\n", 5);
-        return;
-    }
     SV *chunk;
     struct iovec *chunk_iov;
     add_placeholder_to_wbuf(c, &chunk, &chunk_iov);
     STRLEN cur = add_sv_to_wbuf(c, sv);
     add_const_to_wbuf(c, CRLF, 2);
-
     sv_setpvf(chunk, "%x" CRLF, cur);
     update_wbuf_placeholder(c, chunk, chunk_iov);
 }
@@ -425,7 +430,7 @@ new_feer_conn (EV_P_ int conn_fd)
     c->fd = conn_fd;
     if (prep_socket(c->fd)) {
         perror("prep_socket");
-        trace("prep_socket failed for %d", c->fd);
+        trace("prep_socket failed for %d\n", c->fd);
     }
 
     // TODO: these initializations should be Lazy
@@ -555,8 +560,11 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     int i;
 
     if (!c->wbuf_rinq) {
+        if (c->responding == RESPOND_SHUTDOWN)
+            goto try_write_finished;
+
         if (!c->poll_write_cb) {
-            trace("tried to write with an empty buffer %d\n",w->fd);
+            trace("tried to write with an empty buffer %d resp=%d\n",w->fd,c->responding);
             ev_io_stop(EV_A, w);
             return;
         }
@@ -840,8 +848,10 @@ process_request_headers (struct feer_conn *c, int body_offset)
     const char *err;
     struct feer_req *req = c->req;
 
-    trace("body follows headers, making new rbuf\n");
+    trace("processing headers %d minor_version=%d\n",c->fd,req->minor_version);
     bool body_is_required;
+
+    c->is_http11 = (req->minor_version == 1);
 
     c->receiving = RECEIVE_BODY;
 
@@ -923,6 +933,7 @@ got_bad_request:
 got_cl:
     c->expected_cl = (ssize_t)expected;
     c->received_cl = SvCUR(c->rbuf);
+    trace("expecting body %d size=%d have=%d\n",c->fd, c->expected_cl,c->received_cl);
 
     // don't have enough bytes to schedule immediately?
     if (c->expected_cl && c->received_cl < c->expected_cl) {
@@ -1248,7 +1259,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
     }
 
-    add_const_to_wbuf(c, streaming ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
+    add_const_to_wbuf(c, c->is_http11 ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
     add_sv_to_wbuf(c, message);
     add_const_to_wbuf(c, CRLF, 2);
 
@@ -1279,7 +1290,10 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     }
 
     if (streaming) {
-        add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
+        if (c->is_http11)
+            add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
+        else
+            add_const_to_wbuf(c, "Connection: close" CRLFx2, 21);
     }
 
     conn_write_ready(c);
@@ -1700,7 +1714,7 @@ write (feer_conn_handle *hdl, SV *body, ...)
     if (c->responding != RESPOND_STREAMING)
         croak("can only call write in streaming mode");
 
-    if (!SvOK(body)) {
+    if (!body || !SvOK(body)) {
         XSRETURN_IV(0);
     }
 
@@ -1715,7 +1729,12 @@ write (feer_conn_handle *hdl, SV *body, ...)
         }
     }
     (void)SvPV(body, RETVAL);
-    add_chunk_sv_to_wbuf(c, body);
+
+    if (c->is_http11)
+        add_chunk_sv_to_wbuf(c, body);
+    else
+        add_sv_to_wbuf(c, body);
+
     conn_write_ready(c);
 }
     OUTPUT:
@@ -1742,7 +1761,7 @@ _close (feer_conn_handle *hdl)
             SvREFCNT_dec(c->poll_write_cb);
             c->poll_write_cb = NULL;
         }
-        add_chunk_sv_to_wbuf(c, NULL);
+        finish_wbuf(c);
         conn_write_ready(c);
         c->responding = RESPOND_SHUTDOWN;
         RETVAL = 1;
@@ -1808,6 +1827,14 @@ write_whole_body (struct feer_conn *c, SV *body)
         RETVAL = feersum_write_whole_body(aTHX_ c, body);
     OUTPUT:
         RETVAL
+
+void
+force_http10 (struct feer_conn *c)
+    PROTOTYPE: $
+    ALIAS:
+        force_http11 = 1
+    PPCODE:
+        c->is_http11 = ix;
 
 SV *
 _handle (struct feer_conn *c)

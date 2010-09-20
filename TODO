@@ -22,10 +22,6 @@ IO::Handle-like responses
 
 streamed responses
 
-    * allow streaming responses to be HTTP/1.0 "Connection: close" rather than
-    HTTP/1.1 "Transfer-Encoding: chunked".  Match up the streaming flavour
-    with the request version.  Varnish seems to support this and nginx may as
-    well. http://www.varnish-cache.org/trac/ticket/400 (v1.0)
     * instead of an implicit "low water mark" of 0 for the poll_cb
     writer-object callback, a configurable number of bytes can be used.
 
@@ -70,3 +66,5 @@ WebSocket support (v1.1)
     openssl? use the guts of Digest::MD5 somehow?)
     * make this a separate module since if it brings in an openssl deps.
     * will this work for PSGI? psgix.web_socket or something?
+
+Release t/Utils.pm's "simple_client" as "anyevent::anotherhttp" or something?

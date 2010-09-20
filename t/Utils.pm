@@ -126,14 +126,18 @@ sub simple_client ($$;@) {
             }
         }
 
+        $hdrs{'content-length'} = 0 if ($hdrs{Status} == 204);
+
         if (exists $hdrs{'content-length'}) {
             return $done->() unless ($hdrs{'content-length'});
+#             Test::More::diag "$name waiting for C-L body";
             $h->push_read(chunk => $hdrs{'content-length'}, sub {
                 $buf = $_[1];
                 return $done->();
             });
         }
         elsif (($hdrs{'transfer-encoding'}||'') eq 'chunked') {
+#             Test::More::diag "$name waiting for T-E:chunked body";
             my $len = 0;
             my ($chunk_reader, $chunk_handler);
             $chunk_handler = sub {
@@ -162,10 +166,10 @@ sub simple_client ($$;@) {
             };
             $h->push_read(line => $CRLF, $chunk_reader);
         }
-        elsif ($hdrs{Status} == 204) {
-            return $done->();
-        }
-        elsif ($hdrs{Proto} eq '1.0' or ($hdrs{connection}||'') eq 'close') {
+        elsif ($hdrs{HTTPVersion} eq '1.0' or
+               ($hdrs{connection}||'') eq 'close')
+        {
+#             Test::More::diag "$name waiting for conn:close body";
             $h->on_read(sub {
                 $buf .= substr($_[0]->{rbuf},0,length($_[0]->{rbuf}),'');
             });

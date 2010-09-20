@@ -112,6 +112,25 @@ immediately called).  The sub is, in turn, passed a code reference. The code
 reference will return a Writer object when called with C<< $code, \@header >>
 parameters.  See L<Feersum> for examples.
 
+=item C<< $o->force_http10 >>
+
+=item C<< $o->force_http11 >>
+
+Force the response to use HTTP/1.0 or HTTP/1.1, respectively.
+
+Normally, if the request was made with 1.1 then Feersum uses HTTP/1.1 for the
+response, otherwise HTTP/1.0 is used (this includes requests made with the
+HTTP "0.9" non-declaration).
+
+For streaming under HTTP/1.1 C<Transfer-Encoding: chunked> is used, otherwise
+a C<Connection: close> stream-style is used (with the usual non-guarantees
+about delivery).  You may know about certain user-agents that
+support/don't-support T-E:chunked, so this is how you can override that.
+
+Supposedly clients and a lot of proxies support the C<Connection: close>
+stream-style, see support in Varnish at
+http://www.varnish-cache.org/trac/ticket/400
+
 =back
 
 =head1 AUTHOR
