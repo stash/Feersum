@@ -22,9 +22,6 @@ IO::Handle-like responses
 
 streamed responses
 
-    * allow streaming responses to be HTTP/1.0 "Connection: close" rather than
-    HTTP/1.1 "Transfer-Encoding: chunked".  Match up the streaming flavour
-    with the request version.  (v1.0)
     * instead of an implicit "low water mark" of 0 for the poll_cb
     writer-object callback, a configurable number of bytes can be used.
 
