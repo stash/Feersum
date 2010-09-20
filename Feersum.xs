@@ -531,24 +531,39 @@ process_request_ready_rinq (void)
 static void
 prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
-    //trace("prepare!\n");
+    if (revents & EV_ERROR) {
+        trouble("EV error in prepare, revents=0x%08x\n", revents);
+        ev_unloop(EV_A, EVUNLOOP_ALL);
+        return;
+    }
+
     if (!ev_is_active(&accept_w) && !shutting_down) {
         ev_io_start(EV_A, &accept_w);
-        //ev_prepare_stop(EV_A, w);
     }
+    ev_prepare_stop(EV_A, w);
 }
 
 static void
 check_cb (EV_P_ ev_check *w, int revents)
 {
-    //trace("check! head=%p\n", request_ready_rinq);
+    if (revents & EV_ERROR) {
+        trouble("EV error in check, revents=0x%08x\n", revents);
+        ev_unloop(EV_A, EVUNLOOP_ALL);
+        return;
+    }
+    trace3("check! head=%p\n", request_ready_rinq);
     process_request_ready_rinq();
 }
 
 static void
 idle_cb (EV_P_ ev_idle *w, int revents)
 {
-    trace("idle! head=%p\n", request_ready_rinq);
+    if (revents & EV_ERROR) {
+        trouble("EV error in idle, revents=0x%08x\n", revents);
+        ev_unloop(EV_A, EVUNLOOP_ALL);
+        return;
+    }
+    trace3("idle! head=%p\n", request_ready_rinq);
     process_request_ready_rinq();
     ev_idle_stop(EV_A, w);
 }
@@ -558,6 +573,14 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
     dCONN;
     int i;
+
+    // if it's marked readable EV suggests we simply try write to it.
+    // Otherwise it is stopped and we should ditch this connection.
+    if (revents & EV_ERROR && !(revents & EV_WRITE)) {
+        trace("EV error on write, fd=%d revents=0x%08x\n", w->fd, revents);
+        c->responding = RESPOND_SHUTDOWN;
+        goto try_write_finished;
+    }
 
     if (!c->wbuf_rinq) {
         if (c->responding == RESPOND_SHUTDOWN)
@@ -580,8 +603,6 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         fprintf(stderr,"%.*s",m->iov[i].iov_len, m->iov[i].iov_base);
     }
 #endif
-
-    // TODO: handle errors in revents?
 
     trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
     ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
@@ -667,7 +688,12 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 {
     dCONN;
 
-    // TODO: handle errors in revents?
+    // if it's marked readable EV suggests we simply try read it. Otherwise it
+    // is stopped and we should ditch this connection.
+    if (revents & EV_ERROR && !(revents & EV_READ)) {
+        trace("EV error on read, fd=%d revents=0x%08x\n", w->fd, revents);
+        goto try_read_error;
+    }
 
     if (c->receiving == RECEIVE_SHUTDOWN) {
         ev_io_stop(EV_A, w);
@@ -767,10 +793,15 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
 {
     dCONN;
 
-    trace("read timeout %d\n", c->fd);
-    if (revents != EV_TIMER || c->receiving == RECEIVE_SHUTDOWN) {
+    if (!(revents & EV_TIMER) || c->receiving == RECEIVE_SHUTDOWN) {
+        // if there's no EV_TIMER then EV has stopped it on an error
+        if (revents & EV_ERROR)
+            trouble("EV error on read timer, fd=%d revents=0x%08x\n",
+                c->fd,revents);
         return;
     }
+
+    trace("read timeout %d\n", c->fd);
 
     c->receiving = RECEIVE_SHUTDOWN;
     ev_io_stop(EV_A, &c->read_ev_io);
@@ -803,22 +834,25 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
 static void
 accept_cb (EV_P_ ev_io *w, int revents)
 {
-    struct sockaddr_in sa;
-    socklen_t sl = sizeof(struct sockaddr_in);
-
-    trace("accept! revents=0x%08x\n", revents);
-    if (!(revents & EV_READ))
-        return;
+    struct sockaddr_storage sa;
 
     if (shutting_down) {
         // shouldn't get called, but be defensive
-        close(w->fd);
         ev_io_stop(EV_A, w);
+        close(w->fd);
         return;
     }
 
+    if (revents & EV_ERROR) {
+        trouble("EV error in accept_cb, fd=%d, revents=0x%08x\n",w->fd,revents);
+        ev_unloop(EV_A, EVUNLOOP_ALL);
+        return;
+    }
+
+    trace2("accept! revents=0x%08x\n", revents);
+
     while (1) {
-        sl = sizeof(struct sockaddr_in);
+        socklen_t sl = sizeof(struct sockaddr_storage);
         int fd = accept(w->fd, (struct sockaddr *)&sa, &sl);
         if (fd == -1) break;
 
