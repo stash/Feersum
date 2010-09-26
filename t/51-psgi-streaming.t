@@ -130,11 +130,8 @@ using_writer_and_1_0: {
         my ($body, $headers) = @_;
         is $headers->{'Status'}, 200, "Response OK";
         is $headers->{'content-type'}, 'application/json', "... is JSON";
-        TODO: {
-            local $TODO = "haven't implemented 1.0-style streaming yet";
-            ok !$headers->{'transfer-encoding'}, '... was not chunked';
-            is $headers->{'connection'}, 'close', '... got close';
-        }
+        ok !$headers->{'transfer-encoding'}, '... was not chunked';
+        is $headers->{'connection'}, 'close', '... got close';
         is $body, q({"message":"O hai 3"}), "... correct body";
         $cv->end;
         undef $h2;
