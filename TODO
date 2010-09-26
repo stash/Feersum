@@ -1,6 +1,5 @@
 CPAN!
     * do developer-preview as 0.91_1
-    * remove AnyEvent::HTTP dep?
     * finish v1.0 tasks
 
 Timeouts
@@ -39,8 +38,6 @@ Per-client "drain" and "completion" callbacks?
     needed.
 
 Per-client data (for attaching guards).
-
-Translate sockaddr/etc. and put in env-hash for PSGI
 
 Optimize env-hash
 

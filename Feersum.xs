@@ -90,8 +90,9 @@ struct feer_req {
 #define RECEIVE_SHUTDOWN 3
 
 struct feer_conn {
-    int fd;
     SV *self;
+    int fd;
+    struct sockaddr *sa;
 
     struct ev_io read_ev_io;
     struct ev_io write_ev_io;
@@ -194,7 +195,7 @@ next_iomatrix (struct feer_conn *c)
     }
 
     if (add_iomatrix) {
-        New(0,m,1,struct iomatrix);
+        Newx(m,1,struct iomatrix);
         Poison(m,1,struct iomatrix);
         m->offset = m->count = 0;
         rinq_push(&c->wbuf_rinq, m);
@@ -412,7 +413,7 @@ prep_socket(int fd)
 }
 
 static struct feer_conn *
-new_feer_conn (EV_P_ int conn_fd)
+new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
 {
     SV *self = newSV(0);
     SvUPGRADE(self, SVt_PVMG); // ensures sv_bless doesn't reallocate
@@ -428,6 +429,7 @@ new_feer_conn (EV_P_ int conn_fd)
 
     c->self = self;
     c->fd = conn_fd;
+    c->sa = sa;
     if (prep_socket(c->fd)) {
         perror("prep_socket");
         trace("prep_socket failed for %d\n", c->fd);
@@ -667,8 +669,7 @@ try_parse_http(struct feer_conn *c, size_t last_read)
 {
     struct feer_req *req = c->req;
     if (!req) {
-        req = (struct feer_req *)
-            calloc(1,sizeof(struct feer_req));
+        Newxz(req,1,struct feer_req);
         req->num_headers = MAX_HEADERS;
         c->req = req;
     }
@@ -830,8 +831,6 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
 static void
 accept_cb (EV_P_ ev_io *w, int revents)
 {
-    struct sockaddr_storage sa;
-
     if (shutting_down) {
         // shouldn't get called, but be defensive
         ev_io_stop(EV_A, w);
@@ -848,12 +847,13 @@ accept_cb (EV_P_ ev_io *w, int revents)
     trace2("accept! revents=0x%08x\n", revents);
 
     while (1) {
+        struct sockaddr_storage *sa;
+        Newx(sa,1,struct sockaddr_storage);
         socklen_t sl = sizeof(struct sockaddr_storage);
-        int fd = accept(w->fd, (struct sockaddr *)&sa, &sl);
+        int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
         if (fd == -1) break;
 
-        // TODO: put the sockaddr in with the conn
-        struct feer_conn *c = new_feer_conn(EV_A, fd);
+        struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
         // XXX: good idea to read right away?
         // try_conn_read(EV_A, &c->read_ev_io, EV_READ);
         ev_io_start(EV_A, &c->read_ev_io);
@@ -1181,6 +1181,34 @@ feersum_env(pTHX_ struct feer_conn *c)
     hv_stores(e, "SERVER_PROTOCOL", (r->minor_version == 1) ?
         newSVsv(psgi_serv11) : newSVsv(psgi_serv10));
 
+    SV *addr = &PL_sv_undef;
+    SV *port = &PL_sv_undef;
+    const char *str_addr;
+    unsigned short s_port;
+
+    if (c->sa->sa_family == AF_INET) {
+        struct sockaddr_in *in = (struct sockaddr_in *)c->sa;
+        addr = newSV(INET_ADDRSTRLEN);
+        str_addr = inet_ntop(AF_INET,&in->sin_addr,SvPVX(addr),INET_ADDRSTRLEN);
+        s_port = ntohs(in->sin_port);
+    }
+#ifdef AF_INET6
+    else if (c->sa->sa_family == AF_INET6) {
+        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)c->sa;
+        addr = newSV(INET6_ADDRSTRLEN);
+        str_addr = inet_ntop(AF_INET6,&in6->sin6_addr,SvPVX(addr),INET6_ADDRSTRLEN);
+        s_port = ntohs(in6->sin6_port);
+    }
+#endif
+
+    if (str_addr) {
+        SvCUR(addr) = strlen(SvPVX(addr));
+        SvPOK_on(addr);
+        port = newSViv(s_port);
+    }
+    hv_stores(e, "REMOTE_ADDR", addr);
+    hv_stores(e, "REMOTE_PORT", port);
+
     if (c->expected_cl > 0) {
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
         hv_stores(e, "psgi.input", new_feer_conn_handle(c,0));
@@ -1257,9 +1285,8 @@ feersum_env(pTHX_ struct feer_conn *c)
             }
         }
     }
-
-    // TODO: free c->req now that all the keys are copied to scalars?
     Safefree(kbuf);
+
     return e;
 }
 
@@ -1919,8 +1946,10 @@ DESTROY (struct feer_conn *c)
 
     if (c->req) {
         if (c->req->buf) SvREFCNT_dec(c->req->buf);
-        free(c->req);
+        Safefree(c->req);
     }
+
+    if (c->sa) Safefree(c->sa);
 
     if (c->fd) close(c->fd);
 
@@ -1943,11 +1972,6 @@ DESTROY (struct feer_conn *c)
             shutdown_cb_cv = NULL;
         }
     }
-#ifdef DEBUG
-    // sv_dump(c->self);
-    // overwrite for debugging
-    Poison(c, 1, struct feer_conn);
-#endif
 }
 
 MODULE = Feersum	PACKAGE = Feersum		

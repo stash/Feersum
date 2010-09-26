@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 97;
+use Test::More tests => 106;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
@@ -23,9 +23,11 @@ my $evh = Feersum->new();
 }
 
 $evh->request_handler(sub {
+    local $@;
     my $r = shift;
     isa_ok $r, 'Feersum::Connection', 'connection';
-    my $env = $r->env();
+    my $env;
+    lives_ok { $env = $r->env() } 'obtain env';
     ok $env && ref($env) eq 'HASH', "env hash";
 
     my $tn = $env->{HTTP_X_TEST_NUM} || 0;
@@ -69,6 +71,8 @@ $evh->request_handler(sub {
 
     is $env->{SERVER_NAME}, '127.0.0.1', "got server name";
     is $env->{SERVER_PORT}, $port, "got server port";
+    ok $env->{REMOTE_ADDR}, "remote addr";
+    ok $env->{REMOTE_PORT}, "remote port";
 
     ok !exists $env->{HTTP_ACCEPT_CHARSET},
         "spot check that a placeholder Accept-Charset isn't there";
