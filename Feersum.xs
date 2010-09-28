@@ -1421,6 +1421,27 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
 }
 
 static void
+feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
+{
+    dSP;
+    ENTER;
+    SAVETMPS;
+    PUSHMARK(SP);
+    SV *conn_sv = sv_2mortal(feer_conn_2sv(c));
+    XPUSHs(conn_sv);
+    XPUSHs(streamer);
+    PUTBACK;
+    call_method("_initiate_streaming_psgi", G_DISCARD|G_EVAL|G_VOID);
+    SPAGAIN;
+    if (SvTRUE(ERRSV)) {
+        call_died(aTHX_ c, "initiate streaming");
+    }
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+}
+
+static void
 feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
 {
     if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVAV) {
@@ -1428,10 +1449,35 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
         if (av_len(rav)+1 == 3) { // standard response triplet
             trace("PSGI response triplet, c=%p av=%p len=%d\n", c, rav, av_len(rav));
             SV *msg = av_shift(rav);
-            SV *hdrs = SvRV(av_shift(rav)); // XXX no typecheck for speed
-            feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 0);
-            SV *body = av_shift(rav); // XXX no typecheck for speed
-            feersum_write_whole_body(aTHX_ c, body);
+            SV *hdrs = av_shift(rav);
+            SV *body = av_shift(rav);
+
+            if (!(SvROK(hdrs) && SvTYPE(SvRV(hdrs)) == SVt_PVAV)) {
+                sv_setpvs(ERRSV, "Headers must be an array-ref");
+                call_died(aTHX_ c, "request");
+            }
+            hdrs = SvRV(hdrs);
+
+            if (SvROK(body) && SvTYPE(SvRV(body)) == SVt_PVAV) {
+                feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 0);
+                feersum_write_whole_body(aTHX_ c, body);
+            }
+            else if (SvROK(body)) { // assume it's an IO-handle
+                feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 1);
+                SV *pump = (SV*)Perl_get_cvn_flags(aTHX_
+                    STR_WITH_LEN("Feersum::Connection::_pump_io"), 
+                    GV_NOADD_NOINIT);
+                AV *pair = newAV();
+                av_push(pair, newRV_inc(pump));
+                body = newRV(SvRV(body));
+                av_push(pair, body);
+                c->poll_write_cb = (SV*)pair;
+                conn_write_ready(c);
+            }
+            else {
+                sv_setpvs(ERRSV, "Expected array-ref or object body");
+                call_died(aTHX_ c, "request");
+            }
         }
         else {
             sv_setpvs(ERRSV, "Unsupported PSGI array response");
@@ -1439,22 +1485,7 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
         }
     }
     else if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVCV) {
-        dSP;
-        ENTER;
-        SAVETMPS;
-        PUSHMARK(SP);
-        SV *conn_sv = sv_2mortal(feer_conn_2sv(c));
-        XPUSHs(conn_sv);
-        XPUSHs(ret);
-        PUTBACK;
-        call_method("_initiate_streaming_psgi", G_DISCARD|G_EVAL|G_VOID);
-        SPAGAIN;
-        if (SvTRUE(ERRSV)) {
-            call_died(aTHX_ c, "initiate streaming");
-        }
-        PUTBACK;
-        FREETMPS;
-        LEAVE;
+        feersum_start_psgi_streaming(aTHX_ c, ret);
     }
     else {
         sv_setpvs(ERRSV, "Unsupported PSGI response");
@@ -1540,23 +1571,40 @@ call_poll_callback (struct feer_conn *c, bool is_write)
 {
     dSP;
     dTHX;
+    
+    bool write_iohandle = 0;
+    SV *cb = (is_write) ? c->poll_write_cb : NULL;
+    SV *io;
+    SV *ret;
+    int flags;
 
-    SV *cbrv = (is_write) ? c->poll_write_cb : NULL;
-    if (!cbrv) return;
+    if (!cb) return;
 
     c->in_callback++;
 
     trace("%s poll callback c=%p cbrv=%p\n",
-        is_write ? "write" : "read", c, cbrv);
+        is_write ? "write" : "read", c, cb);
 
     ENTER;
     SAVETMPS;
-
     PUSHMARK(SP);
-    XPUSHs(sv_2mortal(new_feer_conn_handle(c, is_write)));
+
+    if (is_write && SvTYPE(cb) == SVt_PVAV) {
+        write_iohandle = 1;
+        flags = G_EVAL;
+        cb = *(av_fetch((AV*)c->poll_write_cb, 0, 0));
+        io = *(av_fetch((AV*)c->poll_write_cb, 1, 0));
+        XPUSHs(sv_2mortal(newSVsv(io))); // it's an RV so copy is light
+        ret = newSV(0);
+        XPUSHs(ret);
+    }
+    else {
+        flags = G_DISCARD|G_EVAL|G_VOID;
+        XPUSHs(sv_2mortal(new_feer_conn_handle(c, is_write)));
+    }
 
     PUTBACK;
-    call_sv(cbrv, G_DISCARD|G_EVAL|G_VOID);
+    call_sv(cb, flags);
     SPAGAIN;
 
     trace("called %s poll callback, errsv? %d\n",
@@ -1564,6 +1612,21 @@ call_poll_callback (struct feer_conn *c, bool is_write)
 
     if (SvTRUE(ERRSV)) {
         call_died(aTHX_ c, is_write ? "write poll" : "read poll");
+    }
+    else if (write_iohandle) {
+        if (!SvOK(ret)) {
+            SvREFCNT_dec(c->poll_write_cb);
+            c->poll_write_cb = NULL;
+            finish_wbuf(c);
+            c->responding = RESPOND_SHUTDOWN;
+        }
+        else {
+            if (c->is_http11)
+                add_chunk_sv_to_wbuf(c, ret);
+            else
+                add_sv_to_wbuf(c, ret);
+        }
+        SvREFCNT_dec(ret);
     }
 
     trace("leaving %s poll callback\n", is_write ? "write" : "read");

@@ -15,9 +15,9 @@ psgi.input streaming
 
 IO::Handle-like responses
 
-    * pump the getline() method when connection-writable (v1.0)
-    * check if it's got a real file descriptor, optimize (libeio or similar
+    * check if it's got a real file descriptor? optimize (libeio or similar
     for non-blocking sendfile?) (v1.1)
+    * wait for readability using an ev watcher? (v1.1)
 
 streamed responses
 
