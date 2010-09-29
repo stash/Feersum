@@ -1954,6 +1954,21 @@ write_whole_body (struct feer_conn *c, SV *body)
         RETVAL
 
 void
+send_response (struct feer_conn *c, SV* msg, SV *hdrs, SV *body)
+    PROTOTYPE: $$$$
+    PPCODE:
+{
+    AV *headers;
+    if (SvROK(hdrs) && SvTYPE(SvRV(hdrs)) == SVt_PVAV)
+        headers = (AV*)SvRV(hdrs);
+    else
+        croak("Must supply headers as an array-ref");
+
+    feersum_start_response(aTHX_ c, msg, headers, 0);
+    feersum_write_whole_body(aTHX_ c, body);
+}
+
+void
 force_http10 (struct feer_conn *c)
     PROTOTYPE: $
     ALIAS:

@@ -5,12 +5,6 @@ sub new {
     Carp::croak "Cannot instantiate Feersum::Connection directly";
 }
 
-sub send_response {
-    # my ($self, $msg, $hdrs, $body) = @_;
-    $_[0]->start_response($_[1], $_[2], 0);
-    $_[0]->write_whole_body(ref($_[3]) ? $_[3] : \$_[3]);
-}
-
 sub initiate_streaming {
     my $self = shift;
     my $streamer = shift;
@@ -28,8 +22,7 @@ sub _initiate_streaming_psgi {
     @_ = (sub {
         my $strm = shift;
         if ($#$strm == 2) {
-            $self->start_response($strm->[0],$strm->[1],0);
-            $self->write_whole_body(ref($strm->[2]) ? $strm->[2] : \$strm->[2]);
+            $self->send_response($strm->[0],$strm->[1],$strm->[2]);
         }
         elsif ($#$strm == 1) {
             $self->start_response($strm->[0],$strm->[1],1);
