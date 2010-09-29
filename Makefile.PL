@@ -38,7 +38,7 @@ elsif ($ARGV[0] eq '-PROFILEUSE') {
 # simple responses. Look for FEERSUM_STEAL in the code to see what this does.
 # In a nutshell: certain temporary values passed in as the body of a response
 # have their string-value "stolen".
-my $steal = 1;
+my $steal = ($] >= 5.012);
 
 WriteMakefile(ev_args(
     NAME          => 'Feersum',
