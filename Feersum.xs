@@ -107,16 +107,19 @@ struct feer_conn {
     ssize_t expected_cl;
     ssize_t received_cl;
 
-    int16_t in_callback;
-    int16_t responding;
-    int16_t receiving;
-
-    bool    is_http11;
+    U16 in_callback;
+    U16 responding;
+    U16 receiving;
+    U16 _reservedflags:14;
+    U16 is_http11:1;
+    U16 poll_write_cb_is_io_handle:1;
 };
 
 typedef struct feer_conn feer_conn_handle; // for typemap
 
 #define dCONN struct feer_conn *c = (struct feer_conn *)w->data
+#define IsArrayRef(_x) (SvROK(_x) && SvTYPE(SvRV(_x)) == SVt_PVAV)
+#define IsCodeRef(_x) (SvROK(_x) && SvTYPE(SvRV(_x)) == SVt_PVCV)
 
 static HV* feersum_env(pTHX_ struct feer_conn *c);
 static void feersum_start_response
@@ -171,6 +174,7 @@ static struct rinq *request_ready_rinq = NULL;
 
 static AV *psgi_ver;
 static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
+static SV *pump_io_cv = NULL;
 
 // TODO: make this thread-local if and when there are multiple C threads:
 struct ev_loop *feersum_ev_loop = NULL;
@@ -1434,7 +1438,7 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
     call_method("_initiate_streaming_psgi", G_DISCARD|G_EVAL|G_VOID);
     SPAGAIN;
     if (SvTRUE(ERRSV)) {
-        call_died(aTHX_ c, "initiate streaming");
+        call_died(aTHX_ c, "PSGI stream initiator");
     }
     PUTBACK;
     FREETMPS;
@@ -1444,52 +1448,51 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
 static void
 feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
 {
-    if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVAV) {
-        AV *rav = (AV*)SvRV(ret);
-        if (av_len(rav)+1 == 3) { // standard response triplet
-            trace("PSGI response triplet, c=%p av=%p len=%d\n", c, rav, av_len(rav));
-            SV *msg = av_shift(rav);
-            SV *hdrs = av_shift(rav);
-            SV *body = av_shift(rav);
-
-            if (!(SvROK(hdrs) && SvTYPE(SvRV(hdrs)) == SVt_PVAV)) {
-                sv_setpvs(ERRSV, "Headers must be an array-ref");
-                call_died(aTHX_ c, "request");
-            }
-            hdrs = SvRV(hdrs);
-
-            if (SvROK(body) && SvTYPE(SvRV(body)) == SVt_PVAV) {
-                feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 0);
-                feersum_write_whole_body(aTHX_ c, body);
-            }
-            else if (SvROK(body)) { // assume it's an IO-handle
-                feersum_start_response(aTHX_ c, msg, (AV*)hdrs, 1);
-                SV *pump = (SV*)Perl_get_cvn_flags(aTHX_
-                    STR_WITH_LEN("Feersum::Connection::_pump_io"), 
-                    GV_NOADD_NOINIT);
-                AV *pair = newAV();
-                av_push(pair, newRV_inc(pump));
-                body = newRV(SvRV(body));
-                av_push(pair, body);
-                c->poll_write_cb = (SV*)pair;
-                conn_write_ready(c);
-            }
-            else {
-                sv_setpvs(ERRSV, "Expected array-ref or object body");
-                call_died(aTHX_ c, "request");
-            }
-        }
-        else {
-            sv_setpvs(ERRSV, "Unsupported PSGI array response");
-            call_died(aTHX_ c, "request");
-        }
-    }
-    else if (SvROK(ret) && SvTYPE(SvRV(ret)) == SVt_PVCV) {
+    if (IsCodeRef(ret)) {
+        trace("PSGI response code-ref, c=%p cv=%p\n", c, ret);
         feersum_start_psgi_streaming(aTHX_ c, ret);
+        return;
+    }
+    else if (!IsArrayRef(ret)) {
+        sv_setpvs(ERRSV, "Invalid PSGI response (expected array or code ref)");
+        call_died(aTHX_ c, "PSGI request");
+        return;
+    }
+
+    AV *psgi_triplet = (AV*)SvRV(ret);
+    if (av_len(psgi_triplet)+1 != 3) {
+        sv_setpvs(ERRSV, "Invalid PSGI array response (expected triplet)");
+        call_died(aTHX_ c, "PSGI request");
+        return;
+    }
+
+    trace("PSGI response triplet, c=%p av=%p\n", c, psgi_triplet);
+    SV *msg = av_shift(psgi_triplet);
+    SV *hdrs = av_shift(psgi_triplet);
+    SV *body = av_shift(psgi_triplet);
+
+    AV *headers;
+    if (IsArrayRef(hdrs))
+        headers = (AV*)SvRV(hdrs);
+    else {
+        sv_setpvs(ERRSV, "PSGI Headers must be an array-ref");
+        call_died(aTHX_ c, "PSGI request");
+        return;
+    }
+
+    if (IsArrayRef(body)) {
+        feersum_start_response(aTHX_ c, msg, headers, 0);
+        feersum_write_whole_body(aTHX_ c, body);
+    }
+    else if (SvROK(body)) { // probaby an IO::Handle-like object
+        feersum_start_response(aTHX_ c, msg, headers, 1);
+        c->poll_write_cb = newSVsv(body);
+        c->poll_write_cb_is_io_handle = 1;
+        conn_write_ready(c);
     }
     else {
-        sv_setpvs(ERRSV, "Unsupported PSGI response");
-        call_died(aTHX_ c, "request");
+        sv_setpvs(ERRSV, "Expected PSGI array-ref or IO::Handle-like body");
+        call_died(aTHX_ c, "PSGI request");
     }
 }
 
@@ -1572,7 +1575,6 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     dSP;
     dTHX;
     
-    bool write_iohandle = 0;
     SV *cb = (is_write) ? c->poll_write_cb : NULL;
     SV *io;
     SV *ret;
@@ -1589,12 +1591,16 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     SAVETMPS;
     PUSHMARK(SP);
 
-    if (is_write && SvTYPE(cb) == SVt_PVAV) {
-        write_iohandle = 1;
+    if (is_write && c->poll_write_cb_is_io_handle) {
         flags = G_EVAL;
-        cb = *(av_fetch((AV*)c->poll_write_cb, 0, 0));
-        io = *(av_fetch((AV*)c->poll_write_cb, 1, 0));
-        XPUSHs(sv_2mortal(newSVsv(io))); // it's an RV so copy is light
+        // Can't do this in the BOOT section, unfortunately:
+        if (pump_io_cv == NULL) {
+            CV *pump = get_cv("Feersum::Connection::_pump_io", 0);
+            pump_io_cv = newRV_inc((SV*)pump);
+        }
+        cb = pump_io_cv;
+        // it's an RV so copy is light
+        XPUSHs(sv_2mortal(newSVsv(c->poll_write_cb)));
         ret = newSV(0);
         XPUSHs(ret);
     }
@@ -1613,7 +1619,7 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     if (SvTRUE(ERRSV)) {
         call_died(aTHX_ c, is_write ? "write poll" : "read poll");
     }
-    else if (write_iohandle) {
+    else if (is_write && c->poll_write_cb_is_io_handle) {
         if (!SvOK(ret)) {
             SvREFCNT_dec(c->poll_write_cb);
             c->poll_write_cb = NULL;
@@ -1681,7 +1687,7 @@ request_handler(SV *self, SV *cb)
         psgi_request_handler = 1
     PPCODE:
 {
-    if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV)
+    if (!IsCodeRef(cb))
         croak("must supply a code reference");
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
@@ -1697,7 +1703,7 @@ graceful_shutdown (SV *self, SV *cb)
     PROTOTYPE: $&
     PPCODE:
 {
-    if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV)
+    if (!IsCodeRef(cb))
         croak("must supply a code reference");
     if (shutting_down)
         croak("already shutting down");
@@ -1924,11 +1930,10 @@ _poll_cb (feer_conn_handle *hdl, SV *cb)
         trace("unset poll_cb ix=%d\n", ix);
         return;
     }
-    else if (!SvROK(cb) || SvTYPE(SvRV(cb)) != SVt_PVCV) {
+    else if (!IsCodeRef(cb))
         croak("must supply a code reference to poll_cb");
-    }
 
-    c->poll_write_cb = newRV_inc(SvRV(cb));
+    c->poll_write_cb = newSVsv(cb);
 
     // start the write-watcher unless it's already activated.
     if (!ev_is_active(&c->write_ev_io))
@@ -1959,7 +1964,7 @@ send_response (struct feer_conn *c, SV* msg, SV *hdrs, SV *body)
     PPCODE:
 {
     AV *headers;
-    if (SvROK(hdrs) && SvTYPE(SvRV(hdrs)) == SVt_PVAV)
+    if (IsArrayRef(hdrs))
         headers = (AV*)SvRV(hdrs);
     else
         croak("Must supply headers as an array-ref");
