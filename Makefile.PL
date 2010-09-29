@@ -47,22 +47,25 @@ WriteMakefile(ev_args(
     AUTHOR        => 'Jeremy Stashewsky <stash@cpan.org>',
     LICENSE       => 'perl',
     CONFIGURE_REQUIRES => {
-        'ExtUtils::MakeMaker' => 6.50,
         'EV' => 3.9,
+        'ExtUtils::MakeMaker' => 6.51,
     },
     BUILD_REQUIRES => {
-        'Guard' => 1.012,
         'AnyEvent' => 5.261,
+        'Guard' => 1.012,
+        'Scalar::Util' => 1.19,
         'Test::More' => 0.94,
         'Test::Exception' => 0.29,
-        'Scalar::Util' => 1.19,
     },
     PREREQ_PM => {
         'EV' => 3.9,
     },
     META_MERGE => {
-        recommends => {'Plack' => 0.9938},
-        'no_index' => {directory => ['picohttpparser-git']},
+        recommends => {
+            'Plack' => 0.9938,
+            'Test::TCP' => 0.16,
+        },
+        'no_index' => {directory => ['eg','picohttpparser-git']},
     },
     LIBS   => [''],
     DEFINE => ($steal ? '-DFEERSUM_STEAL' : ''),
