@@ -2,7 +2,6 @@ use 5.008007;
 use ExtUtils::MakeMaker;
 use EV::MakeMaker qw/ev_args/;
 
-
 {
     package MY;
     sub test_via_harness {
@@ -35,30 +34,38 @@ elsif ($ARGV[0] eq '-PROFILEUSE') {
     $otherldflags = '-fprofile-use';
 }
 
-
-# Set this to false if you get core-dumps. 
-# Look for FEERSUM_STEAL in the code to see what this does.
+# Set this to false if you get core-dumps. Gives a pretty good perf boost for
+# simple responses. Look for FEERSUM_STEAL in the code to see what this does.
+# In a nutshell: certain temporary values passed in as the body of a response
+# have their string-value "stolen".
 my $steal = 1;
 
-# See lib/ExtUtils/MakeMaker.pm for details of how to influence
-# the contents of the Makefile that is written.
 WriteMakefile(ev_args(
-    NAME              => 'Feersum',
-    VERSION_FROM      => 'lib/Feersum.pm',
-    ABSTRACT_FROM     => 'lib/Feersum.pm',
-    AUTHOR            => 'Jeremy Stashewsky <stash@cpan.org>',
-    PREREQ_PM         => {
-        'EV'    => 3.8,
-        'Guard' => 1.012,
-        # for testing,
-        'AnyEvent' => 0,
-        'Test::More' => 0,
-        'Test::Exception' => 0,
+    NAME          => 'Feersum',
+    VERSION_FROM  => 'lib/Feersum.pm',
+    ABSTRACT_FROM => 'lib/Feersum.pm',
+    AUTHOR        => 'Jeremy Stashewsky <stash@cpan.org>',
+    LICENSE       => 'perl',
+    CONFIGURE_REQUIRES => {
+        'ExtUtils::MakeMaker' => 6.50,
+        'EV' => 3.9,
     },
-    LIBS              => [''],
-    DEFINE            => ($steal ? '-DFEERSUM_STEAL' : ''),
-    INC               => '-I.', # e.g., '-I. -I/usr/include/other'
-	# Un-comment this if you add C files to link with later:
-    # OBJECT            => '$(O_FILES)', # link all the C files too
+    BUILD_REQUIRES => {
+        'Guard' => 1.012,
+        'AnyEvent' => 5.261,
+        'Test::More' => 0.94,
+        'Test::Exception' => 0.29,
+        'Scalar::Util' => 1.19,
+    },
+    PREREQ_PM => {
+        'EV' => 3.9,
+    },
+    META_MERGE => {
+        recommends => {'Plack' => 0.9938},
+        'no_index' => {directory => ['picohttpparser-git']},
+    },
+    LIBS   => [''],
+    DEFINE => ($steal ? '-DFEERSUM_STEAL' : ''),
+    INC    => '-I.',
     dynamic_lib => {OTHERLDFLAGS => $otherldflags},
 ));

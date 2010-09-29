@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.91';
+our $VERSION = '0.92';
 
 require XSLoader;
 XSLoader::load('Feersum', $VERSION);

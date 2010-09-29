@@ -5,6 +5,9 @@ If you downloaded this module from a git repository, be sure to run:
    git submodule init
    git submodule update
 
+You need to have EV 3.9 and at least ExtUtils::MakeMaker 6.50 installed to
+build and install this module.
+
 To install this module type the following:
 
    perl Makefile.PL
@@ -14,6 +17,7 @@ To install this module type the following:
 Please report any bugs using the github issue tracker:
 
    http://github.com/stash/Feersum/issues/
+
 
 COPYRIGHT AND LICENCE
 
