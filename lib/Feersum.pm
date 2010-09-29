@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.92';
+our $VERSION = '0.93';
 
 require XSLoader;
 XSLoader::load('Feersum', $VERSION);
@@ -95,8 +95,7 @@ passed a reference to an object that represents an HTTP connection.
 Currently the request_handler is called during the "check" and "idle" phases
 of the EV event loop.  The handler is always called after request headers have
 been read.  Currently it will also only be called after a full request entity
-has been received for POST/PUT/etc. (although support for streaming input is
-in the works, hopefully).
+has been received for POST/PUT/etc.
 
 There are a number of ways you can respond to a request.
 
@@ -111,15 +110,15 @@ Or, if all you've got is a simple body, you can pass it in via scalar-ref.
     $req->send_response(200, \@headers, \"whole body");
 
 (Scalar refs in the response body are indicated by the
-C<psgix.body.scalar_refs> PSGI env variable. Passing by reference rather than
+C<psgix.body.scalar_refs> env variable. Passing by reference rather than
 copying onto the stack or into an array is B<significantly> faster.)
 
 Delayed responses are perfectly fine, just don't block the main thread or
 other requests/responses won't get processed.
 
-    # "0" tells Feersum to not use chunked encoding and to emit a
-    # Content-Length header
     my $req = shift;
+    # "0" tells Feersum to not use chunked encoding and to emit a
+    # Content-Length header. Other headers are transmitted immediately.
     $req->start_response(200, \@headers, 0);
     my $t; $t = EV::timer 2, 0, sub {
         $req->write_whole_body(\@chunks);
@@ -129,16 +128,21 @@ other requests/responses won't get processed.
 Chunked responses are possible.  Starting a response in chunked mode enables
 the C<write()> method (which really acts more like a buffered 'print').  Calls
 to C<write()> will never block (as indicated by C<psgix.output.buffered> in
-the PSGI env hash).
+the PSGI env hash).  
 
-    # "1" tells Feersum to send a Transfer-Encoding: chunked response
     my $req = shift;
+    # "1" tells Feersum to send a streaming response.
     $req->start_response(200, \@headers, 1);
     my $w = $req->write_handle;
     $w->write(\"this is a reference to some shared chunk\n");
     $w->write("regular scalars are OK too\n");
     # close off the stream
     $w->close()
+
+Feersum will use "Transfer-Encoding: chunked" for HTTP/1.1 clients and
+"Connection: close" streaming as a fallback.  technically "Connection: close"
+streaming isn't part of the HTTP/1.0 or 1.1 spec, but many browsers and agents
+support it anyway.
 
 A PSGI-like environment hash is easy to obtain.
 
@@ -162,7 +166,7 @@ reflect this).
         # $r->close();
     }
 
-The C<psgi.streaming> interface is emulated with a call to
+An interface close to C<psgi.streaming> is emulated with a call to
 C<initiate_streaming>.  The "starter" code-ref and "writer" I/O object are
 used roughly as they are in PSGI.  C<initiate_streaming> currently forces
 C<Transfer-Encoding: chunked> for the response and needs to be called before
@@ -209,6 +213,8 @@ And, finally, you can register a PSGI "app" reference:
 
     my $app = do $filename;
     Feersum->endjinn->psgi_request_handler($app);
+
+See also L<Plack::Handler::Feersum>.
 
 =head1 METHODS
 
@@ -329,15 +335,10 @@ Please report bugs using http://github.com/stash/Feersum/issues/
 
 Keep-alive is ignored completely.
 
-Chunked-encoding responses can be sent to HTTP/1.0 clients, which is only part
-of the HTTP/1.1 spec.
-
 Currently there's no way to limit the request entity length of a POST/PUT/etc.
 This could lead to a DoS attack on a Feersum server.  Suggested remedy is to
 only run Feersum behind some other web server and to use that to limit the
 entity size.
-
-IO::Handle-like PSGI responses are not supported.
 
 =head1 SEE ALSO
 

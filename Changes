@@ -1,7 +1,22 @@
 Revision history for Perl extension Feersum
 
+0.93  Tue Sep 29 01:30:00 2010 -0700
+        First CPAN release.
+        Redo PSGI streaming responses (mostly for code clarity).
+        Fixes for Perl 5.8.x
+
+0.92  Tue Sep 28 22:18:01 2010 -0700
+        Support "Connection:close" style streaming for 1.0 clients.
+        Support IO::Handle-like responses for PSGI handlers.
+        Add REMOTE_ADDR and REMOTE_PORT to env.
+
+0.91  Sun Sep 19 15:33:39 2010 -0700
+        Support running Feersum under plackup.
+        Remove AnyEvent::HTTP dependency.
+        Make $r->env() calls faster.
+
 0.90  Mon Sep  6 16:35:00 2010
-        PSGI 1.03 support (except for IO::Handle-like responses)
+        Initial PSGI 1.03 support (except for IO::Handle-like responses)
 
 0.02  Fri Apr 23 10:55:54 2010
         Renamed a good chunk of the functions & classes.
