@@ -65,6 +65,10 @@ WriteMakefile(ev_args(
             'Plack' => 0.9938,
             'Test::TCP' => 0.16,
         },
+        resources => {
+            repository => 'git://github.com/stash/Feersum.git',
+            license => 'http://dev.perl.org/licenses/',
+        },
         'no_index' => {directory => ['eg','picohttpparser-git']},
     },
     LIBS   => [''],
