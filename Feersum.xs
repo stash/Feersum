@@ -215,7 +215,10 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
     struct iomatrix *m = next_iomatrix(c);
     int idx = m->count++;
     STRLEN cur;
-    if (SvPADTMP(sv) || SvTEMP(sv)) {
+    if (SvMAGICAL(sv)) {
+        sv = newSVsv(sv); // copy to force it to be normal.
+    }
+    else if (SvPADTMP(sv) || SvTEMP(sv)) {
         // PADTMPs have their PVs re-used, so we can't simply keep a
         // reference.  TEMPs maybe behave in a similar way and are potentially
         // stealable.
@@ -1408,8 +1411,11 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         RETVAL = 0;
         for (i=0; i<=amax; i++) {
             SV **elt = av_fetch(abody, i, 0);
-            if (elt == NULL || !SvOK(*elt)) continue;
-            SV *sv = SvROK(*elt) ? SvRV(*elt) : *elt;
+            if (elt == NULL) continue;
+            SV *sv = *elt;
+            if (SvMAGICAL(sv)) sv = newSVsv(sv); // copy to remove magic
+            if (!SvOK(sv)) continue;
+            if (SvROK(sv)) sv = SvRV(sv);
             cur = add_sv_to_wbuf(c,sv);
             trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
             RETVAL += cur;
