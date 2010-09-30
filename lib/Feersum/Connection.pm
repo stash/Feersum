@@ -36,13 +36,6 @@ sub _initiate_streaming_psgi {
     goto &$streamer;
 }
 
-sub _pump_io {
-    local $/ = \4096;
-    $_[1] = $_[0]->getline();
-    $_[0]->close() unless defined $_[1];
-    return;
-}
-
 1;
 __END__
 

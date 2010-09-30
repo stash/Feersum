@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 30;
+use Test::More tests => 33;
 use lib 't'; use Utils;
 use File::Temp qw/tempfile/;
 use Encode qw/decode_utf8/;
@@ -26,6 +26,7 @@ $evh->use_socket($socket);
     sub new { return bless {lines => $_[1]}, __PACKAGE__ }
     sub getline {
         my $self = shift;
+        Test::More::ok(ref($/) && ${$/} == 4096, '$/ is \4096');
         return shift @{$self->{lines}};
     }
     sub close {}
