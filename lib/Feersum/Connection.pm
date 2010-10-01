@@ -52,11 +52,24 @@ Feersum::Connection - HTTP connection encapsulation
 
 =head1 SYNOPSIS
 
+For a streaming response:
+
     Feersum->endjinn->request_handler(sub {
         my $req = shift; # this is a Feersum::Connection object
-        my %env;
-        $req->env(\%env);
-        $req->start_response(200, ['Content-Type' => 'text/plain'], 0);
+        my $env = $req->env();
+        my $w = $req->start_streaming(200, ['Content-Type' => 'text/plain']);
+        # then immediately or after some time:
+        $w->write("Ergrates ");
+        $w->write(\"FTW.");
+        $w->close();
+    });
+
+For a response with a Content-Length header:
+
+    Feersum->endjinn->request_handler(sub {
+        my $req = shift; # this is a Feersum::Connection object
+        my $env = $req->env();
+        $req->start_whole_response(200, ['Content-Type' => 'text/plain']);
         $req->write_whole_body(\"Ergrates FTW.");
     });
 
@@ -64,57 +77,44 @@ Feersum::Connection - HTTP connection encapsulation
 
 Encapsulates an HTTP connection to Feersum.  It's roughly analagous to an
 C<Apache::Request> or C<Apache2::Connection> object, but differs significantly
-in functionality.  Until Keep-Alive functionality is supported (if ever) this
-means that a connection is B<also> a request.
+in functionality.
+
+Until Keep-Alive functionality is supported (if ever) this means that a
+connection is B<also> a request.
+
+See L<Feersum> for more examples on usage.
 
 =head1 METHODS
 
 =over 4
 
-=item C<< $o->start_response($code, \@headers, $streaming) >>
+=item C<< my $env = $req->env() >>
 
-Begin responding.
+Obtain an environment hash.  This hash contains the same entries as for a PSGI
+handler environment hash.  See L<Feersum> for details on the contents.
 
-If C<$streaming> is false, a partial HTTP response is sent.  The partial
-response is missing the Content-Length header, which will be sent when
-C<write_whole_body> is called.
+This is a method instead of a parameter so that future versions of Feersum can
+request a slice of the hash for speed.
 
-If C<$streaming> is true, a full HTTP header section is sent with
-"Transfer-Encoding: chunked" instead of a Content-Length.  The C<write_handle>
-method or the C<write_whole_body> method should be used to complete the
-response.
+=item C<< my $w = $req->start_streaming($code, \@headers) >>
 
-=item C<< $o->write_whole_body($data) >>
+A full HTTP header section is sent with "Transfer-Encoding: chunked" (or
+"Connection: close" for HTTP/1.0 clients).  
 
-=item C<< $o->write_whole_body(\$data) >>
+Returns a C<Feersum::Connection::Writer> handle which should be used to
+complete the response.  See L<Feersum::Connection::Handle> for methods.
 
-=item C<< $o->write_whole_body(\@chunks) >>
+=item C<< $req->send_response($code, \@headers, $body) >>
 
-Emits the parameter(s) as the response body and closes the request.
+=item C<< $req->send_response($code, \@headers, \@body) >>
 
-References to scalars are supported (and are much faster than passing arround
-scalars).
+Respond with a full HTTP header (including C<Content-Length>) and body.
 
-=item C<< $o->send_response($code, \@headers, ....) >>
+Returns the number of bytes calculated for the body.
 
-Convenience macro.  Is equivalent to start_response with a streaming parameter
-of 0 followed by a call to write_whole_body.
+=item C<< $req->force_http10 >>
 
-=item C<< $w = $o->write_handle; >>
-
-Returns a L<Feersum::Connection::Handle> in Writer mode for this request.
-Must only be used when the connection has been put into streaming mode.
-
-=item C<< $o->initiate_streaming(sub { .... }) >>
-
-For support of the C<psgi.streaming> feature, takes a sub (which is
-immediately called).  The sub is, in turn, passed a code reference. The code
-reference will return a Writer object when called with C<< $code, \@header >>
-parameters.  See L<Feersum> for examples.
-
-=item C<< $o->force_http10 >>
-
-=item C<< $o->force_http11 >>
+=item C<< $req->force_http11 >>
 
 Force the response to use HTTP/1.0 or HTTP/1.1, respectively.
 
@@ -130,6 +130,10 @@ support/don't-support T-E:chunked, so this is how you can override that.
 Supposedly clients and a lot of proxies support the C<Connection: close>
 stream-style, see support in Varnish at
 http://www.varnish-cache.org/trac/ticket/400
+
+=item C<< $req->fileno >>
+
+The socket file-descriptor number for this connection.
 
 =back
 

@@ -73,97 +73,188 @@ Feersum - A scary-fast HTTP engine for Perl based on EV/libev
 
 =head1 DESCRIPTION
 
-A C<PSGI>-like HTTP server framework based on EV/libev.
+Feersum is an HTTP server built on L<EV>.  It fully supports the PSGI 1.03
+spec including the C<psgi.streaming> interface and is compatible with Plack.
+Feersum also has its own "native" interface which is similar in a lot of
+ways to PSGI, but is B<not compatible> with PSGI or PSGI middleware.
 
-B<WARNING: These interfaces are STILL highly experimental and will most likely
-change.  Please consider this module a proof-of-concept at best.>
+Feersum uses a single-threaded, event-based programming architecture to scale
+and can handle many concurrent connections efficiently in both CPU and RAM.
+It skips doing a lot of sanity checking with the assumption that a "front-end"
+HTTP/HTTPS server is placed between it and the Internet.
 
-All of the request-parsing and I/O marshalling is done using C callbacks to
-the libev library.  This is made possible by C<EV::MakeMaker>, which allows
-extension writers to link against the same libev that C<EV> is using.
+=head2 How It Works
 
-Since your Perl handler is executed in the same thread as the event loop, you
-need to be careful to not block this thread.  Standard techniques include
-using C<AnyEvent> or C<EV> idle and timer watchers, using C<Coro> to
-multitask, and using sub-processes to do heavy lifting.
+All of the request-parsing and I/O marshalling is done using C or XS code.
+HTTP parsing is done by picohttpparser, which is the core of
+L<HTTP::Parser::XS>.  The network I/O is done via the libev library. This is
+made possible by C<EV::MakeMaker>, which allows extension writers to link
+against the same libev that C<EV> is using.  This means that one can write an
+evented app using C<EV> or L<AnyEvent> from Perl that completely co-operates
+with the server's event loop.
 
-A trivial hello-world handler can process about 9000 requests per second on a
-4-core Intel(R) Xeon(R) E5335 @ 2.00GHz using TCPv4 on the loopback interface,
-OS Ubuntu 6.06LTS, Perl 5.8.7.  You mileage will likely vary.
+Since the Perl "app" (handler) is executed in the same thread as the event
+loop, one need to be careful to not block this thread.  Standard techniques
+include using L<AnyEvent> or L<EV> idle and timer watchers, using L<Coro> to
+multitask, and using sub-processes to do heavy lifting (e.g.
+L<AnyEvent::Worker> and L<AnyEvent::DBI>).
 
-Future versions of the module will hopefully increase PSGI compatiblity and
-perhaps cooperate with C<Plack> and other middleware.
+Feersum also attempts to do as little copying of data as possible. Feersum
+uses the low-level C<writev> system call to avoid having to copy data into a
+buffer.  For response data, references to scalars are kept in order to avoid
+copying the string values (once the data is written to the socket, the
+reference is dropped and the data is garbage collected).
+
+A trivial hello-world handler can process in excess of 5000 requests per
+second on a 4-core Intel(R) Xeon(R) E5335 @ 2.00GHz using TCPv4 on the
+loopback interface, OS Ubuntu 6.06LTS, Perl 5.8.7.  Your mileage will likely
+vary.
 
 =head1 INTERFACE
 
-The main entry point is the sub-ref passed to C<request_handler>.  This sub is
-passed a reference to an object that represents an HTTP connection.
-Currently the request_handler is called during the "check" and "idle" phases
-of the EV event loop.  The handler is always called after request headers have
-been read.  Currently it will also only be called after a full request entity
-has been received for POST/PUT/etc.
-
-There are a number of ways you can respond to a request.
-
-First there's a PSGI-like response triplet.
-
-    my $req = shift;
-    $req->send_response(200, \@headers, ["body ", \"parts"]);
-
-Or, if all you've got is a simple body, you can pass it in via scalar-ref.
-
-    my $req = shift;
-    $req->send_response(200, \@headers, \"whole body");
-
-(Scalar refs in the response body are indicated by the
-C<psgix.body.scalar_refs> env variable. Passing by reference rather than
-copying onto the stack or into an array is B<significantly> faster.)
-
-Delayed responses are perfectly fine, just don't block the main thread or
-other requests/responses won't get processed.
-
-    my $req = shift;
-    # "0" tells Feersum to not use chunked encoding and to emit a
-    # Content-Length header. Other headers are transmitted immediately.
-    $req->start_response(200, \@headers, 0);
-    my $t; $t = EV::timer 2, 0, sub {
-        $req->write_whole_body(\@chunks);
-        undef $t;
-    };
-
-Chunked responses are possible.  Starting a response in chunked mode enables
-the C<write()> method (which really acts more like a buffered 'print').  Calls
-to C<write()> will never block (as indicated by C<psgix.output.buffered> in
-the PSGI env hash).  
-
-    my $req = shift;
-    # "1" tells Feersum to send a streaming response.
-    $req->start_response(200, \@headers, 1);
-    my $w = $req->write_handle;
-    $w->write(\"this is a reference to some shared chunk\n");
-    $w->write("regular scalars are OK too\n");
-    # close off the stream
-    $w->close()
+There are two handler interfaces for Feersum: The PSGI handler interface and
+the "Feersum-native" handler interface.  The PSGI handler interface is fully
+PSGI 1.03 compatible and supports C<psgi.streaming>.  The Feersum-native
+handler interface is "inspired by" PSGI, but does some things differently for
+speed.
 
 Feersum will use "Transfer-Encoding: chunked" for HTTP/1.1 clients and
-"Connection: close" streaming as a fallback.  technically "Connection: close"
+"Connection: close" streaming as a fallback.  Technically "Connection: close"
 streaming isn't part of the HTTP/1.0 or 1.1 spec, but many browsers and agents
 support it anyway.
-
-A PSGI-like environment hash is easy to obtain.
-
-    my $req = shift;
-    my $env = $req->env();
 
 Currently POST/PUT does not stream input, but read() can be called on
 C<psgi.input> to get the body (which has been buffered up before the request
 callback is called and therefore will never block).  Likely C<read()> will
-change to give EAGAIN responses and allow for a callback to be registered on
+change to raise EAGAIN responses and allow for a callback to be registered on
 the arrival of more data. (The C<psgix.input.buffered> env var is set to
 reflect this).
 
+=head2 PSGI interface
+
+Feersum fully supports the PSGI 1.03 spec including C<psgi.streaming>.
+
+See also L<Plack::Handler::Feersum>, which provides a way to use Feersum with
+L<plackup> and L<Plack::Runner>.
+
+Call C<< psgi_request_handler($app) >> to register C<$app> as a PSGI handler.
+
+    my $app = do $filename;
+    Feersum->endjinn->psgi_request_handler($app);
+
+The env hash passed in will always have the following keys in addition to
+dynamic ones:
+
+    psgi.version      => [1,0],
+    psgi.nonblocking  => 1,
+    psgi.multithread  => '', # i.e. false
+    psgi.multiprocess => '',
+    psgi.streaming    => 1,
+    psgi.errors       => \*STDERR,
+    SCRIPT_NAME       => "",
+    # see below for info on these extensions:
+    psgix.input.buffered   => 1,
+    psgix.output.buffered  => 1,
+    psgix.body.scalar_refs => 1,
+
+Note that SCRIPT_NAME is always blank (but defined).  PATH_INFO will contain
+the path part of the requested URI.
+
+For requests with a body (e.g. POST) C<psgi.input> will contain a valid
+file-handle.  Feersum currently passes C<undef> for psgi.input when there is
+no body to avoid unnecessary work.
+
+    my $r = delete $env->{'psgi.input'};
+    $r->read($body, $env->{CONTENT_LENGTH});
+    # optional: choose to stop receiving further input:
+    # $r->close();
+
+The C<psgi.streaming> interface is fully supported, including the
+writer-object C<poll_cb> callback feature defined in PSGI 1.03.  Feersum calls
+the poll_cb callback after all data has been flushed out and the socket is
+write-ready.  The data is buffered until the callback returns at which point
+it will be immediately flushed to the socket.
+
+    my $app = sub {
+        my $env = shift;
+        return sub {
+            my $starter = shift;
+            my $w = $starter->([
+                200, ['Content-Type' => 'application/json']
+            ]);
+            my $n = 0;
+            $w->poll_cb(sub {
+                $_[0]->write(get_next_chunk());
+                $_[0]->close if ($n++ >= 100);
+            });
+        };
+    };
+
+=head3 PSGI extensions
+
+Scalar refs in the response body are supported, and is indicated as an via the
+C<psgix.body.scalar_refs> env variable. Passing by reference is
+B<significantly> faster than copying a value onto the return stack or into an
+array.  It's also very useful when broadcasting a message to many connected
+clients.
+
+Calls to C<< $w->write() >> will never block.  This behaviour is indicated by
+C<psgix.output.buffered> in the PSGI env hash.  
+
+C<psgix.input.buffered> is also set, which means that calls to read on the
+input handle will also never block.  Feersum currently buffers the entire
+input before calling the callback.
+
+This input behaviour will probably change to not be completely buffered. Users
+of Feersum should expect that when no data is available read, the calls to get
+data from the input filehandle will return an empty-string and set C<$!> to
+C<EAGAIN>).  Feersum may also allow for registering a poll_cb() handler that
+works similarly to the method on the "writer" object, although that isn't
+currently part of the PSGI 1.03 spec.  The callback will be called once data
+has been buffered.
+
+=head2 The Feersum-native interface
+
+The Feersum-native interface is inspired by PSGI, but is inherently
+B<incompatible> with it.  Apps written against this API will not work as a
+PSGI app.
+
+B<This interface may have removals and is not stable until Feersum reaches
+version 1.0>, at which point the interface API will become stable and will
+only change for bug fixes or new additions.  The "stable" and will retain
+backwards compatibility until at least the next major release.
+
+The main entry point is a sub-ref passed to C<request_handler>.  This sub is
+passed a reference to an object that represents an HTTP connection.  Currently
+the request_handler is called during the "check" and "idle" phases of the EV
+event loop.  The handler is always called after request headers have been
+read.  Currently, the handler will B<only> be called after a full request
+entity has been received for POST/PUT/etc.
+
+The simplest way to send a response is to use C<send_response>:
+
+    my $req = shift;
+    $req->send_response(200, \@headers, ["body ", \"parts"]);
+
+Or, if the app has everything packed into a single scalar already, just pass
+it in by reference.
+
+    my $req = shift;
+    $req->send_response(200, \@headers, \"whole body");
+
+Both of the above will generate C<Content-Length> header (replacing any that
+were pre-defined in C<@headers>).
+
+An environment hash is easy to obtain, but is a method call instead of a
+parameter to the callback. (In PSGI, there is no $req object; the env hash is
+the first parameter to the callback).  The hash contains the same items as it
+would for a PSGI handler (see above for those).
+
     my $req = shift;
     my $env = $req->env();
+
+To read input from a POST/PUT, use the C<psgi.input> item of the env hash.
+
     if ($req->{REQUEST_METHOD} eq 'POST') {
         my $body = '';
         my $r = delete $env->{'psgi.input'};
@@ -172,57 +263,33 @@ reflect this).
         # $r->close();
     }
 
-An interface close to C<psgi.streaming> is emulated with a call to
-C<initiate_streaming>.  The "starter" code-ref and "writer" I/O object are
-used roughly as they are in PSGI.  C<initiate_streaming> currently forces
-C<Transfer-Encoding: chunked> for the response and needs to be called before
-any C<write> or C<start_response> calls.
+Starting a response in stream mode enables the C<write()> method (which really
+acts more like a buffered 'print').  Calls to C<write()> will never block.
 
     my $req = shift;
-    $req->initiate_streaming(sub {
-        my $starter = shift;
-        my $w = $starter->(
-            "200 OK", ['Content-Type' => 'application/json']);
-        my $n = 0;
-        $w->write('[');
+    my $w = $req->start_streaming(200, \@headers);
+    $w->write(\"this is a reference to some shared chunk\n");
+    $w->write("regular scalars are OK too\n");
+    $w->close(); # close off the stream
 
-        my $t; $t = EV::timer 1, 1, sub {
-            $w->write(q({"time":).time."},");
-
-            if ($n++ > 60) {
-                // stop the stream
-                $w->write("{}]");
-                $w->close();
-                undef $t;
-            }
-        };
-    });
-
-The writer object supports C<poll_cb> as specified in PSGI 1.03.  Feersum will
-call this method only when all data has been flushed out at the socket level.
-Use C<close()> or unset the handler (C<< $w->poll_cb(undef) >>) to stop the
-callback from getting called.
+The writer object supports C<poll_cb> as also specified in PSGI 1.03.  Feersum
+will call the callback only when all data has been flushed out at the socket
+level.  Use C<close()> or unset the handler (C<< $w->poll_cb(undef) >>) to
+stop the callback from getting called.
 
     my $req = shift;
-    $req->initiate_streaming(sub {
-        my $starter = shift;
-        my $w = $starter->(
-            "200 OK", ['Content-Type' => 'application/json']);
-        my $n = 0;
-        $w->poll_cb(sub {
-            $_[0]->write(get_next_chunk());
-            $_[0]->close if ($n++ >= 100);
-        });
+    my $w = $req->start_streaming(
+        "200 OK", ['Content-Type' => 'application/json']);
+    my $n = 0;
+    $w->poll_cb(sub {
+        # $_[0] is a copy of $w so a closure doesn't need to be made
+        $_[0]->write(get_next_chunk());
+        $_[0]->close if ($n++ >= 100);
     });
-
-And, finally, you can register a PSGI "app" reference:
-
-    my $app = do $filename;
-    Feersum->endjinn->psgi_request_handler($app);
-
-See also L<Plack::Handler::Feersum>.
 
 =head1 METHODS
+
+These are methods on the global Feersum singleton.
 
 =over 4
 
@@ -272,7 +339,7 @@ No new connections will be accepted.  The reference to the socket provided
 in use_socket() is kept.
 
 The sub parameter is a completion callback.  It will be called when all
-connections have been flushed and closed.  This allows you to do something
+connections have been flushed and closed.  This allows one to do something
 like this:
 
     my $cv = AE::cv;
@@ -363,6 +430,20 @@ C<git://github.com/kazuho/picohttpparser.git>
 =head1 AUTHOR
 
 Jeremy Stashewsky, C<< stash@cpan.org >>
+
+=head1 THANKS
+
+Tatsuhiko Miyagawa for PSGI and Plack.
+
+Marc Lehmann for EV and AnyEvent (not to mention JSON::XS and Coro).
+
+Kazuho Oku for picohttpparser.
+
+lukec, konobi, socialtexters and van.pm for initial feedback and ideas.
+
+Audrey Tang and Graham Termarsch for XS advice.
+
+confound for docs input.
 
 =head1 COPYRIGHT AND LICENSE
 

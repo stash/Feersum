@@ -48,11 +48,11 @@ For write handles:
     $w->write("scalar");
     $w->write(\"scalar ref");
     $w->poll_cb(sub {
-        # use $_[0] instead of $w to avoid a circular-reference.
+        # use $_[0] instead of $w to avoid a closure
         $_[0]->write(\"some data");
         # can close() or unregister the poll_cb in here
+        $_[0]->close();
     });
-    $w->close();
 
 =head1 DESCRIPTION
 
@@ -63,7 +63,7 @@ See the L<PSGI> spec for more information on how read/write handles are used
 
 =head2 Reader methods
 
-The reader is obtained via C<< $env{'psgi.input'} >>.
+The reader is obtained via C<< $env->{'psgi.input'} >>.
 
 =over 4
 
@@ -89,11 +89,15 @@ Discards the remainder of the input buffer.
 
 =item C<< $r->poll_cb(sub { .... }) >>
 
-B<NOT YET SUPPORTED>.  See L<PSGI> for how this could work.
+B<NOT YET SUPPORTED>.  PSGI only defined poll_cb for the Writer object.
 
 =back
 
 =head2 Writer methods.
+
+The writer is obtained under PSGI by sending a code/headers pair to the
+"starter" callback.  Under Feersum, calls to C<< $req->start_streaming >>
+return one.
 
 =over 4
 
@@ -107,7 +111,7 @@ PSGI env hash (L<Twiggy> supports this too, for example).
 
 =item C<< $w->write(\"scalar ref") >>
 
-Works just like C<write()>.  This extension is indicated by
+Works just like C<write("scalar")> above.  This extension is indicated by
 C<psgix.body.scalar_refs> in the PSGI env hash.
 
 =item C<< $w->close() >>
