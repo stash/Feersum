@@ -1,5 +1,11 @@
 Revision history for Perl extension Feersum
 
+0.94  Thu Sep 30 22:45:00 2010 -0700
+        Major documentation rewrite.
+        Deprecated the "delayed response" part of the Feersum API in favor of the "streamed response" API.
+        Allow for tied variables in the response.
+        Move the IO::Handle response reading code into XS.
+
 0.93  Tue Sep 29 01:30:00 2010 -0700
         First CPAN release.
         Redo PSGI streaming responses (mostly for code clarity).
