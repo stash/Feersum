@@ -1353,7 +1353,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         STRLEN hlen;
         const char *hp = SvPV(*hdr, hlen);
         if (str_case_eq("content-length",14,hp,hlen)) {
-            trouble("ignoring content-length header in the response");
+            trace("ignoring content-length header in the response\n");
             continue; 
         }
 
