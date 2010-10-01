@@ -5,7 +5,7 @@ use blib;
 BEGIN { 
     $Plack::Test::Impl = 'Server';
     $ENV{PLACK_SERVER} = 'Feersum';
-    $ENV{PLACK_DEV} = 'development';
+    $ENV{PLACK_ENV} = 'development';
 
     plan skip_all => "Need Plack >= 0.9950 to run this test"
         unless eval 'require Plack; $Plack::VERSION >= 0.995';
