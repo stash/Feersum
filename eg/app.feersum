@@ -7,11 +7,10 @@ sub {
     my $r = shift;
     my $n = $counter++;
     # loading the env is optional under Feersum.  For a "fair" speed
-    # comparison to app.psgi, uncomment these two lines:
-#     my %env;
-#     $r->env(\%env);
-    $r->send_response("200 OK", [
+    # comparison to app.psgi, uncomment this line:
+#    my $env = $r->env();
+    $r->send_response(200, [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
-    ], \"Hello customer number $n\n");
+    ], [\"Hello customer number 0x",sprintf('%08x',$n),\"\n"]);
 };
