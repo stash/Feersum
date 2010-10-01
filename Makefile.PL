@@ -73,6 +73,7 @@ WriteMakefile(ev_args(
         'no_index' => {directory => ['eg','picohttpparser-git']},
     },
     LIBS   => [''],
+    EXE_FILES => ['bin/feersum'],
     DEFINE => ($steal ? '-DFEERSUM_STEAL' : ''),
     INC    => '-I.',
     dynamic_lib => {OTHERLDFLAGS => $otherldflags},
