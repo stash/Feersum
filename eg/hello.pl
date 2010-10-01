@@ -6,16 +6,14 @@ use blib;
 $SIG{PIPE} = 'IGNORE';
 
 use Feersum;
-#use AnyEvent;
 
 use IO::Socket::INET;
 my $socket = IO::Socket::INET->new(
-    LocalAddr => 'localhost:10204',
+    LocalAddr => 'localhost:5000',
     Proto => 'tcp',
     Listen => 1024,
     Blocking => 0,
     ReuseAddr => 1,
-    ReusePort => 1,
 );
 
 my $counter = 0;
@@ -24,8 +22,7 @@ $evh->use_socket($socket);
 $evh->request_handler(sub {
     my $r = shift;
     my $n = $counter++;
-    my %env;
-    $r->env(\%env);
+    my $env = $r->env;
     $r->send_response("200 OK", [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
