@@ -1,0 +1,116 @@
+#!perl
+use warnings;
+use strict;
+
+use JSON::XS;
+use EV;
+use Scalar::Util qw/weaken/;
+use HTML::Entities qw/encode_entities/;
+use URI::Escape qw/uri_unescape/;
+
+my $clients = 0;
+my @handles;
+my @timers;
+
+my @html_hdrs = (
+    'Content-Type' => 'text/html; charset=UTF-8',
+    'Cache-Control' => 'no-cache, no-store, private',
+    'Pragma' => 'no-cache',
+);
+
+sub show_chat {
+    my ($r,$client) = @_;
+
+    $r->send_response(200, \@html_hdrs, <<EOHTML);
+<html>
+<head><title>Chat!</title></head>
+<body>
+<iframe src="/form/$client"></iframe>
+<iframe src="/chat/$client"></iframe>
+</body>
+</html>
+EOHTML
+}
+
+sub show_form {
+    my ($r, $client, $nick) = @_;
+    $r->send_response(200, \@html_hdrs, <<EOHTML);
+<html>
+<head><title>Chat!</title></head>
+<body>
+<form action="/post" method="POST">
+    <input type="hidden" name="client" value="$client" />
+    Nick: <input type="text" name="nick" value="$nick" /><br />
+    Say: <input type="text" name="say" /><br />
+    <input type="submit">
+</form>
+</body>
+</html>
+EOHTML
+}
+
+sub start_stream {
+    my ($r, $client) = @_;
+    my $w = $r->start_streaming(200, \@html_hdrs);
+    $handles[$client] = $w;
+    weaken $w;
+    $timers[$client] = EV::timer 1,1,sub {
+        $w->write('<!-- keep-alive -->') if $w;
+    };
+    $w->write(<<EOH);
+<html>
+<head></head>
+<body>
+<p>Hello! (connection $client)</p>
+EOH
+}
+
+sub broadcast {
+    my $kv = shift;
+    my $client = $kv->{client};
+
+    $kv->{nick} ||= "anon$client";
+    $kv->{nick} = encode_entities(uri_unescape($kv->{nick}));
+
+    $kv->{say} ||= '*wants to say something*';
+    $kv->{say} = encode_entities(uri_unescape($kv->{say}));
+
+    my $msg = \"<p><b>$kv->{nick}</b>: $kv->{say}</p>";
+    warn $$msg."\n";
+
+    for my $i (1 .. $clients) {
+        my $w = $handles[$i];
+        next unless $w;
+        eval { $w->write($msg) };
+        if ($@) { warn $@; $handles[$i] = undef }
+    }
+}
+
+my $app = sub {
+    my $r = shift;
+    my $env = $r->env;
+    my $path = $env->{PATH_INFO};
+    if ($path eq '/post' && $env->{REQUEST_METHOD} eq 'POST') {
+        my $input = delete $env->{'psgi.input'};
+        my $body = '';
+        $input->read($body, $env->{CONTENT_LENGTH});
+        my %kv = map { split('=',$_,2) } split('&',$body);
+        my $t; $t = EV::timer 0.00001, 0, sub{
+            broadcast(\%kv);
+            undef $t;
+        };
+        show_form($r,$kv{client},$kv{nick});
+    }
+    elsif ($path =~ m{^/form/(\d+)$}) {
+        my $client = $1;
+        show_form($r,$client,'');
+    }
+    elsif ($path =~ m{^/chat/(\d+)$}) {
+        my $client = $1;
+        start_stream($r,$client);
+    }
+    else {
+        my $client = ++$clients;
+        show_chat($r,$client);
+    }
+};
