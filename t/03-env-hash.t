@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 106;
+use Test::More tests => 139;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
@@ -44,29 +44,40 @@ $evh->request_handler(sub {
     ok $errfh, 'got psgi.errors';
     lives_ok { $errfh->print() } "errors fh can print()";
 
-    is $env->{REQUEST_METHOD}, 'GET', "got req method";
+    is $env->{REQUEST_METHOD}, ($tn == 5 ? 'POST' : 'GET'), "got req method";
     like $env->{HTTP_USER_AGENT}, qr/FeersumSimpleClient/, "got UA";
 
-    is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
-    ok !exists $env->{HTTP_CONTENT_LENGTH}, "no duplicate C-L header";
+    ok !exists $env->{HTTP_CONTENT_LENGTH}, "C-L is a promoted header";
+    ok !exists $env->{HTTP_CONTENT_TYPE}, "C-T is a promoted header";
 
     if ($tn == 1) {
+        is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
         like $env->{HTTP_REFERER}, qr/wrong/, "got the Referer";
         is $env->{QUERY_STRING}, 'blar', "got query string";
         is $env->{PATH_INFO}, '/what is wrong?', "got decoded path info string";
         is $env->{REQUEST_URI}, '/what%20is%20wrong%3f?blar', "got full URI string";
     }
     elsif ($tn == 2) {
+        is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
         like $env->{HTTP_REFERER}, qr/good/, "got a Referer";
         is $env->{QUERY_STRING}, 'dlux=sonice', "got query string";
         is $env->{PATH_INFO}, '/what% is good?%2', "got decoded path info string";
         is $env->{REQUEST_URI}, '/what%%20is%20good%3F%2?dlux=sonice', "got full URI string";
     }
     elsif ($tn == 3) {
+        is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
         like $env->{HTTP_REFERER}, qr/ugly/, "got a Referer";
         is $env->{QUERY_STRING}, '', "got query string";
         is $env->{PATH_INFO}, '/no query', "got decoded path info string";
         is $env->{REQUEST_URI}, '/no%20query', "got full URI string";
+    }
+    elsif ($tn == 4) {
+        is $env->{CONTENT_LENGTH}, 0, "got zero C-L";
+    }
+    elsif ($tn == 5) {
+        is $env->{CONTENT_LENGTH}, 9, "got zero C-L";
+        is $env->{CONTENT_TYPE}, 'text/plain; charset=US-ASCII',
+            "C-T is a promoted header";
     }
 
     is $env->{SERVER_NAME}, '127.0.0.1', "got server name";
@@ -156,6 +167,28 @@ sub {
     is $headers->{Reason}, "Bad Request";
     is $headers->{'content-type'}, 'text/plain';
     is $body, "Malformed request.\n", 'client 4 expected error';
+    $cv->end;
+};
+
+$cv->begin;
+my $w5 = simple_client POST => "/post",
+    headers => {
+        'x-test-num' => 5,
+        'Content-Type' => 'text/plain; charset=US-ASCII',
+    },
+    body => "The post\n",
+    timeout => 3,
+sub {
+    my ($body, $headers) = @_;
+    is $headers->{Status}, 200, "client 5 got 200";
+    is $headers->{'content-type'}, 'text/plain; charset=UTF-8';
+
+    $body = Encode::decode_utf8($body) unless Encode::is_utf8($body);
+
+    is $headers->{'content-length'}, bytes::length($body),
+        'client 5 content-length was calculated correctly';
+
+    is $body, "Oh Hai 5\n", 'client 5 expected body';
     $cv->end;
 };
 
