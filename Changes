@@ -1,5 +1,10 @@
 Revision history for Perl extension Feersum
 
+
+0.96  Fri Oct  1 15:30:00 2010 -0700
+        Support Tatsumaki running under Feersum.
+        Content-Type is now in the CONTENT_TYPE env.
+
 0.95  Fri Oct  1 13:45:00 2010 -0700
         Specify Plack >= 0.995 version for testing & recommending
         Experiment with close() rather than shutdown() for ending connections.
