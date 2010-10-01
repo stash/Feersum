@@ -9,5 +9,5 @@ sub {
     return [200, [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
-    ], ["Hello customer number $n\n"]];
+    ], ["Hello customer number 0x",sprintf('%08x',$n),"\n"]];
 };
