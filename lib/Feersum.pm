@@ -7,10 +7,10 @@ use Carp ();
 
 our $VERSION = '0.93';
 
-require XSLoader;
-XSLoader::load('Feersum', $VERSION);
 require Feersum::Connection;
 require Feersum::Connection::Handle;
+require XSLoader;
+XSLoader::load('Feersum', $VERSION);
 
 our $INSTANCE;
 
