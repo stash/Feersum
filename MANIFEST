@@ -30,6 +30,7 @@ t/05-streaming.t
 t/06-input.t
 t/07-graceful-shutdown.t
 t/08-read-timeout.t
+t/09-magic.t
 t/50-psgi-simple.t
 t/51-psgi-streaming.t
 t/52-psgi-iohandle.t
