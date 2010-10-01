@@ -63,7 +63,7 @@ WriteMakefile(ev_args(
     },
     META_MERGE => {
         recommends => {
-            'Plack' => 0.9938,
+            'Plack' => 0.9950,
             'Test::TCP' => 0.16,
         },
         resources => {

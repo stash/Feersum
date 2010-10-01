@@ -7,10 +7,11 @@ BEGIN {
     $ENV{PLACK_SERVER} = 'Feersum';
     $ENV{PLACK_DEV} = 'development';
 
-    plan skip_all => "Need Plack::Test to run this test"
-        unless eval "require Plack::Test; 1";
+    plan skip_all => "Need Plack >= 0.9950 to run this test"
+        unless eval 'require Plack; $Plack::VERSION >= 0.995';
 }
 
+use Plack::Test;
 use Plack::Test::Server;
 use Plack::Loader;
 
