@@ -1,0 +1,1345 @@
+=========== Run 1 Feersum Native ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.543988 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1173510 bytes
+HTML transferred:       330990 bytes
+Requests per second:    18382.76 [#/sec] (mean)
+Time per request:       5.440 [ms] (mean)
+Time per request:       0.054 [ms] (mean, across all concurrent requests)
+Transfer rate:          2106.66 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   0.7      2       3
+Processing:     1    3   0.6      3       6
+Waiting:        1    2   0.4      2       5
+Total:          4    4   0.9      5       7
+WARNING: The median and mean for the initial connection time are not within a normal deviation
+        These results are probably not that reliable.
+WARNING: The median and mean for the total time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      5
+  66%      5
+  75%      5
+  80%      5
+  90%      6
+  95%      6
+  98%      6
+  99%      6
+ 100%      7 (longest request)
+=========== Run 2 Feersum Native ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.557168 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1174212 bytes
+HTML transferred:       331188 bytes
+Requests per second:    17947.91 [#/sec] (mean)
+Time per request:       5.572 [ms] (mean)
+Time per request:       0.056 [ms] (mean, across all concurrent requests)
+Transfer rate:          2056.83 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   0.8      2       4
+Processing:     1    3   0.7      3       6
+Waiting:        0    2   0.5      2       4
+Total:          4    4   1.0      5       7
+WARNING: The median and mean for the initial connection time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      5
+  66%      5
+  75%      5
+  80%      5
+  90%      5
+  95%      6
+  98%      6
+  99%      7
+ 100%      7 (longest request)
+=========== Run 3 Feersum Native ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.535034 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1173393 bytes
+HTML transferred:       330957 bytes
+Requests per second:    18690.40 [#/sec] (mean)
+Time per request:       5.350 [ms] (mean)
+Time per request:       0.054 [ms] (mean, across all concurrent requests)
+Transfer rate:          2140.05 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   0.7      1       4
+Processing:     2    3   0.9      3       7
+Waiting:        0    2   0.6      2       6
+Total:          4    4   1.0      4       8
+
+Percentage of the requests served within a certain time (ms)
+  50%      4
+  66%      5
+  75%      5
+  80%      5
+  90%      6
+  95%      6
+  98%      7
+  99%      7
+ 100%      8 (longest request)
+=========== Run 4 Feersum Native ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.593930 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1173978 bytes
+HTML transferred:       331122 bytes
+Requests per second:    16837.00 [#/sec] (mean)
+Time per request:       5.939 [ms] (mean)
+Time per request:       0.059 [ms] (mean, across all concurrent requests)
+Transfer rate:          1929.52 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   1.1      2       7
+Processing:     1    3   1.2      4      10
+Waiting:        0    2   0.8      2       7
+Total:          4    5   1.5      5      14
+
+Percentage of the requests served within a certain time (ms)
+  50%      5
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      7
+  98%     10
+  99%     13
+ 100%     14 (longest request)
+=========== Run 5 Feersum Native ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.589494 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1174563 bytes
+HTML transferred:       331287 bytes
+Requests per second:    16963.70 [#/sec] (mean)
+Time per request:       5.895 [ms] (mean)
+Time per request:       0.059 [ms] (mean, across all concurrent requests)
+Transfer rate:          1945.74 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   1.0      2       7
+Processing:     1    3   1.1      4      11
+Waiting:        1    2   0.8      2       6
+Total:          4    5   1.0      5      12
+WARNING: The median and mean for the initial connection time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      5
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      6
+  98%      7
+  99%      9
+ 100%     12 (longest request)
+=========== Run 1 Feersum PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.671483 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1170000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    14892.41 [#/sec] (mean)
+Time per request:       6.715 [ms] (mean)
+Time per request:       0.067 [ms] (mean, across all concurrent requests)
+Transfer rate:          1700.71 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.5      0       3
+Processing:     1    5   1.0      6       8
+Waiting:        1    5   0.7      5       8
+Total:          4    6   0.5      6       9
+
+Percentage of the requests served within a certain time (ms)
+  50%      6
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      7
+  98%      7
+  99%      8
+ 100%      9 (longest request)
+=========== Run 2 Feersum PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.634008 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1170702 bytes
+HTML transferred:       330198 bytes
+Requests per second:    15772.67 [#/sec] (mean)
+Time per request:       6.340 [ms] (mean)
+Time per request:       0.063 [ms] (mean, across all concurrent requests)
+Transfer rate:          1802.82 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.5      0       3
+Processing:     1    5   0.8      5       8
+Waiting:        1    4   1.0      5       8
+Total:          4    5   0.9      6       9
+WARNING: The median and mean for the waiting time are not within a normal deviation
+        These results are probably not that reliable.
+WARNING: The median and mean for the total time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      6
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      6
+  98%      7
+  99%      7
+ 100%      9 (longest request)
+=========== Run 3 Feersum PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.661661 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1170234 bytes
+HTML transferred:       330066 bytes
+Requests per second:    15113.48 [#/sec] (mean)
+Time per request:       6.617 [ms] (mean)
+Time per request:       0.066 [ms] (mean, across all concurrent requests)
+Transfer rate:          1725.96 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.5      0       4
+Processing:     1    5   1.1      6       9
+Waiting:        1    5   0.8      5       8
+Total:          4    6   0.6      6       9
+
+Percentage of the requests served within a certain time (ms)
+  50%      6
+  66%      6
+  75%      6
+  80%      6
+  90%      7
+  95%      7
+  98%      8
+  99%      8
+ 100%      9 (longest request)
+=========== Run 4 Feersum PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.629672 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1170468 bytes
+HTML transferred:       330132 bytes
+Requests per second:    15881.28 [#/sec] (mean)
+Time per request:       6.297 [ms] (mean)
+Time per request:       0.063 [ms] (mean, across all concurrent requests)
+Transfer rate:          1815.23 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1    5   1.0      6       8
+Waiting:        0    5   0.5      5       8
+Total:          4    5   1.0      6       8
+WARNING: The median and mean for the processing time are not within a normal deviation
+        These results are probably not that reliable.
+WARNING: The median and mean for the total time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      6
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      6
+  98%      7
+  99%      7
+ 100%      8 (longest request)
+=========== Run 5 Feersum PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.649067 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1172691 bytes
+HTML transferred:       330759 bytes
+Requests per second:    15406.73 [#/sec] (mean)
+Time per request:       6.491 [ms] (mean)
+Time per request:       0.065 [ms] (mean, across all concurrent requests)
+Transfer rate:          1764.07 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.4      0       3
+Processing:     2    5   0.9      6       8
+Waiting:        1    4   1.2      5       7
+Total:          4    5   1.0      6       8
+WARNING: The median and mean for the processing time are not within a normal deviation
+        These results are probably not that reliable.
+WARNING: The median and mean for the total time are not within a normal deviation
+        These results are probably not that reliable.
+
+Percentage of the requests served within a certain time (ms)
+  50%      6
+  66%      6
+  75%      6
+  80%      6
+  90%      6
+  95%      7
+  98%      7
+  99%      7
+ 100%      8 (longest request)
+=========== Run 1 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient)...=========== Run 1 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   1.384622 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1340000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    7222.19 [#/sec] (mean)
+Time per request:       13.846 [ms] (mean)
+Time per request:       0.138 [ms] (mean, across all concurrent requests)
+Transfer rate:          944.66 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.3      0       3
+Processing:     1   13   1.5     13      19
+Waiting:        1   12   1.8     13      19
+Total:          4   13   1.4     13      19
+
+Percentage of the requests served within a certain time (ms)
+  50%     13
+  66%     14
+  75%     14
+  80%     14
+  90%     15
+  95%     16
+  98%     17
+  99%     17
+ 100%     19 (longest request)
+=========== Run 2 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   1.314737 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1340000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    7606.08 [#/sec] (mean)
+Time per request:       13.147 [ms] (mean)
+Time per request:       0.131 [ms] (mean, across all concurrent requests)
+Transfer rate:          994.88 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   12   1.4     12      35
+Waiting:        1   12   1.3     12      34
+Total:          4   12   1.3     12      35
+
+Percentage of the requests served within a certain time (ms)
+  50%     12
+  66%     13
+  75%     13
+  80%     13
+  90%     14
+  95%     14
+  98%     16
+  99%     17
+ 100%     35 (longest request)
+=========== Run 3 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   1.293469 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1340000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    7731.15 [#/sec] (mean)
+Time per request:       12.935 [ms] (mean)
+Time per request:       0.129 [ms] (mean, across all concurrent requests)
+Transfer rate:          1011.23 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.6      0       7
+Processing:     1   12   1.7     12      33
+Waiting:        1   11   1.9     12      33
+Total:          5   12   1.4     12      33
+
+Percentage of the requests served within a certain time (ms)
+  50%     12
+  66%     12
+  75%     13
+  80%     13
+  90%     14
+  95%     15
+  98%     16
+  99%     17
+ 100%     33 (longest request)
+=========== Run 4 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   1.347399 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1340134 bytes
+HTML transferred:       330033 bytes
+Requests per second:    7421.71 [#/sec] (mean)
+Time per request:       13.474 [ms] (mean)
+Time per request:       0.135 [ms] (mean, across all concurrent requests)
+Transfer rate:          970.76 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   1.5      0       9
+Processing:     1   12   2.2     12      23
+Waiting:        1   12   2.3     12      20
+Total:          4   12   2.1     12      23
+
+Percentage of the requests served within a certain time (ms)
+  50%     12
+  66%     13
+  75%     13
+  80%     14
+  90%     15
+  95%     17
+  98%     19
+  99%     20
+ 100%     23 (longest request)
+=========== Run 5 Starman PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   1.306863 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1340000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    7651.91 [#/sec] (mean)
+Time per request:       13.069 [ms] (mean)
+Time per request:       0.131 [ms] (mean, across all concurrent requests)
+Transfer rate:          1000.87 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.6      0       9
+Processing:     1   12   1.7     12      22
+Waiting:        1   12   1.7     12      21
+Total:          4   12   1.5     12      22
+
+Percentage of the requests served within a certain time (ms)
+  50%     12
+  66%     13
+  75%     13
+  80%     13
+  90%     14
+  95%     15
+  98%     17
+  99%     17
+ 100%     22 (longest request)
+=========== Run 1 Starlet PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        Plack::Handler::Starlet
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.797846 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1480139 bytes
+HTML transferred:       330024 bytes
+Requests per second:    12533.75 [#/sec] (mean)
+Time per request:       7.978 [ms] (mean)
+Time per request:       0.080 [ms] (mean, across all concurrent requests)
+Transfer rate:          1811.13 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   1.0      0      11
+Processing:     1    7   2.0      7      65
+Waiting:        0    6   2.0      6      65
+Total:          4    7   2.2      7      65
+
+Percentage of the requests served within a certain time (ms)
+  50%      7
+  66%      7
+  75%      8
+  80%      8
+  90%      9
+  95%     12
+  98%     15
+  99%     15
+ 100%     65 (longest request)
+=========== Run 2 Starlet PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        Plack::Handler::Starlet
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.752175 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1480583 bytes
+HTML transferred:       330123 bytes
+Requests per second:    13294.78 [#/sec] (mean)
+Time per request:       7.522 [ms] (mean)
+Time per request:       0.075 [ms] (mean, across all concurrent requests)
+Transfer rate:          1921.10 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.4      0       2
+Processing:     2    6   1.9      6      38
+Waiting:        1    6   1.8      6      37
+Total:          4    6   1.9      7      38
+
+Percentage of the requests served within a certain time (ms)
+  50%      7
+  66%      7
+  75%      7
+  80%      8
+  90%      9
+  95%     10
+  98%     10
+  99%     14
+ 100%     38 (longest request)
+=========== Run 3 Starlet PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        Plack::Handler::Starlet
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.854023 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1480698 bytes
+HTML transferred:       330123 bytes
+Requests per second:    11709.29 [#/sec] (mean)
+Time per request:       8.540 [ms] (mean)
+Time per request:       0.085 [ms] (mean, across all concurrent requests)
+Transfer rate:          1691.99 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   1.0      0       8
+Processing:     1    7   2.7      7      98
+Waiting:        0    6   2.6      7      42
+Total:          3    7   2.7      8      98
+
+Percentage of the requests served within a certain time (ms)
+  50%      8
+  66%      8
+  75%      9
+  80%      9
+  90%     11
+  95%     13
+  98%     14
+  99%     15
+ 100%     98 (longest request)
+=========== Run 4 Starlet PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        Plack::Handler::Starlet
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.840227 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1480000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    11901.55 [#/sec] (mean)
+Time per request:       8.402 [ms] (mean)
+Time per request:       0.084 [ms] (mean, across all concurrent requests)
+Transfer rate:          1719.77 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   2.1      0      18
+Processing:     1    7   2.6      7      51
+Waiting:        0    6   2.6      6      50
+Total:          4    7   3.6      7      55
+
+Percentage of the requests served within a certain time (ms)
+  50%      7
+  66%      7
+  75%      8
+  80%      8
+  90%     13
+  95%     17
+  98%     19
+  99%     23
+ 100%     55 (longest request)
+=========== Run 5 Starlet PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        Plack::Handler::Starlet
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   0.852627 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      1480296 bytes
+HTML transferred:       330066 bytes
+Requests per second:    11728.46 [#/sec] (mean)
+Time per request:       8.526 [ms] (mean)
+Time per request:       0.085 [ms] (mean, across all concurrent requests)
+Transfer rate:          1694.76 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    1   2.4      0      18
+Processing:     1    6   2.2      7      44
+Waiting:        0    5   2.0      6      44
+Total:          4    7   3.4      7      44
+
+Percentage of the requests served within a certain time (ms)
+  50%      7
+  66%      7
+  75%      8
+  80%     10
+  90%     13
+  95%     15
+  98%     17
+  99%     23
+ 100%     44 (longest request)
+=========== Run 1 Twiggy PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   2.943623 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    3397.17 [#/sec] (mean)
+Time per request:       29.436 [ms] (mean)
+Time per request:       0.294 [ms] (mean, across all concurrent requests)
+Transfer rate:          321.71 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   24   3.1     24      59
+Waiting:        0   23   3.2     23      59
+Total:          4   24   3.0     24      59
+
+Percentage of the requests served within a certain time (ms)
+  50%     24
+  66%     24
+  75%     24
+  80%     24
+  90%     25
+  95%     27
+  98%     29
+  99%     39
+ 100%     59 (longest request)
+=========== Run 2 Twiggy PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   2.882070 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    3469.73 [#/sec] (mean)
+Time per request:       28.821 [ms] (mean)
+Time per request:       0.288 [ms] (mean, across all concurrent requests)
+Transfer rate:          328.58 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.1      0       2
+Processing:     1   22   1.5     23      26
+Waiting:        0   22   1.5     23      26
+Total:          3   22   1.4     23      26
+
+Percentage of the requests served within a certain time (ms)
+  50%     23
+  66%     23
+  75%     23
+  80%     23
+  90%     23
+  95%     24
+  98%     25
+  99%     25
+ 100%     26 (longest request)
+=========== Run 3 Twiggy PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   2.956795 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    3382.04 [#/sec] (mean)
+Time per request:       29.568 [ms] (mean)
+Time per request:       0.296 [ms] (mean, across all concurrent requests)
+Transfer rate:          320.28 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.1      0       2
+Processing:     1   19   2.0     20      35
+Waiting:        0   19   1.9     19      35
+Total:          3   19   1.9     20      35
+
+Percentage of the requests served within a certain time (ms)
+  50%     20
+  66%     20
+  75%     20
+  80%     20
+  90%     21
+  95%     22
+  98%     24
+  99%     25
+ 100%     35 (longest request)
+=========== Run 4 Twiggy PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   2.886294 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    3464.65 [#/sec] (mean)
+Time per request:       28.863 [ms] (mean)
+Time per request:       0.289 [ms] (mean, across all concurrent requests)
+Transfer rate:          328.10 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     2   24   1.7     25      30
+Waiting:        0   24   1.6     25      30
+Total:          4   24   1.6     25      30
+
+Percentage of the requests served within a certain time (ms)
+  50%     25
+  66%     25
+  75%     25
+  80%     25
+  90%     26
+  95%     26
+  98%     27
+  99%     28
+ 100%     30 (longest request)
+=========== Run 5 Twiggy PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   2.883582 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    3467.91 [#/sec] (mean)
+Time per request:       28.836 [ms] (mean)
+Time per request:       0.288 [ms] (mean, across all concurrent requests)
+Transfer rate:          328.41 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.1      0       2
+Processing:     1   19   1.5     20      25
+Waiting:        0   19   1.5     20      25
+Total:          3   19   1.5     20      25
+
+Percentage of the requests served within a certain time (ms)
+  50%     20
+  66%     20
+  75%     20
+  80%     20
+  90%     21
+  95%     21
+  98%     23
+  99%     23
+ 100%     25 (longest request)
+=========== Run 1 Corona PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   5.617351 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    1780.20 [#/sec] (mean)
+Time per request:       56.174 [ms] (mean)
+Time per request:       0.562 [ms] (mean, across all concurrent requests)
+Transfer rate:          168.58 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   55   3.8     55      68
+Waiting:        0   55   3.8     55      68
+Total:          3   55   3.7     55      68
+
+Percentage of the requests served within a certain time (ms)
+  50%     55
+  66%     56
+  75%     56
+  80%     56
+  90%     57
+  95%     58
+  98%     63
+  99%     65
+ 100%     68 (longest request)
+=========== Run 2 Corona PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   5.680275 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    1760.48 [#/sec] (mean)
+Time per request:       56.803 [ms] (mean)
+Time per request:       0.568 [ms] (mean, across all concurrent requests)
+Transfer rate:          166.72 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   55   4.1     56      72
+Waiting:        0   55   4.1     56      72
+Total:          4   55   4.0     56      72
+
+Percentage of the requests served within a certain time (ms)
+  50%     56
+  66%     57
+  75%     57
+  80%     57
+  90%     59
+  95%     61
+  98%     62
+  99%     64
+ 100%     72 (longest request)
+=========== Run 3 Corona PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   5.692033 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    1756.84 [#/sec] (mean)
+Time per request:       56.920 [ms] (mean)
+Time per request:       0.569 [ms] (mean, across all concurrent requests)
+Transfer rate:          166.37 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   56   4.0     56      71
+Waiting:        0   55   4.2     56      71
+Total:          3   56   3.9     56      71
+
+Percentage of the requests served within a certain time (ms)
+  50%     56
+  66%     57
+  75%     57
+  80%     57
+  90%     58
+  95%     59
+  98%     61
+  99%     67
+ 100%     71 (longest request)
+=========== Run 4 Corona PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   5.691680 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    1756.95 [#/sec] (mean)
+Time per request:       56.917 [ms] (mean)
+Time per request:       0.569 [ms] (mean, across all concurrent requests)
+Transfer rate:          166.38 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   56   3.7     56      69
+Waiting:        0   55   3.9     56      69
+Total:          3   56   3.6     56      69
+
+Percentage of the requests served within a certain time (ms)
+  50%     56
+  66%     57
+  75%     57
+  80%     57
+  90%     58
+  95%     59
+  98%     60
+  99%     63
+ 100%     69 (longest request)
+=========== Run 5 Corona PSGI ===========
+This is ApacheBench, Version 2.0.41-dev <$Revision: 1.141 $> apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Copyright (c) 1998-2002 The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:        
+Server Hostname:        127.0.0.1
+Server Port:            5000
+
+Document Path:          /
+Document Length:        33 bytes
+
+Concurrency Level:      100
+Time taken for tests:   5.608327 seconds
+Complete requests:      10000
+Failed requests:        0
+Write errors:           0
+Total transferred:      970000 bytes
+HTML transferred:       330000 bytes
+Requests per second:    1783.06 [#/sec] (mean)
+Time per request:       56.083 [ms] (mean)
+Time per request:       0.561 [ms] (mean, across all concurrent requests)
+Transfer rate:          168.86 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.2      0       3
+Processing:     1   55   3.6     55      61
+Waiting:        0   55   3.6     55      61
+Total:          3   55   3.4     55      61
+
+Percentage of the requests served within a certain time (ms)
+  50%     55
+  66%     56
+  75%     56
+  80%     57
+  90%     57
+  95%     58
+  98%     58
+  99%     58
+ 100%     61 (longest request)

@@ -1,0 +1,24 @@
+=========== Run 3 Feersum Native ===========
+Requests per second: 18690.40 [#/sec] (mean)
+Time per request:    5.350 [ms] (mean)
+Time per request:    0.054 [ms] (mean, across all concurrent requests)
+=========== Run 4 Feersum PSGI ===========
+Requests per second: 15881.28 [#/sec] (mean)
+Time per request:    6.297 [ms] (mean)
+Time per request:    0.063 [ms] (mean, across all concurrent requests)
+=========== Run 3 Starman PSGI ===========
+Requests per second: 7731.15 [#/sec] (mean)
+Time per request:    12.935 [ms] (mean)
+Time per request:    0.129 [ms] (mean, across all concurrent requests)
+=========== Run 2 Starlet PSGI ===========
+Requests per second: 13294.78 [#/sec] (mean)
+Time per request:    7.522 [ms] (mean)
+Time per request:    0.075 [ms] (mean, across all concurrent requests)
+=========== Run 2 Twiggy PSGI ===========
+Requests per second: 3469.73 [#/sec] (mean)
+Time per request:    28.821 [ms] (mean)
+Time per request:    0.288 [ms] (mean, across all concurrent requests)
+=========== Run 5 Corona PSGI ===========
+Requests per second: 1783.06 [#/sec] (mean)
+Time per request:    56.083 [ms] (mean)
+Time per request:    0.561 [ms] (mean, across all concurrent requests)
