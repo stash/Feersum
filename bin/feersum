@@ -34,7 +34,6 @@ else {
     require Plack::Runner;
     $runner = Plack::Runner->new(@args);
     $runner->parse_options(@ARGV);
-    $runner->set_options(argv => \@ARGV);
 }
 
 $runner->run;

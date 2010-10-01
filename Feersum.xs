@@ -1573,14 +1573,14 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
 static void
 feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
 {
-    if (IsCodeRef(ret)) {
+    if (!SvOK(ret) || !SvROK(ret)) {
+        sv_setpvs(ERRSV, "Invalid PSGI response (expected defined)");
+        call_died(aTHX_ c, "PSGI request");
+    }
+
+    if (!IsArrayRef(ret)) {
         trace("PSGI response code-ref, c=%p cv=%p\n", c, ret);
         feersum_start_psgi_streaming(aTHX_ c, ret);
-        return;
-    }
-    else if (!IsArrayRef(ret)) {
-        sv_setpvs(ERRSV, "Invalid PSGI response (expected array or code ref)");
-        call_died(aTHX_ c, "PSGI request");
         return;
     }
 
@@ -1852,11 +1852,11 @@ request_handler(SV *self, SV *cb)
         psgi_request_handler = 1
     PPCODE:
 {
-    if (!IsCodeRef(cb))
-        croak("must supply a code reference");
+    if (!SvOK(cb) || !SvROK(cb))
+        croak("can't supply an undef handler");
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
-    request_cb_cv = SvRV(cb);
+    request_cb_cv = cb;
     SvREFCNT_inc(request_cb_cv);
     request_cb_is_psgi = ix;
     trace("assigned %s request handler %p\n",

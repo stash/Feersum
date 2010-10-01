@@ -40,7 +40,12 @@ sub _initiate_streaming_psgi {
         }
         return;
     });
-    goto &$streamer;
+
+    if (ref($streamer) eq 'CODE') {
+        goto &$streamer;
+    }
+    # Maybe it's callable but not a CODE-ref:
+    $streamer->(@_);
 }
 
 1;

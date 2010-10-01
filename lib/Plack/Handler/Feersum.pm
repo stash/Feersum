@@ -6,7 +6,7 @@ use base 'Feersum::Runner';
 sub run {
     my $self = shift;
     $self->_prepare();
-    $self->{endjinn}->psgi_request_handler(shift || delete $self->{app});
+    $self->{endjinn}->psgi_request_handler(shift);
     EV::loop;
 }
 

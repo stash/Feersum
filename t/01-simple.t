@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 32;
+use Test::More tests => 31;
 use Test::Exception;
 use utf8;
 use lib 't'; use Utils;
@@ -17,10 +17,6 @@ my $evh = Feersum->new();
 lives_ok {
     $evh->use_socket($socket);
 } 'assigned socket';
-
-dies_ok {
-    $evh->request_handler('foo');
-} "can't assign regular scalar";
 
 my $cb;
 {

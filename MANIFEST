@@ -35,6 +35,7 @@ t/09-magic.t
 t/50-psgi-simple.t
 t/51-psgi-streaming.t
 t/52-psgi-iohandle.t
+t/53-psgi-overloaded.t
 t/60-plack.t
 t/Utils.pm
 typemap
