@@ -10,6 +10,7 @@ eg/app.feersum
 eg/app.psgi
 eg/hello.pl
 eg/oneshot.pl
+eg/chat.feersum
 lib/Feersum.pm
 lib/Feersum/Connection.pm
 lib/Feersum/Connection/Handle.pm
