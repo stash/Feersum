@@ -45,7 +45,7 @@ $evh->request_handler(sub {
     isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
     isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
     my $n = 0;
-    my $t; $t = AE::timer rand(),rand(), sub {
+    my $t; $t = AE::timer rand()/5,rand()/5, sub {
         $n++;
         eval {
             ok blessed($w), "still blessed? $cnum";

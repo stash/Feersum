@@ -127,6 +127,13 @@ static void feersum_start_response
 static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
 static void feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret);
 
+static void start_read_watcher(struct feer_conn *c);
+static void stop_read_watcher(struct feer_conn *c);
+static void restart_read_timer(struct feer_conn *c);
+static void stop_read_timer(struct feer_conn *c);
+static void start_write_watcher(struct feer_conn *c);
+static void stop_write_watcher(struct feer_conn *c);
+
 static void try_conn_write(EV_P_ struct ev_io *w, int revents);
 static void try_conn_read(EV_P_ struct ev_io *w, int revents);
 static void conn_read_timeout(EV_P_ struct ev_timer *w, int revents);
@@ -433,8 +440,6 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     struct feer_conn *c = (struct feer_conn *)SvPVX(self);
     Zero(c, 1, struct feer_conn);
 
-    SvREADONLY_on(self); // turn off later for blessing
-
     c->self = self;
     c->fd = conn_fd;
     c->sa = sa;
@@ -447,13 +452,12 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->read_ev_io.data = (void *)c;
 
     ev_init(&c->read_ev_timer, conn_read_timeout);
-    c->read_ev_timer.repeat = read_timeout;
     c->read_ev_timer.data = (void *)c;
-    ev_timer_again(EV_A, &c->read_ev_timer);
 
     trace3("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
+    SvREADONLY_on(self); // turn off later for blessing
     active_conns++;
     return c;
 }
@@ -515,6 +519,63 @@ new_feer_conn_handle (struct feer_conn *c, bool is_writer)
     sv_bless(sv, is_writer ? feer_conn_writer_stash : feer_conn_reader_stash);
     return sv;
 }
+
+
+INLINE_UNLESS_DEBUG static void
+start_read_watcher(struct feer_conn *c) {
+    if (!ev_is_active(&c->read_ev_io)) {
+        trace("start read watcher %d\n",c->fd);
+        ev_io_start(feersum_ev_loop, &c->read_ev_io);
+        SvREFCNT_inc(c->self);
+    }
+}
+
+INLINE_UNLESS_DEBUG static void
+stop_read_watcher(struct feer_conn *c) {
+    if (ev_is_active(&c->read_ev_io)) {
+        trace("stop read watcher %d\n",c->fd);
+        ev_io_stop(feersum_ev_loop, &c->read_ev_io);
+        SvREFCNT_dec(c->self);
+    }
+}
+
+INLINE_UNLESS_DEBUG static void
+restart_read_timer(struct feer_conn *c) {
+    if (!ev_is_active(&c->read_ev_timer)) {
+        trace("restart read timer %d\n",c->fd);
+        c->read_ev_timer.repeat = read_timeout;
+        SvREFCNT_inc(c->self);
+    }
+    ev_timer_again(feersum_ev_loop, &c->read_ev_timer);
+}
+
+INLINE_UNLESS_DEBUG static void
+stop_read_timer(struct feer_conn *c) {
+    if (ev_is_active(&c->read_ev_timer)) {
+        trace("stop read timer %d\n",c->fd);
+        ev_timer_stop(feersum_ev_loop, &c->read_ev_timer);
+        SvREFCNT_dec(c->self);
+    }
+}
+
+INLINE_UNLESS_DEBUG static void
+start_write_watcher(struct feer_conn *c) {
+    if (!ev_is_active(&c->write_ev_io)) {
+        trace("start write watcher %d\n",c->fd);
+        ev_io_start(feersum_ev_loop, &c->write_ev_io);
+        SvREFCNT_inc(c->self);
+    }
+}
+
+INLINE_UNLESS_DEBUG static void
+stop_write_watcher(struct feer_conn *c) {
+    if (ev_is_active(&c->write_ev_io)) {
+        trace("stop write watcher %d\n",c->fd);
+        ev_io_stop(feersum_ev_loop, &c->write_ev_io);
+        SvREFCNT_dec(c->self);
+    }
+}
+
 
 static void
 process_request_ready_rinq (void)
@@ -580,7 +641,9 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     dCONN;
     int i;
 
-    // if it's marked readable EV suggests we simply try write to it.
+    SvREFCNT_inc(c->self);
+
+    // if it's marked writeable EV suggests we simply try write to it.
     // Otherwise it is stopped and we should ditch this connection.
     if (revents & EV_ERROR && !(revents & EV_WRITE)) {
         trace("EV error on write, fd=%d revents=0x%08x\n", w->fd, revents);
@@ -593,9 +656,13 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
             goto try_write_finished;
 
         if (!c->poll_write_cb) {
+            // no callback and no data: wait for app to push to us.
+            if (c->responding == RESPOND_STREAMING)
+                goto try_write_paused;
+
             trace("tried to write with an empty buffer %d resp=%d\n",w->fd,c->responding);
-            ev_io_stop(EV_A, w);
-            return;
+            c->responding = RESPOND_SHUTDOWN;
+            goto try_write_finished;
         }
 
         if (c->poll_write_cb_is_io_handle)
@@ -609,21 +676,25 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     
     struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
 #if DEBUG >= 2
+    fprintf(stderr,"going to write to %d:\n",c->fd);
     for (i=0; i < m->count; i++) {
         fprintf(stderr,"%.*s",m->iov[i].iov_len, m->iov[i].iov_base);
     }
 #endif
 
     trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
+    errno = 0;
     ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
-    trace("wrote %d bytes to %d\n", wrote, w->fd);
+    trace("wrote %d bytes to %d, errno=%d\n", wrote, w->fd, errno);
     if (wrote == -1) {
         if (errno == EAGAIN || errno == EINTR)
             goto try_write_again;
-        perror("try_conn_write");
+        perror("Feersum try_conn_write");
+        c->responding = RESPOND_SHUTDOWN;
         goto try_write_finished;
     }
-    if (wrote == 0) goto try_write_again;
+    else if (wrote == 0)
+        goto try_write_again;
     
     for (i = 0; i < m->count; i++) {
         struct iovec *v = &m->iov[i];
@@ -644,7 +715,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     }
 
     if (m->offset >= m->count) {
-        trace2("all done with iomatrix %d\n",w->fd);
+        trace2("all done with iomatrix %d state=%d\n",w->fd,c->responding);
         rinq_shift(&c->wbuf_rinq);
         Safefree(m);
         goto try_write_finished;
@@ -652,27 +723,42 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     // else, fallthrough:
 
 try_write_again:
-    trace("write again %d\n",w->fd);
-    if (!ev_is_active(w)) {
-        ev_io_start(EV_A, w);
-    }
-    return;
+    trace("write again %d state=%d\n",w->fd,c->responding);
+    start_write_watcher(c);
+    goto try_write_cleanup;
 
 try_write_finished:
     // should always be responding, but just in case
-    if (!c->responding || c->responding == RESPOND_SHUTDOWN) {
-        ev_io_stop(EV_A, w);
-        shutdown(c->fd, SHUT_WR);
-        trace3("ref dec after write %d\n", c->fd);
-        // TODO: call a completion callback instead of just GCing
-        SvREFCNT_dec(c->self);
+    switch(c->responding) {
+    case RESPOND_NOT_STARTED:
+        // the write watcher shouldn't ever get called before starting to
+        // respond. Shut it down if it does.
+        trace("unexpected try_write when response not started %d\n",c->fd);
+        goto try_write_shutdown;
+    case RESPOND_NORMAL:
+        goto try_write_shutdown;
+    case RESPOND_STREAMING:
+        if (c->poll_write_cb) goto try_write_again;
+        goto try_write_paused;
+    case RESPOND_SHUTDOWN:
+        goto try_write_shutdown;
+    default:
+        goto try_write_cleanup;
     }
-    else if (c->poll_write_cb) {
-        goto try_write_again;
-    }
-    else {
-        ev_io_stop(EV_A, w);
-    }
+
+try_write_paused:
+    trace3("write PAUSED %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
+    stop_write_watcher(c);
+    goto try_write_cleanup;
+
+try_write_shutdown:
+    trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
+    c->responding = RESPOND_SHUTDOWN;
+    shutdown(c->fd, SHUT_WR);
+    stop_write_watcher(c);
+
+try_write_cleanup:
+    SvREFCNT_dec(c->self);
     return;
 }
 
@@ -696,6 +782,7 @@ static void
 try_conn_read(EV_P_ ev_io *w, int revents)
 {
     dCONN;
+    SvREFCNT_inc(c->self);
 
     // if it's marked readable EV suggests we simply try read it. Otherwise it
     // is stopped and we should ditch this connection.
@@ -705,9 +792,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     }
 
     if (c->receiving == RECEIVE_SHUTDOWN) {
-        ev_io_stop(EV_A, w);
-        ev_timer_stop(EV_A, &c->read_ev_timer);
-        return;
+        goto dont_read_again;
     }
 
     trace("try read %d\n",w->fd);
@@ -763,14 +848,14 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
     // fallthrough:
 try_read_error:
-    trace("READ ERROR %d\n", w->fd);
+    trace("READ ERROR %d, refcnt=%d\n", w->fd, SvREFCNT(c->self));
     c->receiving = RECEIVE_SHUTDOWN;
     c->responding = RESPOND_SHUTDOWN;
-    ev_io_stop(EV_A, w);
-    ev_timer_stop(EV_A, &c->read_ev_timer);
     shutdown(c->fd, SHUT_RDWR);
-    SvREFCNT_dec(c->self);
-    return;
+    stop_read_watcher(c);
+    stop_read_timer(c);
+    stop_write_watcher(c);
+    goto try_read_cleanup;
 
 try_read_bad:
     trace("bad request %d\n", w->fd);
@@ -780,43 +865,38 @@ try_read_bad:
 dont_read_again:
     trace("done reading %d\n", w->fd);
     c->receiving = RECEIVE_SHUTDOWN;
-    ev_io_stop(EV_A, w);
-    ev_timer_stop(EV_A, &c->read_ev_timer);
-    shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
-    return;
+    stop_read_watcher(c);
+    stop_read_timer(c);
+    shutdown(c->fd, SHUT_RD);
+    goto try_read_cleanup;
 
 try_read_again_reset_timer:
     trace("(reset read timer) %d\n", w->fd);
-    ev_timer_again(EV_A, &c->read_ev_timer);
+    restart_read_timer(c);
     // fallthrough:
 try_read_again:
     trace("read again %d\n", w->fd);
-    if (!ev_is_active(w)) {
-        ev_io_start(EV_A,w);
-    }
-    return;
+    start_read_watcher(c);
+
+try_read_cleanup:
+    SvREFCNT_dec(c->self);
 }
 
 static void
 conn_read_timeout (EV_P_ ev_timer *w, int revents)
 {
     dCONN;
+    SvREFCNT_inc(c->self);
 
     if (!(revents & EV_TIMER) || c->receiving == RECEIVE_SHUTDOWN) {
         // if there's no EV_TIMER then EV has stopped it on an error
         if (revents & EV_ERROR)
             trouble("EV error on read timer, fd=%d revents=0x%08x\n",
                 c->fd,revents);
-        return;
+        goto read_timeout_cleanup;
     }
 
     trace("read timeout %d\n", c->fd);
-
-    c->receiving = RECEIVE_SHUTDOWN;
-    ev_io_stop(EV_A, &c->read_ev_io);
-
-    // always stop since, for efficiency, we set this up as a recurring timer.
-    ev_timer_stop(EV_A, w);
 
     if (c->responding == RESPOND_NOT_STARTED) {
         shutdown(c->fd, SHUT_RD);
@@ -828,15 +908,17 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
             msg = "Timeout reading body.";
         }
         respond_with_server_error(c, msg, 0, 408);
-        return;
     }
     else {
+        trace("read timeout while writing %d\n",c->fd);
         shutdown(c->fd, SHUT_RDWR);
         c->responding = RESPOND_SHUTDOWN;
+        stop_write_watcher(c);
     }
 
-    // TODO: trigger the Reader poll callback with an error, if present
-
+read_timeout_cleanup:
+    stop_read_watcher(c);
+    stop_read_timer(c);
     SvREFCNT_dec(c->self);
 }
 
@@ -862,20 +944,23 @@ accept_cb (EV_P_ ev_io *w, int revents)
         struct sockaddr_storage *sa;
         Newx(sa,1,struct sockaddr_storage);
         socklen_t sl = sizeof(struct sockaddr_storage);
+        errno = 0;
         int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
+        trace3("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
 
         struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
-        // XXX: good idea to read right away?
-        // try_conn_read(EV_A, &c->read_ev_io, EV_READ);
-        ev_io_start(EV_A, &c->read_ev_io);
+        start_read_watcher(c);
+        restart_read_timer(c);
+        assert(SvREFCNT(c->self) == 3);
+        SvREFCNT_dec(c->self);
     }
 }
 
 static void
 sched_request_callback (struct feer_conn *c)
 {
-    trace("rinq push: c=%p, head=%p\n", c, request_ready_rinq);
+    trace("sched req callback: %d c=%p, head=%p\n", c->fd, c, request_ready_rinq);
     rinq_push(&request_ready_rinq, c);
     SvREFCNT_inc(c->self); // for the rinq
     if (!ev_is_active(&ei)) {
@@ -987,8 +1072,6 @@ got_cl:
     }
     // fallthrough: have enough bytes
 got_it_all:
-    c->receiving = RECEIVE_SHUTDOWN;
-    shutdown(c->fd, SHUT_RD);
     sched_request_callback(c);
     return 0;
 }
@@ -1005,7 +1088,7 @@ conn_write_ready (struct feer_conn *c)
 
     if (!ev_is_active(&c->write_ev_io)) {
 #if AUTOCORK_WRITES
-        ev_io_start(feersum_ev_loop, &c->write_ev_io);
+        start_write_watcher(c);
 #else
         // attempt a non-blocking write immediately if we're not already
         // waiting for writability
@@ -1035,6 +1118,8 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
               err_code, http_code_to_msg(err_code), msg_len, msg_len, msg);
     add_sv_to_wbuf(c, sv_2mortal(tmp));
 
+    stop_read_watcher(c);
+    stop_read_timer(c);
     shutdown(c->fd, SHUT_RD);
     c->responding = RESPOND_SHUTDOWN;
     c->receiving = RECEIVE_SHUTDOWN;
@@ -1541,14 +1626,11 @@ call_request_callback (struct feer_conn *c)
 
     if (request_cb_is_psgi) {
         HV *env = feersum_env(aTHX_ c);
-//         SV *conn_sv = feer_conn_2sv(c);
-//         hv_stores((HV*)env, "psgix.feersum", conn_sv);
         XPUSHs(sv_2mortal(newRV_noinc((SV*)env)));
         flags = G_EVAL|G_SCALAR;
     }
     else {
-        SV *conn_sv = feer_conn_2sv(c);
-        XPUSHs(sv_2mortal(conn_sv));
+        XPUSHs(sv_2mortal(feer_conn_2sv(c)));
         flags = G_DISCARD|G_EVAL|G_VOID;
     }
 
@@ -1989,10 +2071,7 @@ _poll_cb (feer_conn_handle *hdl, SV *cb)
         croak("must supply a code reference to poll_cb");
 
     c->poll_write_cb = newSVsv(cb);
-
-    // start the write-watcher unless it's already activated.
-    if (!ev_is_active(&c->write_ev_io))
-        ev_io_start(feersum_ev_loop, &c->write_ev_io);
+    conn_write_ready(c);
 }
 
 MODULE = Feersum	PACKAGE = Feersum::Connection

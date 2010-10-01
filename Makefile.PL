@@ -19,9 +19,10 @@ use EV::MakeMaker qw/ev_args/;
 }
 
 my $otherldflags = '';
-if ($ARGV[0] eq '-DEBUG') {
+if ($ARGV[0] =~ /^-DEBUG=?(\d*)$/) {
+    my $n = $1 || 1;
     shift @ARGV;
-    unshift @ARGV, "OPTIMIZE=-DDEBUG -DDEBUGGING -g";
+    unshift @ARGV, "OPTIMIZE=-DDEBUG=$n -DDEBUGGING -g";
 }
 elsif ($ARGV[0] eq '-PROFILE') {
     shift @ARGV;
