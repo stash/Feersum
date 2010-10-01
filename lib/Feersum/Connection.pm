@@ -1,20 +1,28 @@
 package Feersum::Connection;
 use strict;
+use Carp ();
 
 sub new {
     Carp::croak "Cannot instantiate Feersum::Connection directly";
 }
 
+sub read_handle {
+    Carp::croak "read_handle is deprecated; use psgi.input instead";
+}
+
+sub write_handle {
+    Carp::croak "write_handle is deprecated; ".
+        "use return value from start_streaming instead";
+}
+
+sub start_response {
+    Carp::croak "start_response is deprecated; ".
+        "use start_streaming() or start_whole_response() instead";
+}
+
 sub initiate_streaming {
-    my $self = shift;
-    my $streamer = shift;
-    Carp::croak "Feersum: Expected coderef"
-        unless ref($streamer) eq 'CODE';
-    @_ = (sub {
-        $self->start_response($_[0],$_[1],1);
-        return $self->write_handle;
-    });
-    goto &$streamer;
+    Carp::croak "initiate_streaming is deprecated; ".
+        "use start_streaming() and its return value instead";
 }
 
 sub _initiate_streaming_psgi {
@@ -25,8 +33,7 @@ sub _initiate_streaming_psgi {
             $self->send_response($strm->[0],$strm->[1],$strm->[2]);
         }
         elsif ($#$strm == 1) {
-            $self->start_response($strm->[0],$strm->[1],1);
-            return $self->write_handle;
+            return $self->start_streaming($strm->[0],$strm->[1]);
         }
         else {
             die "streaming responder expected array";

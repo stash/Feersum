@@ -1999,34 +1999,23 @@ MODULE = Feersum	PACKAGE = Feersum::Connection
 
 PROTOTYPES: ENABLE
 
-void
-start_response (struct feer_conn *c, SV *message, AV *headers, int streaming)
-    PROTOTYPE: $$\@$
-    PPCODE:
-        feersum_start_response(aTHX_ c, message, headers, streaming);
-
-int
-write_whole_body (struct feer_conn *c, SV *body)
-    PROTOTYPE: $$
+SV *
+start_streaming (struct feer_conn *c, SV *message, AV *headers)
+    PROTOTYPE: $$\@
     CODE:
-        RETVAL = feersum_write_whole_body(aTHX_ c, body);
+        feersum_start_response(aTHX_ c, message, headers, 1);
+        RETVAL = new_feer_conn_handle(c, 1); // RETVAL gets mortalized
     OUTPUT:
         RETVAL
 
-void
-send_response (struct feer_conn *c, SV* msg, SV *hdrs, SV *body)
-    PROTOTYPE: $$$$
-    PPCODE:
-{
-    AV *headers;
-    if (IsArrayRef(hdrs))
-        headers = (AV*)SvRV(hdrs);
-    else
-        croak("Must supply headers as an array-ref");
-
-    feersum_start_response(aTHX_ c, msg, headers, 0);
-    feersum_write_whole_body(aTHX_ c, body);
-}
+int
+send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
+    PROTOTYPE: $$\@$
+    CODE:
+        feersum_start_response(aTHX_ c, message, headers, 0);
+        RETVAL = feersum_write_whole_body(aTHX_ c, body);
+    OUTPUT:
+        RETVAL
 
 void
 force_http10 (struct feer_conn *c)
@@ -2035,18 +2024,6 @@ force_http10 (struct feer_conn *c)
         force_http11 = 1
     PPCODE:
         c->is_http11 = ix;
-
-SV *
-_handle (struct feer_conn *c)
-    PROTOTYPE: $
-    ALIAS:
-        read_handle = 1
-        write_handle = 2
-    CODE:
-        if(!ix) croak("cannot call _handle directly");
-        RETVAL = new_feer_conn_handle(c, ix-1);
-    OUTPUT:
-        RETVAL
 
 SV *
 env (struct feer_conn *c)

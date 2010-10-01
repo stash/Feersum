@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use constant CLIENTS => 15;
-use Test::More tests => 10 + 12 * CLIENTS;
+use Test::More tests => 10 + 11 * CLIENTS;
 use Test::Exception;
 use lib 't'; use Utils;
 
@@ -36,25 +36,20 @@ $evh->request_handler(sub {
     ok $cnum, "got client number";
 
     $cv->begin;
-    my $cb = $r->initiate_streaming(sub {
-        undef $r;
-        $started++;
-        my $start = shift;
-        is ref($start), 'CODE', "streaming handler got a code ref $cnum";
-        my $w = $start->("200 OK", ['Content-Type' => 'text/plain']);
-        isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
-        isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
-        my $t; $t = AE::timer 1.5+rand(0.5), 0, sub {
-            lives_ok {
-                $w->write("So graceful!\n");
-                $w->close();
-            } "wrote after waiting a little $cnum";
-            undef $t; # keep timer alive until it runs
-            undef $w;
-            $cv->end;
-            $finished++;
-        };
-    });
+    my $w = $r->start_streaming("200 OK", ['Content-Type' => 'text/plain']);
+    $started++;
+    isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
+    isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
+    my $t; $t = AE::timer 1.5+rand(0.5), 0, sub {
+        lives_ok {
+            $w->write("So graceful!\n");
+            $w->close();
+        } "wrote after waiting a little $cnum";
+        undef $t; # keep timer alive until it runs
+        undef $w;
+        $cv->end;
+        $finished++;
+    };
 });
 
 lives_ok {

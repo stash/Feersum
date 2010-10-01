@@ -50,20 +50,26 @@ Feersum - A scary-fast HTTP engine for Perl based on EV/libev
     my $ngn = Feersum->endjinn; # singleton
     $ngn->use_socket($io_socket);
     
+    # register a PSGI handler
+    $ngn->psgi_request_handler(sub {
+        my $env = shift;
+        return [200,
+            ['Content-Type'=>'text/plain'],
+            ["You win one cryptosphere!\n"]];
+    });
+    
     # register a Feersum handler:
     $ngn->request_handler(sub {
         my $req = shift;
         my $t; $t = EV::timer 2, 0, sub {
             $req->send_response(
-                200, ['Content-Type' => 'text/plain'],
-                ["You win one cryptosphere!\n"]
+                200,
+                ['Content-Type' => 'text/plain'],
+                \"You win one cryptosphere!\n"
             );
             undef $t;
         };
     });
-    
-    # register a PSGI handler
-    $ngn->psgi_request_handler($app);
 
 =head1 DESCRIPTION
 
@@ -310,6 +316,10 @@ propagated.
 =head1 LIMITS
 
 =over 4
+
+=item listening sockets
+
+1 - this may be considered a bug
 
 =item body length
 
