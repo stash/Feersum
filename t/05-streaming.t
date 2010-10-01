@@ -1,8 +1,8 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS_11 => 15;
-use constant CLIENTS_10 => 15;
+use constant CLIENTS_11 => 25;
+use constant CLIENTS_10 => 25;
 use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
 use Test::More tests => 7 + 21 * CLIENTS_11 + 22 * CLIENTS_10;
 use Test::Exception;
@@ -40,22 +40,24 @@ $evh->request_handler(sub {
     ok !$r->can('write'), "write method removed from connection object";
 
     $cv->begin;
-    my $w = $r->start_streaming("200 OK", ['Content-Type' => 'text/plain', 'X-Client' => $cnum]);
+    my $w = $r->start_streaming("200 OK", ['Content-Type' => 'text/plain', 'X-Client' => $cnum, 'X-Fileno' => $r->fileno ]);
     $started++;
     isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
     isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
     my $n = 0;
+    my $wrote_third = 0;
     my $t; $t = AE::timer rand()/5,rand()/5, sub {
         $n++;
         eval {
-            ok blessed($w), "still blessed? $cnum";
             if ($n == 1) {
+                ok blessed($w), "still blessed? $cnum";
                 # cover PADTMP case
                 $w->write("$cnum Hello streaming world! chunk ".
                           ($n==1?"one":"WTF")."\n");
                 pass "wrote chunk $n $cnum";
             }
             elsif ($n == 2) {
+                ok blessed($w), "still blessed? $cnum";
                 # cover PADMY case
                 my $d = "$cnum Hello streaming world! chunk ".
                         ($n==1?"WTF":"'two'")."\n";
@@ -63,6 +65,7 @@ $evh->request_handler(sub {
                 pass "wrote chunk $n $cnum";
             }
             elsif ($n == 3) {
+                ok blessed($w), "still blessed? $cnum";
                 my $buf = "$cnum Hello streaming world! chunk three\n";
                 $w->poll_cb(sub {
                     my $w2 = shift;
@@ -70,9 +73,11 @@ $evh->request_handler(sub {
                         "got another writer $cnum");
                     $w2->write($buf);
                     $w2->poll_cb(undef); # unset
+                    $wrote_third = 1;
                 });
             }
-            else {
+            elsif ($wrote_third) {
+                ok blessed($w), "still blessed? $cnum";
                 $w->close();
                 pass "async writer finished $cnum";
                 dies_ok {
@@ -121,7 +126,11 @@ sub client {
             "$cnum Hello streaming world! chunk one",
             "$cnum Hello streaming world! chunk 'two'",
             "$cnum Hello streaming world! chunk three",
-        ], "$cnum got all three lines";
+        ], "$cnum got all three lines"
+            or do {
+                warn "descriptor ".$headers->{'x-fileno'}." failed!";
+                exit 2;
+            };
         $cv->end;
         undef $h;
     };

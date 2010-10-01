@@ -37,3 +37,4 @@ t/52-psgi-iohandle.t
 t/60-plack.t
 t/Utils.pm
 typemap
+xt/50-psgi-simple-stress.t
