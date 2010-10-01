@@ -417,6 +417,11 @@ This could lead to a DoS attack on a Feersum server.  Suggested remedy is to
 only run Feersum behind some other web server and to use that to limit the
 entity size.
 
+Something isn't getting set right with the TCP socket options and the last
+chunk in a streamed response is sometimes lost.  This happens more frequently
+under high concurrency.  Fiddling with TCP_NODELAY and SO_LINGER don't seem to
+help.  Maybe threads are needed to do blocking close() and shutdown() calls?
+
 =head1 SEE ALSO
 
 http://en.wikipedia.org/wiki/Feersum_Endjinn

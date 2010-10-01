@@ -399,7 +399,6 @@ static int
 prep_socket(int fd)
 {
     int flags;
-    struct linger linger = { .l_onoff = 0, .l_linger = 0 };
 
     // make it non-blocking
     flags = O_NONBLOCK;
@@ -421,10 +420,17 @@ prep_socket(int fd)
         return -1;
 
     // disable lingering
+    struct linger linger = { .l_onoff = 0, .l_linger = 0 };
     if (setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger)))
         return -1;
 
     return 0;
+}
+
+static void
+make_blocking(int fd)
+{
+    fcntl(fd, F_SETFL, 0);
 }
 
 static struct feer_conn *
@@ -739,7 +745,7 @@ try_write_finished:
         goto try_write_shutdown;
     case RESPOND_STREAMING:
         if (c->poll_write_cb) goto try_write_again;
-        goto try_write_paused;
+        else goto try_write_paused;
     case RESPOND_SHUTDOWN:
         goto try_write_shutdown;
     default:
@@ -754,8 +760,12 @@ try_write_paused:
 try_write_shutdown:
     trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
     c->responding = RESPOND_SHUTDOWN;
-    shutdown(c->fd, SHUT_WR);
     stop_write_watcher(c);
+    make_blocking(c->fd);
+    //shutdown(c->fd, SHUT_WR);
+    if(close(c->fd))
+        perror("close socket at shutdown");
+    c->fd = 0;
 
 try_write_cleanup:
     SvREFCNT_dec(c->self);
@@ -851,10 +861,13 @@ try_read_error:
     trace("READ ERROR %d, refcnt=%d\n", w->fd, SvREFCNT(c->self));
     c->receiving = RECEIVE_SHUTDOWN;
     c->responding = RESPOND_SHUTDOWN;
-    shutdown(c->fd, SHUT_RDWR);
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_write_watcher(c);
+    //shutdown(c->fd, SHUT_RDWR);
+    if (close(c->fd))
+        perror("close on read error");
+    c->fd = 0;
     goto try_read_cleanup;
 
 try_read_bad:
@@ -911,9 +924,15 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
     }
     else {
         trace("read timeout while writing %d\n",c->fd);
-        shutdown(c->fd, SHUT_RDWR);
-        c->responding = RESPOND_SHUTDOWN;
         stop_write_watcher(c);
+        stop_read_watcher(c);
+        stop_read_timer(c);
+        make_blocking(c->fd);
+        //shutdown(c->fd, SHUT_RDWR);
+        if(close(c->fd))
+            perror("close socket at read timeout");
+        c->fd = 0;
+        c->responding = RESPOND_SHUTDOWN;
     }
 
 read_timeout_cleanup:
@@ -2024,7 +2043,7 @@ _close (feer_conn_handle *hdl)
         c->receiving = RECEIVE_SHUTDOWN;
         break;
     case 2:
-        trace("close writer fd=%d, c=%p\n", c->fd, c);
+        trace("close writer fd=%d, c=%p, refcnt=%d\n", c->fd, c, SvREFCNT(c->self));
         if (c->poll_write_cb) {
             SvREFCNT_dec(c->poll_write_cb);
             c->poll_write_cb = NULL;
@@ -2145,7 +2164,11 @@ DESTROY (struct feer_conn *c)
 
     if (c->sa) Safefree(c->sa);
 
-    if (c->fd) close(c->fd);
+    if (c->fd) {
+        make_blocking(c->fd);
+        if(close(c->fd))
+            perror("close socket at destruction");
+    }
 
     if (c->poll_write_cb) SvREFCNT_dec(c->poll_write_cb);
 
