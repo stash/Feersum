@@ -1,7 +1,9 @@
 Revision history for Perl extension Feersum
 
-0.97
+0.97  Wed Oct  6 15:00:00 2010 -0700
         Full Plack::Test::Suite compliance!
+        Handle 304 responses properly.
+        Don't manually steal TEMP vars.
 
 0.961 Wed Oct  6 08:40:00 2010 -0700
         Fix building under threaded perls.
