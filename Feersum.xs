@@ -1597,6 +1597,7 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
     if (!SvOK(ret) || !SvROK(ret)) {
         sv_setpvs(ERRSV, "Invalid PSGI response (expected defined)");
         call_died(aTHX_ c, "PSGI request");
+        return;
     }
 
     if (!IsArrayRef(ret)) {
@@ -1639,6 +1640,7 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
     else {
         sv_setpvs(ERRSV, "Expected PSGI array-ref or IO::Handle-like body");
         call_died(aTHX_ c, "PSGI request");
+        return;
     }
 }
 
@@ -1684,18 +1686,19 @@ call_request_callback (struct feer_conn *c)
     }
 
     PUTBACK;
-    call_sv(request_cb_cv, flags);
+    int returned = call_sv(request_cb_cv, flags);
     SPAGAIN;
 
     trace("called request callback, errsv? %d\n", SvTRUE(ERRSV) ? 1 : 0);
 
     if (SvTRUE(ERRSV)) {
         call_died(aTHX_ c, "request");
+        returned = 0; // pretend nothing got returned
     }
 
     SV *psgi_response;
-    if (request_cb_is_psgi) {
-        psgi_response = *sp;
+    if (request_cb_is_psgi && returned >= 1) {
+        psgi_response = POPs;
         SvREFCNT_inc(psgi_response);
     }
 
@@ -1704,7 +1707,7 @@ call_request_callback (struct feer_conn *c)
     FREETMPS;
     LEAVE;
 
-    if (request_cb_is_psgi) {
+    if (request_cb_is_psgi && returned >= 1) {
         feersum_handle_psgi_response(aTHX_ c, psgi_response);
         SvREFCNT_dec(psgi_response);
     }
