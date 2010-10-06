@@ -38,8 +38,11 @@ elsif ($ARGV[0] eq '-PROFILEUSE') {
 # Set this to false if you get core-dumps. Gives a pretty good perf boost for
 # simple responses. Look for FEERSUM_STEAL in the code to see what this does.
 # In a nutshell: certain temporary values passed in as the body of a response
-# have their string-value "stolen".
-my $steal = ($] >= 5.012);
+# have their string-value "stolen".  This very much doesn't work under threaded
+# perl (5.8.7 and 5.12.1 were tested) and probably doesn't work prior to
+# 5.12.0.
+use Config;
+my $steal = ($] >= 5.012 && !defined($Config{useithreads}));
 
 WriteMakefile(ev_args(
     NAME          => 'Feersum',
