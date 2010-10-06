@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.971 Wed Oct  6 16:21:00 2010 -0700
+        Fix the feersum script.
+
 0.97  Wed Oct  6 15:00:00 2010 -0700
         Full Plack::Test::Suite compliance!
         Handle 304 responses properly.
