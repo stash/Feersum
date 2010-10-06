@@ -1773,22 +1773,23 @@ pump_io_handle (struct feer_conn *c, SV *io)
     PUSHMARK(SP);
     XPUSHs(c->poll_write_cb);
     PUTBACK;
-    call_method("getline", G_SCALAR|G_EVAL);
+    int returned = call_method("getline", G_SCALAR|G_EVAL);
     SPAGAIN;
 
-    trace("called getline on io handle, errsv? %d %d\n",
-        SvTRUE(ERRSV) ? 1 : 0, c->fd);
+    trace("called getline on io handle fd=%d errsv=%d returned=%d\n",
+        c->fd, SvTRUE(ERRSV) ? 1 : 0, returned);
 
     if (SvTRUE(ERRSV)) {
         call_died(aTHX_ c, "getline on io handle");
         goto done_pump_io;
     }
 
-    ret = POPs;
-    if (SvMAGICAL(ret))
+    if (returned > 0)
+        ret = POPs;
+    if (ret && SvMAGICAL(ret))
         ret = sv_2mortal(newSVsv(ret));
 
-    if (!SvOK(ret)) {
+    if (!ret || !SvOK(ret)) {
         // returned undef, so call the close method out of niceity
         PUSHMARK(SP);
         XPUSHs(c->poll_write_cb);
