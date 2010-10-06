@@ -232,12 +232,13 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
     if (SvMAGICAL(sv)) {
         sv = newSVsv(sv); // copy to force it to be normal.
     }
-    else if (SvPADTMP(sv) || SvTEMP(sv)) {
+    else if (SvPADTMP(sv)) {
         // PADTMPs have their PVs re-used, so we can't simply keep a
         // reference.  TEMPs maybe behave in a similar way and are potentially
         // stealable.
 #ifdef FEERSUM_STEAL
         if (SvFLAGS(sv) == SVs_PADTMP|SVf_POK|SVp_POK) {
+            trace3("STEALING\n");
             // XXX: EGREGIOUS HACK THAT MAKES THINGS A LOT FASTER
             // steal the PV from a PADTMP PV
             SV *theif = newSV(0);
@@ -258,7 +259,7 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
             sv = theif;
         }
         else {
-            // be safe an just make a simple copy
+            // be safe and just make a copy
             sv = newSVsv(sv);
         }
 #else
