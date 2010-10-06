@@ -21,17 +21,19 @@ use EV::MakeMaker qw/ev_args/;
 my $otherldflags = '';
 if ($ARGV[0] =~ /^-DEBUG=?(\d*)$/) {
     my $n = $1 || 1;
-    shift @ARGV;
-    unshift @ARGV, "OPTIMIZE=-DDEBUG=$n -DDEBUGGING -g";
+    my $opt = "OPTIMIZE=-DDEBUG=$n -g";
+    # with 5.12.1 and the -DDEBUGGING flag:
+    # dyld: Symbol not found: _Perl_pad_sv
+    $opt .= ($] >= 5.012_001) ? '' : ' -DDEBUGGING';
+    $ARGV[0] = $opt;
 }
 elsif ($ARGV[0] eq '-PROFILE') {
     shift @ARGV;
-    unshift @ARGV, "OPTIMIZE=-g -O3 -fprofile-arcs -ftest-coverage -fprofile-generate";
+    $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-arcs -ftest-coverage -fprofile-generate";
     $otherldflags = '-lgcov -fprofile-generate';
 }
 elsif ($ARGV[0] eq '-PROFILEUSE') {
-    shift @ARGV;
-    unshift @ARGV, "OPTIMIZE=-g -O3 -fprofile-use";
+    $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-use";
     $otherldflags = '-fprofile-use';
 }
 
