@@ -1,8 +1,9 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 35;
+use Test::More tests => 53;
 use Test::Exception;
+use Fcntl qw/SEEK_CUR SEEK_SET SEEK_END/;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -52,6 +53,24 @@ $evh->request_handler(sub {
         is $read, 7, "read again w/ offset";
         is $body, 'offset testing', "got both words";
     }
+    elsif ($env->{HTTP_X_CLIENT} == 4) {
+        ok $input->seek(0,SEEK_CUR), "can always seek to cur";
+        ok $input->seek(5, SEEK_SET);
+        $read = $input->read($body, 3);
+        is $read, 3;
+        is $body, 'and', "seek_set worked";
+        ok !$input->seek(-1, SEEK_CUR), "can't seek back";
+        ok $input->seek(1, SEEK_CUR), "can seek forward";
+        ok $input->seek(-7, SEEK_END), "can seek from end"; # 'find it'
+        ok !$input->seek(-8, SEEK_END), "can seek back from end";
+        $body = '';
+        $read = $input->read($body, 4);
+        is $read, 4;
+        is $body, 'find';
+        ok !$input->seek(-1, SEEK_CUR), "can't seek back";
+        $read = $input->read($body, 3);
+        is $body, 'find it';
+    }
     else {
         fail "don't know about client $env->{HTTP_X_CLIENT}";
     }
@@ -73,7 +92,7 @@ timeout => 3,
 sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, 'ok';
-    is $body, 'TESTING PARTIAL READS', 'uppercased';
+    is $body, 'TESTING PARTIAL READS', 'uppercased partial';
     $cv->end;
 };
 
@@ -85,7 +104,7 @@ timeout => 3,
 sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, 'ok';
-    is $body, 'TESTING SLURP', 'uppercased';
+    is $body, 'TESTING SLURP', 'uppercased slurp';
     $cv->end;
 };
 
@@ -98,6 +117,18 @@ sub {
     my ($body, $headers) = @_;
     is $headers->{Status}, 200, 'ok';
     is $body, 'OFFSET TESTING', 'uppercased and reversed';
+    $cv->end;
+};
+
+$cv->begin;
+my $w4 = simple_client POST => "/uppercase", 
+headers => { 'X-Client' => 4 },
+body => 'seek and you shall find it',
+timeout => 3,
+sub {
+    my ($body, $headers) = @_;
+    is $headers->{Status}, 200, 'ok';
+    is $body, 'FIND IT', 'uppercased seeking';
     $cv->end;
 };
 

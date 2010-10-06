@@ -9,15 +9,14 @@ package Feersum::Connection::Reader;
 use strict;
 use base 'Feersum::Connection::Handle';
 
-sub write { Carp::croak "can't call write method on a read-only handle" }
-
-sub seek { Carp::carp "seek not supported."; return 0 }
+sub write { Carp::croak "can't call write() on a read-only handle" }
 
 package Feersum::Connection::Writer;
 use strict;
 use base 'Feersum::Connection::Handle';
 
-sub read { Carp::croak "can't call read method on a write-only handle" }
+sub read { Carp::croak "can't call read() on a write-only handle" }
+sub seek { Carp::croak "can't call seek() on a write-only handle" }
 
 package Feersum::Connection::Handle;
 
@@ -34,11 +33,13 @@ For read handles:
 
     my $buf;
     my $r = delete $env{'psgi.input'};
-    $r->read($buf, $env{CONTENT_LENGTH});
+    $r->read($buf, 1, 1); # read the second byte of input without moving offset
+    $r->read($buf, $env{CONTENT_LENGTH}); # append the whole input
     $r->close(); # discards any un-read() data
-    
-    # emits a warning and returns 0:
-    $r->seek(....);
+
+    # assuming the handle is "open":
+    $r->seek(2,SEEK_CUR); # returns 1, discards skipped bytes
+    $r->seek(-1,SEEK_CUR); # returns 0, can't seek back
     
     # not yet supported, throws exception:
     # $r->poll_cb(sub { .... });
@@ -80,8 +81,15 @@ hash.
 
 =item C<< $r->seek(...) >>
 
-Seeking is not supported.  Feersum discards input data to conserve memory,
-but only after it has been read.
+Seeking is partially supported.  Feersum discards skipped-over bytes to
+conserve memory.
+
+    $r->seek(0,SEEK_CUR);  # returns 1
+    $r->seek(-1,SEEK_CUR); # returns 0
+    $r->seek(-1,SEEK_SET); # returns 0
+    $r->seek(2,SEEK_CUR); # returns 1, discards skipped bytes
+    $r->seek(42,SEEK_SET); # returns 1 if room, discards skipped bytes
+    $r->seek(-8,SEEK_END); # returns 1 if room, discards skipped bytes
 
 =item C<< $r->close() >>
 

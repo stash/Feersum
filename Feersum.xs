@@ -1945,7 +1945,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     ssize_t offset;
     char *buf_ptr, *src_ptr;
     
-    if (items > 3 && SvOK(ST(3)) && SvIOK(ST(3)))
+    if (items == 4 && SvOK(ST(3)) && SvIOK(ST(3)))
         offset = SvIV(ST(3));
     else
         offset = 0;
@@ -2011,8 +2011,10 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
             c->fd, len, offset, src_ptr);
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
-        if (offset == 0)
-            sv_chop(c->rbuf, SvPVX(c->rbuf) + len); // throw away that part
+        if (items == 3) {
+            // there wasn't an offset param, throw away beginning
+            sv_chop(c->rbuf, SvPVX(c->rbuf) + len);
+        }
     }
 
     XSRETURN_IV(len);
@@ -2052,7 +2054,57 @@ write (feer_conn_handle *hdl, SV *body, ...)
         RETVAL
 
 int
-_close (feer_conn_handle *hdl)
+seek (feer_conn_handle *hdl, ssize_t offset, ...)
+    PROTOTYPE: $$;$
+    CODE:
+{
+    int whence = SEEK_CUR;
+    if (items == 3 && SvOK(ST(2)) && SvIOK(ST(2)))
+        whence = SvIV(ST(2));
+
+    trace("seek fd=%d offset=%d whence=%d\n", c->fd, offset, whence);
+
+    if (!c->rbuf) {
+        // handle is effectively "closed"
+        RETVAL = 0;
+    }
+    else if (offset == 0) {
+        RETVAL = 1; // stay put for any whence
+    }
+    else if (offset > 0 && (whence == SEEK_CUR || whence == SEEK_SET)) {
+        STRLEN len;
+        const char *str = SvPV_const(c->rbuf, len);
+        if (offset > len)
+            offset = len;
+        sv_chop(c->rbuf, str + offset);
+        RETVAL = 1;
+    }
+    else if (offset < 0 && whence == SEEK_END) {
+        STRLEN len;
+        const char *str = SvPV_const(c->rbuf, len);
+        offset += len; // can't be > len since block is offset<0
+        if (offset == 0) {
+            RETVAL = 1; // no-op, but OK
+        }
+        else if (offset > 0) {
+            sv_chop(c->rbuf, str + offset);
+            RETVAL = 1;
+        }
+        else {
+            // past beginning of string
+            RETVAL = 0;
+        }
+    }
+    else {
+        // invalid seek
+        RETVAL = 0;
+    }
+}
+    OUTPUT:
+        RETVAL
+
+int
+close (feer_conn_handle *hdl)
     PROTOTYPE: $
     ALIAS:
         Feersum::Connection::Reader::close = 1
@@ -2063,6 +2115,10 @@ _close (feer_conn_handle *hdl)
     case 1:
         trace("close reader fd=%d, c=%p\n", c->fd, c);
         // TODO: ref-dec poll_read_cb
+        if (c->rbuf) {
+            SvREFCNT_dec(c->rbuf);
+            c->rbuf = NULL;
+        }
         RETVAL = shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
         c->receiving = RECEIVE_SHUTDOWN;
         break;

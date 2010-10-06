@@ -166,8 +166,8 @@ no body to avoid unnecessary work.
 
     my $r = delete $env->{'psgi.input'};
     $r->read($body, $env->{CONTENT_LENGTH});
-    # optional: choose to stop receiving further input:
-    # $r->close();
+    # optional: choose to stop receiving further input, discard buffers:
+    $r->close();
 
 The C<psgi.streaming> interface is fully supported, including the
 writer-object C<poll_cb> callback feature defined in PSGI 1.03.  Feersum calls
@@ -259,8 +259,8 @@ To read input from a POST/PUT, use the C<psgi.input> item of the env hash.
         my $body = '';
         my $r = delete $env->{'psgi.input'};
         $r->read($body, $env->{CONTENT_LENGTH});
-        # optional: choose to stop receiving further input:
-        # $r->close();
+        # optional:
+        $r->close();
     }
 
 Starting a response in stream mode enables the C<write()> method (which really
