@@ -1941,46 +1941,61 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     PROTOTYPE: $$$;$
     PPCODE:
 {
-    STRLEN buf_len, src_len;
+    STRLEN buf_len = 0, src_len = 0;
+    ssize_t offset;
     char *buf_ptr, *src_ptr;
-    bool src_ookd;
     
-    //  if (items > 3 && SvOK(ST(3)) && SvIOK(ST(3)))
-    //      off = SvUV(ST(3));
-    if (items > 3)
-        croak("reading with an offset is not yet supported");
+    if (items > 3 && SvOK(ST(3)) && SvIOK(ST(3)))
+        offset = SvIV(ST(3));
+    else
+        offset = 0;
+
+    trace("read fd=%d : request    len=%d off=%d\n", c->fd, len, offset);
 
     if (c->receiving <= RECEIVE_HEADERS)
         croak("can't call read() until the body begins to arrive");
 
     if (!SvOK(buf) || !SvPOK(buf)) {
-        SvUPGRADE(buf, SVt_PV);
+        // force to a PV and ensure buffer space
+        sv_setpvn(buf,"",0);
+        SvGROW(buf, len+1);
     }
 
     if (SvREADONLY(buf))
         croak("buffer must not be read-only");
 
-    buf_ptr = SvPV(buf, buf_len);
-    if (c->rbuf) {
-        trace("getting rbuf src_ptr\n");
-        src_ptr = SvPV(c->rbuf, src_len);
-    }
+    if (len == 0)
+        XSRETURN_IV(0); // assumes undef buffer got allocated to empty-string
 
-    if (!c->rbuf || src_len == 0) {
-        trace("rbuf empty during read %d\n", c->fd);
+    buf_ptr = SvPV(buf, buf_len);
+    if (c->rbuf)
+        src_ptr = SvPV(c->rbuf, src_len);
+
+    if (len < 0)
+        len = src_len;
+
+    if (offset < 0)
+        offset = (-offset >= c->received_cl) ? 0 : c->received_cl + offset;
+
+    if (len + offset > src_len) 
+        len = src_len - offset;
+
+    trace("read fd=%d : normalized len=%d off=%d src_len=%d\n",
+        c->fd, len, offset, src_len);
+
+    if (!c->rbuf || src_len == 0 || offset >= c->received_cl) {
+        trace2("rbuf empty during read %d\n", c->fd);
         if (c->receiving == RECEIVE_SHUTDOWN) {
-            XSRETURN_IV(0); // all done
+            XSRETURN_IV(0);
         }
         else {
-            errno = EAGAIN; // need to wait for more
+            errno = EAGAIN;
             XSRETURN_UNDEF;
         }
     }
 
-    if (len == -1) len = src_len;
-
-    if (len >= src_len) {
-        trace("appending entire rbuf %d\n", c->fd);
+    if (len == src_len && offset == 0) {
+        trace2("appending entire rbuf fd=%d\n", c->fd);
         sv_2mortal(c->rbuf); // allow pv to be stolen
         if (buf_len == 0) {
             sv_setsv(buf, c->rbuf);
@@ -1989,18 +2004,18 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
             sv_catsv(buf, c->rbuf);
         }
         c->rbuf = NULL;
-        XSRETURN_IV(src_len);
     }
     else {
-        trace("appending partial rbuf %d len=%d ptr=%p\n", c->fd, len, SvPVX(c->rbuf));
-        // partial append
+        src_ptr += offset;
+        trace2("appending partial rbuf fd=%d len=%d off=%d ptr=%p\n",
+            c->fd, len, offset, src_ptr);
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
-        sv_chop(c->rbuf, SvPVX(c->rbuf) + len);
-        XSRETURN_IV(len);
+        if (offset == 0)
+            sv_chop(c->rbuf, SvPVX(c->rbuf) + len); // throw away that part
     }
 
-    XSRETURN_UNDEF;
+    XSRETURN_IV(len);
 }
 
 STRLEN
