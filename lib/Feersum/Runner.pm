@@ -26,6 +26,7 @@ sub _prepare {
             Listen => 1024,
             Blocking => 0,
         );
+        die "couldn't bind to socket: $!" unless $sock;
     }
     $self->{sock} = $sock;
     my $f = Feersum->endjinn;
