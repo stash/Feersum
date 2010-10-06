@@ -23,7 +23,14 @@
 #define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
 #define MAX_BODY_LENGTH 2147483647
-#define READ_CHUNK 4096
+
+// Read buffers start out at READ_INIT_FACTOR * READ_BUFSZ bytes.
+// If another read is needed and the buffer is under READ_BUFSZ bytes
+// then the buffer gets an additional READ_GROW_FACTOR * READ_BUFSZ bytes.
+// The trade-off with the grow factor is memory usage vs. system calls.
+#define READ_BUFSZ 4096
+#define READ_INIT_FACTOR 2
+#define READ_GROW_FACTOR 8
 
 // Setting this to true will wait for writability before calling write() (will
 // try to immediately write otherwise)
@@ -289,6 +296,7 @@ add_placeholder_to_wbuf(struct feer_conn *c, SV **sv, struct iovec **iov_ref)
     struct iomatrix *m = next_iomatrix(c);
     int idx = m->count++;
     *sv = newSV(31);
+    SvPOK_on(*sv);
     m->sv[idx] = *sv;
     *iov_ref = &m->iov[idx];
 }
@@ -809,17 +817,20 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
     if (!c->rbuf) {
         trace("init rbuf for %d\n",w->fd);
-        c->rbuf = newSV(2*READ_CHUNK + 1);
+        c->rbuf = newSV(READ_INIT_FACTOR*READ_BUFSZ + 1);
+        SvPOK_on(c->rbuf);
     }
 
-    if (SvLEN(c->rbuf) - SvCUR(c->rbuf) < READ_CHUNK) {
-        size_t new_len = SvLEN(c->rbuf) + READ_CHUNK;
+    ssize_t space_free = SvLEN(c->rbuf) - SvCUR(c->rbuf);
+    if (space_free < READ_BUFSZ) {
+        size_t new_len = SvLEN(c->rbuf) + READ_GROW_FACTOR*READ_BUFSZ;
         trace("moar memory %d: %d to %d\n",w->fd, SvLEN(c->rbuf),new_len);
         SvGROW(c->rbuf, new_len);
+        space_free += READ_GROW_FACTOR*READ_BUFSZ;
     }
 
     char *cur = SvPVX(c->rbuf) + SvCUR(c->rbuf);
-    ssize_t got_n = read(w->fd, cur, READ_CHUNK);
+    ssize_t got_n = read(w->fd, cur, space_free);
 
     if (got_n == -1) {
         if (errno == EAGAIN || errno == EINTR)
@@ -1025,11 +1036,19 @@ process_request_headers (struct feer_conn *c, int body_offset)
     
     // a body potentially follows the headers. Let feer_req retain its
     // pointers into rbuf and make a new scalar for more body data.
-    int need = SvCUR(c->rbuf) - body_offset;
-    char *from  = SvPVX(c->rbuf) + body_offset;
-    SV *new_rbuf = newSV((need > 2*READ_CHUNK) ? need-1 : 2*READ_CHUNK-1);
+    STRLEN from_len;
+    char *from = SvPV(c->rbuf,from_len);
+    from += body_offset;
+    int need = from_len - body_offset;
+    int new_alloc = (need > READ_INIT_FACTOR*READ_BUFSZ)
+        ? need : READ_INIT_FACTOR*READ_BUFSZ-1;
+    trace("new rbuf for body %d need=%d alloc=%d\n",c->fd, need, new_alloc);
+    SV *new_rbuf = newSV(new_alloc);
     if (need)
         sv_setpvn(new_rbuf, from, need);
+    else
+        SvPOK_on(new_rbuf);
+
     req->buf = c->rbuf;
     c->rbuf = new_rbuf;
 
@@ -1080,6 +1099,7 @@ got_cl:
     c->expected_cl = (ssize_t)expected;
     c->received_cl = SvCUR(c->rbuf);
     trace("expecting body %d size=%d have=%d\n",c->fd, c->expected_cl,c->received_cl);
+    SvGROW(c->rbuf, c->expected_cl + 1);
 
     // don't have enough bytes to schedule immediately?
     if (c->expected_cl && c->received_cl < c->expected_cl) {
