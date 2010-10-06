@@ -117,9 +117,10 @@ struct feer_conn {
     U16 in_callback;
     U16 responding;
     U16 receiving;
-    U16 _reservedflags:14;
+    U16 _reservedflags:13;
     U16 is_http11:1;
     U16 poll_write_cb_is_io_handle:1;
+    U16 auto_cl:1;
 };
 
 typedef struct feer_conn feer_conn_handle; // for typemap
@@ -156,6 +157,7 @@ static void respond_with_server_error(struct feer_conn *c, const char *msg, STRL
 
 static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
+#define add_crlf_to_wbuf(c) add_const_to_wbuf(c,CRLF,2)
 static void finish_wbuf (struct feer_conn *c);
 static void add_chunk_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static void add_placeholder_to_wbuf (struct feer_conn *c, SV **sv, struct iovec **iov_ref);
@@ -318,7 +320,7 @@ add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
     struct iovec *chunk_iov;
     add_placeholder_to_wbuf(c, &chunk, &chunk_iov);
     STRLEN cur = add_sv_to_wbuf(c, sv);
-    add_const_to_wbuf(c, CRLF, 2);
+    add_crlf_to_wbuf(c);
     sv_setpvf(chunk, "%x" CRLF, cur);
     update_wbuf_placeholder(c, chunk, chunk_iov);
 }
@@ -1455,21 +1457,38 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     }
 
     I32 avl = av_len(headers);
-    if (avl < 0 || (avl % 2 != 1)) {
-        croak("expected even-length array");
+    if (avl+1 % 2 == 1) {
+        croak("expected even-length array, got %d", avl+1);
     }
 
     // int or 3 chars? use a stock message
-    if (SvIOK(message) || (SvPOK(message) && SvCUR(message) == 3)) {
-        int code = SvIV(message);
+    UV code = 0;
+    if (SvIOK(message))
+        code = SvIV(message);
+    else if (SvUOK(message))
+        code = SvUV(message);
+    else {
+        const int numtype = grok_number(SvPVX_const(message),3,&code);
+        if (numtype != IS_NUMBER_IN_UV)
+            code = 0;
+    }
+    trace2("starting response fd=%d code=%u\n",c->fd,code);
+
+    if (!code)
+        croak("first parameter is not a number or doesn't start with digits");
+
+    if (!SvPOK(message) || SvCUR(message) == 3) {
         ptr = http_code_to_msg(code);
         len = strlen(ptr);
         message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
     }
+    
+    // don't generate or strip Content-Length headers for 304 responses.
+    c->auto_cl = (code == 304) ? 0 : 1;
 
     add_const_to_wbuf(c, c->is_http11 ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
     add_sv_to_wbuf(c, message);
-    add_const_to_wbuf(c, CRLF, 2);
+    add_crlf_to_wbuf(c);
 
     for (i=0; i<avl; i+= 2) {
         SV **hdr = av_fetch(headers, i, 0);
@@ -1486,7 +1505,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
 
         STRLEN hlen;
         const char *hp = SvPV(*hdr, hlen);
-        if (str_case_eq("content-length",14,hp,hlen)) {
+        if (c->auto_cl && str_case_eq("content-length",14,hp,hlen)) {
             trace("ignoring content-length header in the response\n");
             continue; 
         }
@@ -1494,7 +1513,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         add_sv_to_wbuf(c, *hdr);
         add_const_to_wbuf(c, ": ", 2);
         add_sv_to_wbuf(c, *val);
-        add_const_to_wbuf(c, CRLF, 2);
+        add_crlf_to_wbuf(c);
     }
 
     if (streaming) {
@@ -1538,7 +1557,10 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
 
     SV *cl_sv; // content-length future
     struct iovec *cl_iov;
-    add_placeholder_to_wbuf(c, &cl_sv, &cl_iov);
+    if (c->auto_cl)
+        add_placeholder_to_wbuf(c, &cl_sv, &cl_iov);
+    else
+        add_crlf_to_wbuf(c);
 
     if (body_is_string) {
         cur = add_sv_to_wbuf(c,body);
@@ -1562,8 +1584,10 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         }
     }
 
-    sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
-    update_wbuf_placeholder(c, cl_sv, cl_iov);
+    if (c->auto_cl) {
+        sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
+        update_wbuf_placeholder(c, cl_sv, cl_iov);
+    }
 
     c->responding = RESPOND_SHUTDOWN;
     conn_write_ready(c);

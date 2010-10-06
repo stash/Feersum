@@ -128,7 +128,14 @@ sub simple_client ($$;@) {
 
         $hdrs{'content-length'} = 0 if ($hdrs{Status} == 204);
 
-        if (exists $hdrs{'content-length'}) {
+        if ($hdrs{Status} == 304) {
+            # should have no body
+            $h->on_read(sub {
+                $buf .= substr($_[0]->{rbuf},0,length($_[0]->{rbuf}),'');
+            });
+            $h->on_eof($done);
+        }
+        elsif (exists $hdrs{'content-length'}) {
             return $done->() unless ($hdrs{'content-length'});
 #             Test::More::diag "$name waiting for C-L body";
             $h->push_read(chunk => $hdrs{'content-length'}, sub {
