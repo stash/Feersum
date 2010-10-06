@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.961 Wed Oct  6 08:40:00 2010 -0700
+        Fix building under threaded perls.
+        Work around a bug (?) in 5.12.1 when declaring -DDEBUGGING.
 
 0.96  Fri Oct  1 15:30:00 2010 -0700
         Support Tatsumaki running under Feersum.
