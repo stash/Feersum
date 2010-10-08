@@ -62,6 +62,7 @@ WriteMakefile(ev_args(
         'Scalar::Util' => 1.19,
         'Test::More' => 0.94,
         'Test::Exception' => 0.29,
+        'JSON::XS' => 2.0,
     },
     PREREQ_PM => {
         'EV' => 3.9,
