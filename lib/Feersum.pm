@@ -191,10 +191,14 @@ it will be immediately flushed to the socket.
             my $n = 0;
             $w->poll_cb(sub {
                 $_[0]->write(get_next_chunk());
+                # will also unset the poll_cb:
                 $_[0]->close if ($n++ >= 100);
             });
         };
     };
+
+Note that C<< $w->close() >> will be called when the last reference to the
+writer is dropped.
 
 =head2 PSGI extensions
 
@@ -318,6 +322,9 @@ stop the callback from getting called.
         $_[0]->write(get_next_chunk());
         $_[0]->close if ($n++ >= 100);
     });
+
+Note that C<< $w->close() >> will be called when the last reference to the
+writer is dropped.
 
 =head1 METHODS
 

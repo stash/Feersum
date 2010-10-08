@@ -34,6 +34,7 @@ t/08-read-timeout.t
 t/09-magic.t
 t/10-respond-304.t
 t/11-runner.t
+t/12-close-on-drop.t
 t/50-psgi-simple.t
 t/51-psgi-streaming.t
 t/52-psgi-iohandle.t

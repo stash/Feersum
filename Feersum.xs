@@ -135,6 +135,7 @@ static void feersum_start_response
     (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
 static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
 static void feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret);
+static int feersum_close_handle(pTHX_ struct feer_conn *c, bool is_writer);
 
 static void start_read_watcher(struct feer_conn *c);
 static void stop_read_watcher(struct feer_conn *c);
@@ -1702,6 +1703,39 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
     }
 }
 
+static int
+feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
+{
+    int RETVAL;
+    if (is_writer) {
+        trace("close writer fd=%d, c=%p, refcnt=%d\n", c->fd, c, SvREFCNT(c->self));
+        if (c->poll_write_cb) {
+            SvREFCNT_dec(c->poll_write_cb);
+            c->poll_write_cb = NULL;
+        }
+        if (c->responding < RESPOND_SHUTDOWN) {
+            finish_wbuf(c);
+            conn_write_ready(c);
+            c->responding = RESPOND_SHUTDOWN;
+        }
+        RETVAL = 1;
+    }
+    else {
+        trace("close reader fd=%d, c=%p\n", c->fd, c);
+        // TODO: ref-dec poll_read_cb
+        if (c->rbuf) {
+            SvREFCNT_dec(c->rbuf);
+            c->rbuf = NULL;
+        }
+        RETVAL = shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
+        c->receiving = RECEIVE_SHUTDOWN;
+    }
+
+    // disassociate the handle from the conn
+    SvREFCNT_dec(c->self);
+    return RETVAL;
+}
+
 static void
 call_died (pTHX_ struct feer_conn *c, const char *cb_type)
 {
@@ -2053,16 +2087,22 @@ fileno (feer_conn_handle *hdl)
 
 void
 DESTROY (SV *self)
+    ALIAS:
+        Feersum::Connection::Reader::DESTROY = 1
+        Feersum::Connection::Writer::DESTROY = 2
     PPCODE:
 {
     feer_conn_handle *hdl = sv_2feer_conn_handle(self, 0);
+
     if (hdl == NULL) {
-        trace3("DESTROY handle (closed) class=%s\n", HvNAME(SvSTASH(SvRV(ST(0)))));
+        trace3("DESTROY handle (closed) class=%s\n",
+            HvNAME(SvSTASH(SvRV(self))));
     }
     else {
         struct feer_conn *c = (struct feer_conn *)hdl;
-        trace3("DESTROY handle fd=%d, class=%s\n", c->fd, HvNAME(SvSTASH(SvRV(ST(0)))));
-        SvREFCNT_dec(c->self);
+        trace3("DESTROY handle fd=%d, class=%s\n", c->fd,
+            HvNAME(SvSTASH(SvRV(self))));
+        feersum_close_handle(aTHX_ c, (ix == 2));
     }
 }
 
@@ -2153,16 +2193,17 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
 }
 
 STRLEN
-write (feer_conn_handle *hdl, SV *body, ...)
+write (feer_conn_handle *hdl, ...)
+    PROTOTYPE: $;$
     CODE:
 {
     if (c->made_raw) XSRETURN_UNDEF;
     if (c->responding != RESPOND_STREAMING)
         croak("can only call write in streaming mode");
 
-    if (!body || !SvOK(body)) {
+    SV *body = (items == 2) ? ST(1) : &PL_sv_undef;
+    if (!body || !SvOK(body))
         XSRETURN_IV(0);
-    }
 
     trace("write fd=%d c=%p, body=%p\n", c->fd, c, body);
     if (SvROK(body)) {
@@ -2247,35 +2288,9 @@ close (feer_conn_handle *hdl)
 {
     if (c->made_raw) XSRETURN_UNDEF;
 
-    switch (ix) {
-    case 1:
-        trace("close reader fd=%d, c=%p\n", c->fd, c);
-        // TODO: ref-dec poll_read_cb
-        if (c->rbuf) {
-            SvREFCNT_dec(c->rbuf);
-            c->rbuf = NULL;
-        }
-        RETVAL = shutdown(c->fd, SHUT_RD); // TODO: respect keep-alive
-        c->receiving = RECEIVE_SHUTDOWN;
-        break;
-    case 2:
-        trace("close writer fd=%d, c=%p, refcnt=%d\n", c->fd, c, SvREFCNT(c->self));
-        if (c->poll_write_cb) {
-            SvREFCNT_dec(c->poll_write_cb);
-            c->poll_write_cb = NULL;
-        }
-        finish_wbuf(c);
-        conn_write_ready(c);
-        c->responding = RESPOND_SHUTDOWN;
-        RETVAL = 1;
-        break;
-    default:
-        croak("cannot call _close directly");
-    }
-
-    // disassociate the handle from the conn
+    assert(ix);
+    RETVAL = feersum_close_handle(aTHX_ c, (ix == 2));
     SvUVX(hdl_sv) = 0;
-    SvREFCNT_dec(c->self);
 }
     OUTPUT:
         RETVAL

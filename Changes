@@ -3,6 +3,8 @@ Revision history for Perl extension Feersum
 0.980
         psgix.io support!
         Add missing JSON::XS test-dep.
+        Fix: write() prototype was incorrect.
+        Fix: writer not flushing on DESTROY.
 
 0.971 Wed Oct  6 16:21:00 2010 -0700
         Fix the feersum script.

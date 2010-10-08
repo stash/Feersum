@@ -125,7 +125,8 @@ C<psgix.body.scalar_refs> in the PSGI env hash.
 =item C<< $w->close() >>
 
 Close the HTTP response (which triggers the "T-E: chunked" terminating chunk
-to be sent).
+to be sent).  This method is implicitly called when the last reference to the
+writer is dropped.
 
 =item C<< $w->poll_cb(sub { .... }) >>
 
