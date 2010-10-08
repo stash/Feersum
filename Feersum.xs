@@ -134,7 +134,9 @@ static HV* feersum_env(pTHX_ struct feer_conn *c);
 static void feersum_start_response
     (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
 static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
-static void feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret);
+static void feersum_handle_psgi_response(
+    pTHX_ struct feer_conn *c, SV *ret, bool can_recurse);
+static void feersum_psgi_triplet(pTHX_ struct feer_conn *c, AV *psgi_triplet);
 static int feersum_close_handle(pTHX_ struct feer_conn *c, bool is_writer);
 
 static void start_read_watcher(struct feer_conn *c);
@@ -1637,7 +1639,8 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
 }
 
 static void
-feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
+feersum_handle_psgi_response(
+    pTHX_ struct feer_conn *c, SV *ret, bool can_recurse)
 {
     if (c->made_raw) { // psgix.io was invoked
         if (IsArrayRef(ret) && av_len((AV*)SvRV(ret))+1 > 0) {
@@ -1658,8 +1661,14 @@ feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
     }
 
     if (SvOK(ret) && !IsArrayRef(ret)) {
-        trace("PSGI response non-array, c=%p ret=%p\n", c, ret);
-        feersum_start_psgi_streaming(aTHX_ c, ret);
+        if (can_recurse) {
+            trace("PSGI response non-array, c=%p ret=%p\n", c, ret);
+            feersum_start_psgi_streaming(aTHX_ c, ret);
+        }
+        else {
+            sv_setpvs(ERRSV, "PSGI attempt to recurse in a streaming callback");
+            call_died(aTHX_ c, "PSGI request");
+        }
         return;
     }
 
@@ -1801,7 +1810,7 @@ call_request_callback (struct feer_conn *c)
     LEAVE;
 
     if (request_cb_is_psgi && returned >= 1) {
-        feersum_handle_psgi_response(aTHX_ c, psgi_response);
+        feersum_handle_psgi_response(aTHX_ c, psgi_response, 1); // can_recurse
         SvREFCNT_dec(psgi_response);
     }
 
@@ -2350,6 +2359,14 @@ send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
         RETVAL = feersum_write_whole_body(aTHX_ c, body);
     OUTPUT:
         RETVAL
+
+void
+_send_psgi_response (struct feer_conn *c, SV *psgi_triplet)
+    PROTOTYPE: $$
+    PPCODE:
+        if (c->made_raw)
+            croak("psgix.io mode is active; can't send this response");
+        feersum_handle_psgi_response(aTHX_ c, psgi_triplet, 0); // no recurse
 
 void
 force_http10 (struct feer_conn *c)

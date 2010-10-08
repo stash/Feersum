@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 34;
+use Test::More tests => 41;
 use lib 't'; use Utils;
 use File::Temp qw/tempfile/;
 use Encode qw/decode_utf8/;
@@ -165,3 +165,37 @@ returning_perlio_layer: {
 }
 
 pass "all done app 4";
+
+my $APP5 = <<'EOAPP';
+    my $app5 = sub {
+        my $env = shift;
+        Test::More::pass "called app5";
+        return sub {
+            my $responder = shift;
+            open my $io, '<:encoding(UTF-16LE)',$tempname;
+            $responder->([
+                200,['Content-Type'=>'text/plain; charset=UTF-8'],$io
+            ]);
+        };
+    };
+EOAPP
+
+my $app5 = eval $APP5;
+ok $app5, 'got app 5' || diag $@;
+$evh->psgi_request_handler($app5);
+
+returning_perlio_layer_from_stream: {
+    my $cv = AE::cv;
+    $cv->begin;
+    my $h; $h = simple_client GET => '/', sub {
+        my ($body, $headers) = @_;
+        is $headers->{'Status'}, 200, "Response OK";
+        is $headers->{'content-type'}, 'text/plain; charset=UTF-8', "C-T";
+        is decode_utf8($body), qq(\x{2603}\n), "utf8 body from streamer";
+        $cv->end;
+        undef $h;
+    };
+    $cv->recv;
+}
+
+pass "all done app 5";

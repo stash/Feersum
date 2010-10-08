@@ -32,7 +32,7 @@ sub _initiate_streaming_psgi {
     @_ = (sub {
         my $strm = shift;
         if ($#$strm == 2) {
-            $self->send_response($strm->[0],$strm->[1],$strm->[2]);
+            $self->_send_psgi_response($strm);
         }
         elsif ($#$strm == 1) {
             return $self->start_streaming($strm->[0],$strm->[1]);
