@@ -38,6 +38,7 @@ t/50-psgi-simple.t
 t/51-psgi-streaming.t
 t/52-psgi-iohandle.t
 t/53-psgi-overloaded.t
+t/54-psgix-io.t
 t/60-plack.t
 t/61-plack-suite.t
 t/62-plack-runner.t

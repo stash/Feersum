@@ -2,8 +2,10 @@
 gmon\.out
 .*\.gcda
 .*\.gcno
+\..+\.sw[mnop]$
 blib/.*
-Feersum.(?:o|bs|c)
+Feersum\.(?:o|bs|c)
+Feersum-.+\.tar(?:\.gz)?
 http_load.*
 .*\.patch
 Makefile

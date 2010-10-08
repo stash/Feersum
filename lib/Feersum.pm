@@ -5,12 +5,16 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.971';
+our $VERSION = '0.980';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
 require XSLoader;
 XSLoader::load('Feersum', $VERSION);
+
+# numify as per
+# http://www.dagolden.com/index.php/369/version-numbers-should-be-boring/
+$VERSION = eval $VERSION;
 
 our $INSTANCE;
 
