@@ -29,8 +29,6 @@ sub import {
     *{$pkg.'::scope_guard'} = \&Guard::scope_guard;
     *{$pkg.'::weaken'} = \&Scalar::Util::weaken;
     *{$pkg.'::blessed'} = \&Scalar::Util::blessed;
-
-    '$'.$pkg.'::CRLF' = $CRLF;
     *{$pkg.'::get_listen_socket'} = \&get_listen_socket;
     *{$pkg.'::simple_client'} = \&simple_client;
 
