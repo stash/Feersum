@@ -35,7 +35,7 @@ sub use_socket {
 
 # overload this to catch Feersum errors and exceptions thrown by request
 # callbacks.
-sub DIED { warn "DIED: $@"; }
+sub DIED { Carp::confess "DIED: $@"; }
 
 1;
 __END__
@@ -156,6 +156,8 @@ dynamic ones:
     psgix.input.buffered   => 1,
     psgix.output.buffered  => 1,
     psgix.body.scalar_refs => 1,
+    # warning: read notes below on this extension:
+    psgix.io => \$magical_io_socket,
 
 Note that SCRIPT_NAME is always blank (but defined).  PATH_INFO will contain
 the path part of the requested URI.
@@ -190,18 +192,27 @@ it will be immediately flushed to the socket.
         };
     };
 
-=head3 PSGI extensions
+=head2 PSGI extensions
+
+=over 4
+
+=item psgix.body.scalar_refs
 
 Scalar refs in the response body are supported, and is indicated as an via the
-C<psgix.body.scalar_refs> env variable. Passing by reference is
+B<psgix.body.scalar_refs> env variable. Passing by reference is
 B<significantly> faster than copying a value onto the return stack or into an
 array.  It's also very useful when broadcasting a message to many connected
-clients.
+clients.  This is a Feersum-native feature exposed to PSGI apps; very few
+other PSGI handlers will support this.
+
+=item psgix.output.buffered
 
 Calls to C<< $w->write() >> will never block.  This behaviour is indicated by
-C<psgix.output.buffered> in the PSGI env hash.  
+B<psgix.output.buffered> in the PSGI env hash.
 
-C<psgix.input.buffered> is also set, which means that calls to read on the
+=item psgix.input.buffered
+
+B<psgix.input.buffered> is also set, which means that calls to read on the
 input handle will also never block.  Feersum currently buffers the entire
 input before calling the callback.
 
@@ -212,6 +223,23 @@ C<EAGAIN>).  Feersum may also allow for registering a poll_cb() handler that
 works similarly to the method on the "writer" object, although that isn't
 currently part of the PSGI 1.03 spec.  The callback will be called once data
 has been buffered.
+
+=item psgix.io
+
+The raw socket extension B<psgix.io> is provided in order to support
+L<Web::Hippie>.  To obtain the L<IO::Socket> corresponding to this connection,
+read this environment variable.
+
+B<Caution>: This environment variable is magical!  Reading the value of this
+environment variable will activate raw socket mode.  Once activated, the usual
+means of responding to a request are B<disabled>.
+
+PSGI apps must return undef or a streaming callback once psgix.io has been
+activated.  Returning a response triplet will call the C<Feersum::DIED>
+function (default behaviour is to confess).  Trying to call the streaming
+starter callback will croak.
+
+=back
 
 =head2 The Feersum-native interface
 

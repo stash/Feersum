@@ -1,6 +1,8 @@
 package Feersum::Connection;
 use strict;
 use Carp qw/croak/;
+use IO::Socket::INET;
+use Scalar::Util qw/reftype/;
 
 sub new {
     croak "Cannot instantiate Feersum::Connection directly";
@@ -41,11 +43,28 @@ sub _initiate_streaming_psgi {
         return;
     });
 
-    if (ref($streamer) eq 'CODE') {
-        goto &$streamer;
-    }
-    # Maybe it's callable but not a CODE-ref:
+    goto &$streamer if (reftype($streamer) eq 'CODE');
+    # assumes callable but not a CODE-ref:
     $streamer->(@_);
+}
+
+sub _raw {
+    # don't shift; need to modify $_[0] directly;
+    my $fileno = $_[1];
+    # Hack to make gensyms via new_from_fd() show up in the Feersum package.
+    # This may or may not save memory (HEKs?) over true gensyms.
+    no warnings 'redefine';
+    local *IO::Handle::gensym = sub {
+        no strict;
+        my $pkg = "Feersum::";
+        my $name = "FEER$fileno";
+        my $fullname = $pkg . $name;
+        my $gv = \*{$fullname};
+        delete $$pkg{$name};
+        $gv;
+    };
+    $_[0] = IO::Socket::INET->new_from_fd($fileno, '+<');
+    return;
 }
 
 1;

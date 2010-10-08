@@ -53,11 +53,13 @@ multiple Feersum threads, one Perl thread?
 WebSocket support (v1.1)
 
     * http://www.whatwg.org/specs/web-socket-protocol/
+    * Support psgix.io and Web::Hippie now (1.0), but would be good to
+    accelerate it.
     * Do the handshake in C/XS, call request_handler once request is complete.
     * I/O is done using the streaming interface (buffered)
     * requires random numbers (drand48?) and an MD5 implementation (link
     openssl? use the guts of Digest::MD5 somehow?)
     * make this a separate module since if it brings in an openssl deps.
-    * will this work for PSGI? psgix.web_socket or something?
+    * will this work for PSGI? magic psgix.web_socket or something?
 
 Release t/Utils.pm's "simple_client" as "anyevent::anotherhttp" or something?

@@ -117,7 +117,8 @@ struct feer_conn {
     U16 in_callback;
     U16 responding;
     U16 receiving;
-    U16 _reservedflags:13;
+    U16 _reservedflags:12;
+    U16 made_raw:1;
     U16 is_http11:1;
     U16 poll_write_cb_is_io_handle:1;
     U16 auto_cl:1;
@@ -171,6 +172,7 @@ static int prep_socket (int fd);
 
 static HV *feer_stash, *feer_conn_stash;
 static HV *feer_conn_reader_stash = NULL, *feer_conn_writer_stash = NULL;
+static MGVTBL psgix_io_vtbl;
 
 static SV *request_cb_cv = NULL;
 static bool request_cb_is_psgi = 0;
@@ -528,9 +530,13 @@ sv_2feer_conn_handle (SV *rv, bool can_croak)
 }
 
 static SV *
-new_feer_conn_handle (struct feer_conn *c, bool is_writer)
+new_feer_conn_handle (pTHX_ struct feer_conn *c, bool is_writer)
 {
     SV *sv;
+    if (c->made_raw) {
+        croak("psgix.io is active; cannot make a new conn handle");
+        return;
+    }
     SvREFCNT_inc(c->self);
     sv = newRV_noinc(newSVuv(PTR2UV(c)));
     sv_bless(sv, is_writer ? feer_conn_writer_stash : feer_conn_reader_stash);
@@ -604,7 +610,7 @@ process_request_ready_rinq (void)
 
         call_request_callback(c);
 
-        if (c->wbuf_rinq) {
+        if (!c->made_raw && c->wbuf_rinq) {
             // this was deferred until after the perl callback
             conn_write_ready(c);
         }
@@ -773,7 +779,6 @@ try_write_shutdown:
     c->responding = RESPOND_SHUTDOWN;
     stop_write_watcher(c);
     make_blocking(c->fd);
-    //shutdown(c->fd, SHUT_WR);
     if(close(c->fd))
         perror("close socket at shutdown");
     c->fd = 0;
@@ -878,7 +883,6 @@ try_read_error:
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_write_watcher(c);
-    //shutdown(c->fd, SHUT_RDWR);
     if (close(c->fd))
         perror("close on read error");
     c->fd = 0;
@@ -894,7 +898,6 @@ dont_read_again:
     c->receiving = RECEIVE_SHUTDOWN;
     stop_read_watcher(c);
     stop_read_timer(c);
-    shutdown(c->fd, SHUT_RD);
     goto try_read_cleanup;
 
 try_read_again_reset_timer:
@@ -926,7 +929,6 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
     trace("read timeout %d\n", c->fd);
 
     if (c->responding == RESPOND_NOT_STARTED) {
-        shutdown(c->fd, SHUT_RD);
         const char *msg;
         if (c->receiving == RECEIVE_HEADERS) {
             msg = "Headers took too long.";
@@ -942,7 +944,6 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         stop_read_watcher(c);
         stop_read_timer(c);
         make_blocking(c->fd);
-        //shutdown(c->fd, SHUT_RDWR);
         if(close(c->fd))
             perror("close socket at read timeout");
         c->fd = 0;
@@ -1144,6 +1145,11 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
 {
     SV *tmp;
 
+    if (c->made_raw) {
+        trace("wanted to respond with server error, but conn is raw\n");
+        return;
+    }
+
     if (c->responding != RESPOND_NOT_STARTED) {
         trouble("Tried to send server error but already responding!");
         return;
@@ -1162,7 +1168,6 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
 
     stop_read_watcher(c);
     stop_read_timer(c);
-    shutdown(c->fd, SHUT_RD);
     c->responding = RESPOND_SHUTDOWN;
     c->receiving = RECEIVE_SHUTDOWN;
     conn_write_ready(c);
@@ -1294,6 +1299,8 @@ feersum_init_tmpl_env(pTHX)
     hv_stores(e, "HTTP_IF_MODIFIED_SINCE", &PL_sv_placeholder);
     hv_stores(e, "HTTP_IF_NONE_MATCH", &PL_sv_placeholder);
     hv_stores(e, "HTTP_CACHE_CONTROL", &PL_sv_placeholder);
+
+    hv_stores(e, "psgix.io", &PL_sv_placeholder);
     
     feersum_tmpl_env = e;
 }
@@ -1351,10 +1358,18 @@ feersum_env(pTHX_ struct feer_conn *c)
 
     if (c->expected_cl > 0) {
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
-        hv_stores(e, "psgi.input", new_feer_conn_handle(c,0));
+        hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));
     }
     else if (request_cb_is_psgi) {
         // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
+    }
+
+    if (request_cb_is_psgi) {
+        trace("making magical psgix.io env fd=%d\n",c->fd);
+        SV *fake_fh = newSViv(c->fd); // just some random dummy value
+        SV *selfref = sv_2mortal(feer_conn_2sv(c));
+        sv_magicext(fake_fh, selfref, PERL_MAGIC_ext, &psgix_io_vtbl, NULL, 0);
+        hv_stores(e, "psgix.io", fake_fh);
     }
 
     {
@@ -1445,6 +1460,11 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     const char *ptr;
     STRLEN len;
     I32 i;
+
+    if (c->made_raw) {
+        croak("psgix.io is active; cannot start_response");
+        return;
+    }
 
     trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
 
@@ -1618,17 +1638,31 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
 static void
 feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret)
 {
-    if (!SvOK(ret) || !SvROK(ret)) {
-        sv_setpvs(ERRSV, "Invalid PSGI response (expected defined)");
+    if (c->made_raw) { // psgix.io was invoked
+        if (IsArrayRef(ret) && av_len((AV*)SvRV(ret))+1 > 0) {
+            sv_setpvs(ERRSV,
+                "psgix.io mode is active; can't send this response");
+            call_died(aTHX_ c, "PSGI request");
+            return;
+        }
+        else if (!SvOK(ret)) {
+            return;
+        }
+        // else: fall through in case it's a non-array callback
+    }
+    else if (!SvOK(ret) || !SvROK(ret)) {
+        sv_setpvs(ERRSV, "Invalid PSGI response (expected reference)");
         call_died(aTHX_ c, "PSGI request");
         return;
     }
 
-    if (!IsArrayRef(ret)) {
-        trace("PSGI response code-ref, c=%p cv=%p\n", c, ret);
+    if (SvOK(ret) && !IsArrayRef(ret)) {
+        trace("PSGI response non-array, c=%p ret=%p\n", c, ret);
         feersum_start_psgi_streaming(aTHX_ c, ret);
         return;
     }
+
+    if (c->made_raw) return; // fell through above
 
     AV *psgi_triplet = (AV*)SvRV(ret);
     if (av_len(psgi_triplet)+1 != 3) {
@@ -1692,6 +1726,7 @@ call_request_callback (struct feer_conn *c)
     dSP;
     int flags;
     c->in_callback++;
+    SvREFCNT_inc(c->self);
 
     trace("request callback c=%p\n", c);
 
@@ -1737,6 +1772,7 @@ call_request_callback (struct feer_conn *c)
     }
 
     c->in_callback--;
+    SvREFCNT_dec(c->self);
 }
 
 static void
@@ -1757,7 +1793,7 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     ENTER;
     SAVETMPS;
     PUSHMARK(SP);
-    XPUSHs(sv_2mortal(new_feer_conn_handle(c, is_write)));
+    XPUSHs(sv_2mortal(new_feer_conn_handle(aTHX_ c, is_write)));
     PUTBACK;
     call_sv(cb, G_DISCARD|G_EVAL|G_VOID);
     SPAGAIN;
@@ -1856,6 +1892,52 @@ done_pump_io:
 
     c->in_callback--;
 }
+
+static int
+psgix_io_svt_get (pTHX_ SV *sv, MAGIC *mg)
+{
+    dSP;
+    struct feer_conn *c;
+    SV *writer;
+
+    ENTER;
+    SAVETMPS;
+
+    SV *conn_sv = sv_2mortal(newSVsv(mg->mg_obj));
+    sv_unmagic(sv, PERL_MAGIC_ext);
+
+    c = sv_2feer_conn(conn_sv);
+    trace("invoking psgix.io magic for fd=%d\n", c->fd);
+
+    PUSHMARK(SP);
+    XPUSHs(sv);
+    mXPUSHs(newSViv(c->fd));
+    PUTBACK;
+
+    call_pv("Feersum::Connection::_raw", G_VOID|G_DISCARD|G_EVAL);
+    SPAGAIN;
+
+    if (SvTRUE(ERRSV)) {
+        call_died(aTHX_ c, "psgix.io magic");
+    }
+    else {
+        // set the scalar value of the glob (will get cleaned up l8r)
+        GvSV(SvRV(sv)) = newRV_inc(c->self);
+
+        stop_read_watcher(c);
+        stop_read_timer(c);
+        stop_write_watcher(c);
+
+        c->responding = RESPOND_STREAMING;
+        c->receiving = RECEIVE_STREAMING;
+        c->made_raw = 1;
+    }
+
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+}
+
 
 MODULE = Feersum		PACKAGE = Feersum		
 
@@ -1992,6 +2074,8 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     STRLEN buf_len = 0, src_len = 0;
     ssize_t offset;
     char *buf_ptr, *src_ptr;
+
+    if (c->made_raw) XSRETURN_UNDEF;
     
     if (items == 4 && SvOK(ST(3)) && SvIOK(ST(3)))
         offset = SvIV(ST(3));
@@ -2072,6 +2156,7 @@ STRLEN
 write (feer_conn_handle *hdl, SV *body, ...)
     CODE:
 {
+    if (c->made_raw) XSRETURN_UNDEF;
     if (c->responding != RESPOND_STREAMING)
         croak("can only call write in streaming mode");
 
@@ -2109,6 +2194,7 @@ seek (feer_conn_handle *hdl, ssize_t offset, ...)
     int whence = SEEK_CUR;
     if (items == 3 && SvOK(ST(2)) && SvIOK(ST(2)))
         whence = SvIV(ST(2));
+    if (c->made_raw) XSRETURN_UNDEF;
 
     trace("seek fd=%d offset=%d whence=%d\n", c->fd, offset, whence);
 
@@ -2159,6 +2245,8 @@ close (feer_conn_handle *hdl)
         Feersum::Connection::Writer::close = 2
     CODE:
 {
+    if (c->made_raw) XSRETURN_UNDEF;
+
     switch (ix) {
     case 1:
         trace("close reader fd=%d, c=%p\n", c->fd, c);
@@ -2200,6 +2288,7 @@ _poll_cb (feer_conn_handle *hdl, SV *cb)
         Feersum::Connection::Writer::poll_cb = 2
     PPCODE:
 {
+    if (c->made_raw) return;
     if (ix < 1 || ix > 2)
         croak("can't call _poll_cb directly");
     else if (ix == 1)
@@ -2229,8 +2318,10 @@ SV *
 start_streaming (struct feer_conn *c, SV *message, AV *headers)
     PROTOTYPE: $$\@
     CODE:
+        if (c->made_raw)
+            croak("psgix.io mode is active; can't start streaming");
         feersum_start_response(aTHX_ c, message, headers, 1);
-        RETVAL = new_feer_conn_handle(c, 1); // RETVAL gets mortalized
+        RETVAL = new_feer_conn_handle(aTHX_ c, 1); // RETVAL gets mortalized
     OUTPUT:
         RETVAL
 
@@ -2238,6 +2329,8 @@ int
 send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
     PROTOTYPE: $$\@$
     CODE:
+        if (c->made_raw)
+            croak("psgix.io mode is active; can't send this response");
         feersum_start_response(aTHX_ c, message, headers, 0);
         RETVAL = feersum_write_whole_body(aTHX_ c, body);
     OUTPUT:
@@ -2271,7 +2364,7 @@ DESTROY (struct feer_conn *c)
     PPCODE:
 {
     int i;
-    trace3("DESTROY conn %d %p\n", c->fd, c);
+    trace3("DESTROY conn fd=%d c=%p raw=%d\n", c->fd, c, (IV)c->made_raw);
 
     if (c->rbuf) SvREFCNT_dec(c->rbuf);
 
@@ -2292,7 +2385,7 @@ DESTROY (struct feer_conn *c)
 
     if (c->sa) Safefree(c->sa);
 
-    if (c->fd) {
+    if (c->fd && !c->made_raw) {
         make_blocking(c->fd);
         if(close(c->fd))
             perror("close socket at destruction");
@@ -2341,4 +2434,7 @@ BOOT:
         SvREADONLY_on(psgi_serv10);
         psgi_serv11 = newSVpvs("HTTP/1.1");
         SvREADONLY_on(psgi_serv11);
+
+        Zero(&psgix_io_vtbl, 1, MGVTBL);
+        psgix_io_vtbl.svt_get = psgix_io_svt_get;
     }
