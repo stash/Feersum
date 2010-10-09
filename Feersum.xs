@@ -1652,9 +1652,9 @@ feersum_handle_psgi_response(
     }
 
     trace("PSGI response triplet, c=%p av=%p\n", c, psgi_triplet);
-    SV *msg = av_shift(psgi_triplet);
-    SV *hdrs = av_shift(psgi_triplet);
-    SV *body = av_shift(psgi_triplet);
+    SV *msg =  *(av_fetch(psgi_triplet,0,0));
+    SV *hdrs = *(av_fetch(psgi_triplet,1,0));
+    SV *body = *(av_fetch(psgi_triplet,2,0));
 
     AV *headers;
     if (IsArrayRef(hdrs))
@@ -2325,11 +2325,38 @@ send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
     OUTPUT:
         RETVAL
 
-void
-_send_psgi_response (struct feer_conn *c, SV *psgi_triplet)
-    PROTOTYPE: $$
-    PPCODE:
-        feersum_handle_psgi_response(aTHX_ c, psgi_triplet, 0); // no recurse
+SV*
+_continue_streaming_psgi (struct feer_conn *c, SV *psgi_response)
+    PROTOTYPE: $\@
+    CODE:
+{
+    AV *av;
+    int len = 0;
+
+    if (IsArrayRef(psgi_response)) {
+        av = (AV*)SvRV(psgi_response);
+        len = av_len(av) + 1;
+    }
+
+    if (len == 3) {
+        // 0 is "don't recurse" (i.e. don't allow another code-ref)
+        feersum_handle_psgi_response(aTHX_ c, psgi_response, 0);
+        RETVAL = &PL_sv_undef;
+    }
+    else if (len == 2) {
+        SV *message = *(av_fetch(av,0,0));
+        SV *headers = *(av_fetch(av,1,0));
+        if (!IsArrayRef(headers))
+            croak("PSGI headers must be an array ref");
+        feersum_start_response(aTHX_ c, message, (AV*)SvRV(headers), 1);
+        RETVAL = new_feer_conn_handle(aTHX_ c, 1); // RETVAL gets mortalized
+    }
+    else {
+        croak("PSGI response starter expects a 2 or 3 element array-ref");
+    }
+}
+    OUTPUT:
+        RETVAL
 
 void
 force_http10 (struct feer_conn *c)

@@ -2,7 +2,6 @@ package Feersum::Connection;
 use strict;
 use Carp qw/croak/;
 use IO::Socket::INET;
-use Scalar::Util qw/reftype/;
 
 sub new {
     croak "Cannot instantiate Feersum::Connection directly";
@@ -29,27 +28,11 @@ sub initiate_streaming {
 
 sub _initiate_streaming_psgi {
     my ($self, $streamer) = @_;
-    @_ = (sub {
-        my $strm = shift;
-        if ($#$strm == 2) {
-            $self->_send_psgi_response($strm);
-        }
-        elsif ($#$strm == 1) {
-            return $self->start_streaming($strm->[0],$strm->[1]);
-        }
-        else {
-            croak "PSGI streaming starter expects an array";
-        }
-        return;
-    });
-
-    goto &$streamer if (reftype($streamer) eq 'CODE');
-    # assumes callable but not a CODE-ref:
-    $streamer->(@_);
+    $streamer->(sub { $self->_continue_streaming_psgi(@_) });
 }
 
 sub _raw {
-    # don't shift; need to modify $_[0] directly;
+    # don't shift; want to modify $_[0] directly.
     my $fileno = $_[1];
     # Hack to make gensyms via new_from_fd() show up in the Feersum package.
     # This may or may not save memory (HEKs?) over true gensyms.
@@ -58,8 +41,7 @@ sub _raw {
         no strict;
         my $pkg = "Feersum::";
         my $name = "RAW$fileno";
-        my $fullname = $pkg . $name;
-        my $gv = \*{$fullname};
+        my $gv = \*{$pkg.$name};
         delete $$pkg{$name};
         $gv;
     };
