@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.982
+        Fix: compilation on BSD & Solaris re: SOL_TCP
+
 0.981 Wed Oct  9 04:30:00 2010 -0700
         Support Web::Hippie (and psgix.io)
         Add missing JSON::XS test-dep.

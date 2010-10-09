@@ -19,6 +19,11 @@
 #endif
 #define CRLFx2 CRLF CRLF
 
+// make darwin, solaris and bsd happy:
+#ifndef SOL_TCP
+ #define SOL_TCP IPPROTO_TCP
+#endif
+
 // if you change these, also edit the LIMITS section in the POD
 #define MAX_HEADERS 64
 #define MAX_HEADER_NAME_LEN 128
@@ -421,11 +426,7 @@ prep_socket(int fd)
 
     // flush writes immediately
     flags = 1;
-#if PERL_DARWIN
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(int)))
-#else
     if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int)))
-#endif
         return -1;
 
     // handle URG data inline
