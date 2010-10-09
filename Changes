@@ -1,11 +1,12 @@
 Revision history for Perl extension Feersum
 
-0.981
+0.981 Wed Oct  9 04:30:00 2010 -0700
         Support Web::Hippie (and psgix.io)
         Add missing JSON::XS test-dep.
         Fix: write() prototype was incorrect.
         Fix: writer not flushing on DESTROY.
         Fix: IO::Handle in PSGI streaming response.
+        Fix: `use overload` PSGI callbacks in perl 5.8.x
 
 0.971 Wed Oct  6 16:21:00 2010 -0700
         Fix the feersum script.
