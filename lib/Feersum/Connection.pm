@@ -57,16 +57,17 @@ sub _raw {
     local *IO::Handle::gensym = sub {
         no strict;
         my $pkg = "Feersum::";
-        my $name = "FEER$fileno";
+        my $name = "RAW$fileno";
         my $fullname = $pkg . $name;
         my $gv = \*{$fullname};
         delete $$pkg{$name};
         $gv;
     };
     $_[0] = IO::Socket::INET->new_from_fd($fileno, '+<');
+    # after this, Feersum will use PerlIO_unread to put any remainder data
+    # into the socket.
     return;
 }
-
 1;
 __END__
 

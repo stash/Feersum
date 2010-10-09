@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.980';
+our $VERSION = '0.981';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
@@ -184,8 +184,8 @@ it will be immediately flushed to the socket.
     my $app = sub {
         my $env = shift;
         return sub {
-            my $starter = shift;
-            my $w = $starter->([
+            my $respond = shift;
+            my $w = $respond->([
                 200, ['Content-Type' => 'application/json']
             ]);
             my $n = 0;
@@ -235,17 +235,21 @@ has been buffered.
 =item psgix.io
 
 The raw socket extension B<psgix.io> is provided in order to support
-L<Web::Hippie>.  To obtain the L<IO::Socket> corresponding to this connection,
-read this environment variable.
+L<Web::Hippie> and websockets.  To obtain the L<IO::Socket> corresponding to
+this connection, read this environment variable.
 
-B<Caution>: This environment variable is magical!  Reading the value of this
-environment variable will activate raw socket mode.  Once activated, the usual
-means of responding to a request are B<disabled>.
+The underlying file descriptor will have C<O_NONBLOCK>, C<TCP_NODELAY>,
+C<SO_OOBINLINE> enabled and C<SO_LINGER> disabled.
 
-PSGI apps must return undef or a streaming callback once psgix.io has been
-activated.  Returning a response triplet will call the C<Feersum::DIED>
-function (default behaviour is to confess).  Trying to call the streaming
-starter callback will croak.
+PSGI apps B<MUST> use a C<psgi.streaming> response so that Feersum doesn't try
+to flush and close the connection.  Additionally, the "respond" parameter to
+the streaming callback B<MUST NOT> be called for the same reason.
+
+    my $env = shift;
+    return sub {
+        my $fh = $env->{'psgix.io'};
+        syswrite $fh, 
+    };
 
 =back
 
@@ -483,11 +487,12 @@ Marc Lehmann for EV and AnyEvent (not to mention JSON::XS and Coro).
 
 Kazuho Oku for picohttpparser.
 
-lukec, konobi, socialtexters and van.pm for initial feedback and ideas.
+Luke Closs (lukec), Scott McWhirter (konobi), socialtexters and van.pm for
+initial feedback and ideas.  Audrey Tang and Graham Termarsch for XS advice.
 
-Audrey Tang and Graham Termarsch for XS advice.
+Hans Dieter Pearcey (confound) for docs and packaging guidance.
 
-confound for docs input.
+For bug reports: Chia-liang Kao (clkao), Lee Aylward (leedo)
 
 =head1 COPYRIGHT AND LICENSE
 

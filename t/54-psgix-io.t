@@ -3,8 +3,9 @@ use warnings;
 use strict;
 use constant CLIENTS => 10;
 use constant ROUNDS => 4;
+use Scalar::Util qw/refaddr/;
 use Test::More tests => 3 + ROUNDS*(
-    CLIENTS*3 + # server setup
+    CLIENTS*5 + # server setup
     CLIENTS*3 + # client setup
     CLIENTS + # server msg
     CLIENTS + # client send
@@ -33,18 +34,10 @@ my $app = sub {
     my $env = shift;
     is $env->{HTTP_UPGRADE}, 'chatz', "server setup: got an upgrade req";
     my $n = $env->{HTTP_X_CLIENT};
-    if ($n % 2) {
-        # test psgi.streaming
-        return sub {
-            my $respond = shift;
-            do_chat($n,$env);
-        };
-    }
-    else {
-        # test traditional responses (result should be ignored)
+    return sub {
+        my $respond = shift;
         do_chat($n,$env);
-        return [];
-    }
+    };
 };
 $evh->psgi_request_handler($app);
 
@@ -53,10 +46,18 @@ my $cv;
 # read lines, broadcast to other server-side handles
 my @ss_handles;
 sub do_chat {
-    my ($n, $env) = @_;
+    my ($n, $env, $strm) = @_;
     $cv->begin;
     my $fh = $env->{'psgix.io'};
     isa_ok $fh, 'IO::Socket', "server setup: $n fh";
+
+    my $websocket_turd;
+    read $fh, $websocket_turd, 8;
+    is $websocket_turd, '12345678', "server setup: $n websocket turd";
+
+    my $fh2 = $env->{'psgix.io'};
+    is refaddr($fh), refaddr($fh2),
+        "server setup: duplicated psgix.io read results in same handle";
 
     # use AnyEvent::Handle here specifically as that's what Web::Hippie
     # uses.
@@ -119,7 +120,8 @@ for my $round (1..ROUNDS) {
         $h->push_write("GET / HTTP/1.1$CRLF".
             "Upgrade: chatz$CRLF".
             "X-Client: $n$CRLF".
-            $CRLF
+            $CRLF.
+            "12345678" # extra websocket v76 hanshake turd
         );
 
         # one line for the upgrade, CLIENTS lines for the chatting
