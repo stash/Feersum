@@ -2005,7 +2005,7 @@ request_handler(SV *self, SV *cb)
         croak("can't supply an undef handler");
     if (request_cb_cv)
         SvREFCNT_dec(request_cb_cv);
-    request_cb_cv = newRV_inc(SvRV(cb));
+    request_cb_cv = newSVsv(cb); // copy so 5.8.7 overload magic sticks.
     request_cb_is_psgi = ix;
     trace("assigned %s request handler %p\n",
         request_cb_is_psgi?"PSGI":"Feersum", request_cb_cv);
