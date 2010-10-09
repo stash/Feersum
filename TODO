@@ -1,6 +1,9 @@
 CPAN!
-    * do developer-preview as 0.91_1
     * finish v1.0 tasks
+
+Test and handle fork() gracefully. (v1.0)
+
+Per-client data (for attaching guards) (v1.0)
 
 Timeouts
     * slow responses? (feasable? just let TCP do it?)
@@ -37,11 +40,10 @@ Per-client "drain" and "completion" callbacks?
     non-KA a guard on the conn object is sufficient, but for KA a callback is
     needed.
 
-Per-client data (for attaching guards).
-
 Optimize env-hash
 
     * allow Feersum apps to specify which vars will be needed (v1.1)
+    ** will this even be a win?
     * maybe use uvar magic for PSGI if using Perl v5.10.0 (Variable::Magic
     style?) (v1.1)
 
@@ -53,7 +55,7 @@ multiple Feersum threads, one Perl thread?
 WebSocket support (v1.1)
 
     * http://www.whatwg.org/specs/web-socket-protocol/
-    * Support psgix.io and Web::Hippie now (1.0), but would be good to
+    * Support psgix.io and Web::Hippie already (0.981), but would be good to
     accelerate it.
     * Do the handshake in C/XS, call request_handler once request is complete.
     * I/O is done using the streaming interface (buffered)

@@ -43,6 +43,7 @@ t/54-psgix-io.t
 t/60-plack.t
 t/61-plack-suite.t
 t/62-plack-runner.t
+t/63-plack-apps.t
 t/Utils.pm
 typemap
 xt/50-psgi-simple-stress.t

@@ -1,7 +1,7 @@
 Revision history for Perl extension Feersum
 
-0.980
-        psgix.io support!
+0.981
+        Support Web::Hippie (and psgix.io)
         Add missing JSON::XS test-dep.
         Fix: write() prototype was incorrect.
         Fix: writer not flushing on DESTROY.
