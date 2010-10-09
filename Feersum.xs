@@ -1608,8 +1608,7 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
     ENTER;
     SAVETMPS;
     PUSHMARK(SP);
-    SV *conn_sv = sv_2mortal(feer_conn_2sv(c));
-    XPUSHs(conn_sv);
+    mXPUSHs(feer_conn_2sv(c));
     XPUSHs(streamer);
     PUTBACK;
     call_method("_initiate_streaming_psgi", G_DISCARD|G_EVAL|G_VOID);
@@ -1719,11 +1718,13 @@ static void
 call_died (pTHX_ struct feer_conn *c, const char *cb_type)
 {
     dSP;
+#if DEBUG >= 1
     STRLEN err_len;
     char *err = SvPV(ERRSV,err_len);
     trace("An error was thrown in the %s callback: %.*s\n",cb_type,err_len,err);
+#endif
     PUSHMARK(SP);
-    XPUSHs(sv_2mortal(newSVsv(ERRSV)));
+    mXPUSHs(newSVsv(ERRSV));
     PUTBACK;
     call_pv("Feersum::DIED", G_DISCARD|G_EVAL|G_VOID|G_KEEPERR);
     SPAGAIN;
@@ -1749,11 +1750,11 @@ call_request_callback (struct feer_conn *c)
 
     if (request_cb_is_psgi) {
         HV *env = feersum_env(aTHX_ c);
-        XPUSHs(sv_2mortal(newRV_noinc((SV*)env)));
+        mXPUSHs(newRV_noinc((SV*)env));
         flags = G_EVAL|G_SCALAR;
     }
     else {
-        XPUSHs(sv_2mortal(feer_conn_2sv(c)));
+        mXPUSHs(feer_conn_2sv(c));
         flags = G_DISCARD|G_EVAL|G_VOID;
     }
 
@@ -1806,7 +1807,7 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     ENTER;
     SAVETMPS;
     PUSHMARK(SP);
-    XPUSHs(sv_2mortal(new_feer_conn_handle(aTHX_ c, is_write)));
+    mXPUSHs(new_feer_conn_handle(aTHX_ c, is_write));
     PUTBACK;
     call_sv(cb, G_DISCARD|G_EVAL|G_VOID);
     SPAGAIN;
