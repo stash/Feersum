@@ -3,6 +3,8 @@ use strict;
 
 use EV;
 use Feersum;
+use Socket qw/SOMAXCONN/;
+use POSIX ();
 
 sub new { my $c = shift; bless {@_},$c }
 
@@ -23,7 +25,7 @@ sub _prepare {
             LocalAddr => $listen,
             ReuseAddr => 1,
             Proto => 'tcp',
-            Listen => 1024,
+            Listen => SOMAXCONN,
             Blocking => 0,
         );
         die "couldn't bind to socket: $!" unless $sock;
@@ -37,12 +39,77 @@ sub _prepare {
 
 sub run {
     my $self = shift;
+
+    $self->{quiet} or warn "Feersum [$$]: starting...\n";
     $self->_prepare();
-    my $rh = shift || delete $self->{app};
+
+    my $rh = shift || delete $self->{app} || do $self->{app_file};
     die "not a code ref" unless ref($rh) eq 'CODE';
     $self->{endjinn}->request_handler($rh);
     undef $rh;
+
+    $self->{_quit} = EV::signal 'QUIT', sub {
+        $self->{_shutdown} = 1;
+        $self->{quiet} or warn "Feersum [$$]: got SIGQUIT!\n";
+        undef $self->{_quit};
+        $SIG{QUIT} = 'IGNORE';
+        $self->{endjinn}->graceful_shutdown(sub { POSIX::exit(0) });
+        $self->{_death} = EV::timer 5, 0, sub { POSIX::exit(1) };
+    };
+
+    $self->pre_fork if $self->{pre_fork};
     EV::loop;
+    $self->{quiet} or warn "Feersum [$$]: done\n";
+}
+
+sub fork_another {
+    my ($self, $slot) = @_;
+
+    my $pid = fork;
+    die "failed to fork: $!" unless defined $pid;
+    unless ($pid) {
+        EV::default_loop()->loop_fork;
+        $self->{quiet} or warn "Feersum [$$]: starting\n";
+        delete $self->{_kids};
+        delete $self->{pre_fork};
+        eval { EV::loop; };
+        warn $@ if $@;
+        POSIX::exit($@ ? -1 : 0);
+    }
+
+    $self->{_n_kids}++;
+    $self->{_kids}[$slot] = EV::child $pid, 0, sub {
+        my $w = shift;
+        $self->{quiet} or warn "Feersum [$$]: child $pid exited ".
+            "with rstatus ".$w->rstatus."\n";
+        $self->{_n_kids}--;
+        if ($self->{_shutdown}) {
+            EV::unloop(EV::UNLOOP_ALL) unless $self->{_n_kids};
+            return;
+        }
+        $self->fork_another();
+    };
+}
+
+sub pre_fork {
+    my $self = shift;
+
+    POSIX::setsid();
+
+    $self->{_kids} = [];
+    $self->{_n_kids} = 0;
+    $self->fork_another($_) for (1 .. $self->{pre_fork});
+
+    $self->{endjinn}->unlisten();
+    # broadcast SIGQUIT to the group
+    $self->{_quit} = EV::signal 'QUIT', sub {
+        $self->{_shutdown} = 1;
+        $self->{quiet} or warn "Feersum [$$]: got SIGQUIT!\n";
+        undef $self->{_quit};
+        $SIG{QUIT} = 'IGNORE';
+        kill 3, -$$; # kill process group, but not self
+        $self->{_death} = EV::timer 7, 0, sub { POSIX::exit(1) };
+    };
 }
 
 1;

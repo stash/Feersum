@@ -55,7 +55,7 @@
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
 
 #ifdef DEBUG
-#define trace(f_, ...) warn("%s:%d: " f_, __FILE__, __LINE__, ##__VA_ARGS__)
+#define trace(f_, ...) warn("%s:%d [%d] " f_, __FILE__, __LINE__, (int)getpid(), ##__VA_ARGS__)
 #else
 #define trace(...)
 #endif
@@ -978,7 +978,7 @@ accept_cb (EV_P_ ev_io *w, int revents)
         socklen_t sl = sizeof(struct sockaddr_storage);
         errno = 0;
         int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
-        trace3("accepted fd=%d, errno=%d\n", fd, errno);
+        trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
 
         struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
@@ -1994,6 +1994,17 @@ accept_on_fd(SV *self, int fd)
     ev_idle_init(&ei, idle_cb);
 
     ev_io_init(&accept_w, accept_cb, fd, EV_READ);
+}
+
+void
+unlisten (SV *self)
+    PPCODE:
+{
+    trace("stopping accept\n");
+    ev_prepare_stop(feersum_ev_loop, &ep);
+    ev_check_stop(feersum_ev_loop, &ec);
+    ev_idle_stop(feersum_ev_loop, &ei);
+    ev_io_stop(feersum_ev_loop, &accept_w);
 }
 
 void

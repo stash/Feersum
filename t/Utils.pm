@@ -2,6 +2,7 @@ package Utils;
 use strict;
 use base 'Exporter';
 use Test::More ();
+use Socket qw/SOMAXCONN/;
 use IO::Socket::INET;
 use bytes; no bytes;
 use blib;
@@ -13,7 +14,6 @@ use Guard ();
 use Scalar::Util qw/blessed weaken/;
 use utf8;
 
-$SIG{__DIE__} = \&Carp::confess;
 $SIG{PIPE} = 'IGNORE';
 
 my $CRLF = "\015\012";
@@ -44,7 +44,7 @@ sub get_listen_socket {
             LocalAddr => "localhost:$i",
             ReuseAddr => 1,
             Proto => 'tcp',
-            Listen => 1024,
+            Listen => SOMAXCONN,
             Blocking => 0,
         );
         if ($socket) {
