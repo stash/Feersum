@@ -2022,13 +2022,26 @@ graceful_shutdown (SV *self, SV *cb)
         croak("must supply a code reference");
     if (shutting_down)
         croak("already shutting down");
-    shutdown_cb_cv = SvRV(cb);
-    SvREFCNT_inc(shutdown_cb_cv);
+    shutdown_cb_cv = newSVsv(cb);
     trace("assigned shutdown handler %p\n", SvRV(cb));
 
     shutting_down = 1;
     ev_io_stop(feersum_ev_loop, &accept_w);
     close(accept_w.fd);
+
+    if (active_conns <= 0) {
+        dSP;
+        ENTER;
+        SAVETMPS;
+        PUSHMARK(SP);
+        call_sv(shutdown_cb_cv, G_EVAL|G_VOID|G_DISCARD|G_NOARGS|G_KEEPERR);
+        PUTBACK;
+        trace3("called shutdown handler\n");
+        SvREFCNT_dec(shutdown_cb_cv);
+        shutdown_cb_cv = NULL;
+        FREETMPS;
+        LEAVE;
+    }
 }
 
 double
