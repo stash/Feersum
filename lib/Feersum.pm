@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.981';
+our $VERSION = '0.982';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
@@ -113,6 +113,9 @@ A trivial hello-world handler can process in excess of 5000 requests per
 second on a 4-core Intel(R) Xeon(R) E5335 @ 2.00GHz using TCPv4 on the
 loopback interface, OS Ubuntu 6.06LTS, Perl 5.8.7.  Your mileage will likely
 vary.
+
+For even faster results, Feersum can support very simple pre-forking (See
+L<feersum>, L<Feersum::Runner> or L<Plack::Handler::Feersum> for details).
 
 =head1 INTERFACE
 

@@ -1,6 +1,8 @@
 Revision history for Perl extension Feersum
 
-0.982
+0.982 Tue Oct 12 10:55:00 2010 -0700
+        Initial pre-forking support via Feersum::Runner & Plack::Runner
+        Fix: resource leak induced by header-read errors
         Fix: compilation on BSD & Solaris re: SOL_TCP
 
 0.981 Wed Oct  9 04:30:00 2010 -0700
