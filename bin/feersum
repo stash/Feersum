@@ -1,6 +1,9 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 use warnings;
 use strict;
+use EV ();
+use Feersum ();
+
 require Getopt::Long;
 
 my $native = 0;
@@ -13,14 +16,21 @@ my $runner;
 
 if ($native) {
     my $listen = 'localhost:5000';
+    my $pre_fork = 0;
+    my $verbose = 0;
     Getopt::Long::GetOptions(
         "listen=s" => \$listen,
+        "pre-fork=i" => \$pre_fork,
+        "verbose!" => \$verbose,
     );
     require Feersum::Runner;
     my $app_file = pop @ARGV || 'app.feersum';
-    my $app = do $app_file
-        or die "Error while loading $app_file\: $! $@\n";
-    $runner = Feersum::Runner->new('listen' => [$listen], app => $app);
+    $runner = Feersum::Runner->new(
+        'listen' => [$listen],
+        app_file => $app_file,
+        pre_fork => $pre_fork,
+        quiet => !$verbose,
+    );
 }
 else {
     my @args = (
@@ -46,12 +56,15 @@ feersum - feersum app loader
 
 =head1 SYNOPSIS
 
-  feersum [plackup opts] [app.psgi]
-  feersum --native [--listen host:port] [app.feersum]
+  feersum [plackup opts] [--pre-fork=N] [app.psgi]
+  feersum --native [--listen host:port] [--pre-fork=N] [app.feersum]
 
 =head1 DESCRIPTION
 
 Loads the specified app file into a Feersum server.
+
+In both cases, if C<--pre-fork=N> is specified, that many worker processes are
+used to serve requests. See L<Feersum::Runner> for details.
 
 If in native mode (when running C<feersum --native>), currently only a
 C<--listen> parameter is accepted.  By default, the server will listen on

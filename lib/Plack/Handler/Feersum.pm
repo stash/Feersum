@@ -2,12 +2,14 @@ package Plack::Handler::Feersum;
 use strict;
 use Feersum::Runner;
 use base 'Feersum::Runner';
+use Scalar::Util qw/weaken/;
 
-sub run {
+sub assign_request_handler {
     my $self = shift;
-    $self->_prepare();
+    weaken $self;
     $self->{endjinn}->psgi_request_handler(shift);
-    EV::loop;
+    # Plack::Loader::Restarter will SIGTERM the parent
+    $self->{_term} = EV::signal 'TERM', sub { $self->quit };
 }
 
 1;
@@ -20,12 +22,19 @@ Plack::Handler::Feersum - plack adapter for Feersum
 =head1 SYNOPSIS
 
     plackup -s Feersum app.psgi
+    plackup -s Feersum --listen localhost:8080 app.psgi
+    plackup -s Feersum --pre-fork=4 -MMy::App -L delayed app.psgi
 
 =head1 DESCRIPTION
 
 This is a stub module that allows Feersum to be loaded up under C<plackup> and
 other Plack tools.  Set C<< $ENV{PLACK_SERVER} >> to 'Feersum' or use the -s
 parameter to plackup to use Feersum under Plack.
+
+A C<--pre-fork=N> parameter can be specified to put feersum into pre-forked
+mode where N is the number of child processes.  The C<--preload-app> parameter
+that L<Starlet> supports isn't supported yet.  The fork is run immediately
+after startup and after the app is loaded (i.e. in the C<run()> method).
 
 =head1 AUTHOR
 
