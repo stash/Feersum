@@ -142,6 +142,12 @@ http://www.varnish-cache.org/trac/ticket/400
 
 The socket file-descriptor number for this connection.
 
+=item C<< $req->response_guard($guard) >>
+
+Register a guard to be triggered when the response is completely sent and the
+socket is closed.  A "guard" in this context is some object that will do
+something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
+
 =back
 
 =head1 AUTHOR

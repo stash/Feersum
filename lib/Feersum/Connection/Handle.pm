@@ -55,6 +55,10 @@ For write handles:
         $_[0]->close();
     });
 
+For both:
+
+    $h->response_guard(guard { response_is_complete() });
+
 =head1 DESCRIPTION
 
 See the L<PSGI> spec for more information on how read/write handles are used
@@ -136,6 +140,25 @@ C<undef> to unset.  The sub can call C<close()>.
 A reference to the writer is passed in as the first and only argument to the
 sub.  It's recommended that you use C<$_[0]> rather than closing-over on C<$w>
 to prevent a circular reference.
+
+=back
+
+=head2 Common methods.
+
+Methods in common to both types of handles.
+
+=over 4
+
+=item C<< $h->response_guard($guard) >>
+
+Register a guard to be triggered when the response is completely sent and the
+socket is closed.  A "guard" in this context is some object that will do
+something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
+
+The guard is *not* attached to this handle object; the guard is attached to
+the response.
+
+C<psgix.output.guard> is the PSGI-env extension that indicates this method.
 
 =back
 

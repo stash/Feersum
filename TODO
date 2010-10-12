@@ -3,8 +3,6 @@ CPAN!
 
 Test and handle fork() gracefully. (v1.0)
 
-Per-client data (for attaching guards) (v1.0)
-
 Timeouts
     * slow responses? (feasable? just let TCP do it?)
 

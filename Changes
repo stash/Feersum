@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.983 Thu Oct 14 17:45:00 2010 -0700
+        Add a response_guard() method and psgix.output.guard
+
 0.982 Tue Oct 12 10:55:00 2010 -0700
         Initial pre-forking support via Feersum::Runner & Plack::Runner
         Fix: resource leak induced by header-read errors

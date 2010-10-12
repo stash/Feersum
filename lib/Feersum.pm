@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.982';
+our $VERSION = '0.983';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
@@ -159,12 +159,14 @@ dynamic ones:
     psgi.streaming    => 1,
     psgi.errors       => \*STDERR,
     SCRIPT_NAME       => "",
-    # see below for info on these extensions:
+
+Feersum adds these extensions (see below for info)
+
     psgix.input.buffered   => 1,
     psgix.output.buffered  => 1,
     psgix.body.scalar_refs => 1,
-    # warning: read notes below on this extension:
-    psgix.io => \$magical_io_socket,
+    psgix.output.guard     => 1,
+    psgix.io               => \$magical_io_socket,
 
 Note that SCRIPT_NAME is always blank (but defined).  PATH_INFO will contain
 the path part of the requested URI.
@@ -234,6 +236,18 @@ C<EAGAIN>).  Feersum may also allow for registering a poll_cb() handler that
 works similarly to the method on the "writer" object, although that isn't
 currently part of the PSGI 1.03 spec.  The callback will be called once data
 has been buffered.
+
+=item psgix.output.guard
+
+The streaming responder has a C<response_guard()> method that can be used to
+attach a guard to the request.  When the request completes (all data has been
+written to the socket and the socket has been closed) the guard will trigger.
+This is an alternate means to doing a "write completion" callback via
+C<poll_cb()> that should be more efficient.  An analogy is the "on_drain"
+handler in L<AnyEvent::Handle>.
+
+A "guard" in this context is some object that will do something interesting in
+its DESTROY/DEMOLISH method. For example, L<Guard>.
 
 =item psgix.io
 
