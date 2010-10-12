@@ -478,12 +478,17 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     trace3("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
         c->fd, self, c, SvCUR(self), SvLEN(self));
 
+    SV *rv = newRV_inc(c->self);
+    sv_bless(rv, feer_conn_stash); // so DESTROY can get called on read errors
+    SvREFCNT_dec(rv);
+
     SvREADONLY_on(self); // turn off later for blessing
     active_conns++;
     return c;
 }
 
 // for use in the typemap:
+INLINE_UNLESS_DEBUG
 static struct feer_conn *
 sv_2feer_conn (SV *rv)
 {
@@ -492,18 +497,11 @@ sv_2feer_conn (SV *rv)
     return (struct feer_conn *)SvPVX(SvRV(rv));
 }
 
+INLINE_UNLESS_DEBUG
 static SV*
 feer_conn_2sv (struct feer_conn *c)
 {
-    SV *rv = newRV_inc(c->self);
-    if (!SvOBJECT(c->self)) {
-        trace3("c->self not yet an object\n");
-        SvREADONLY_off(c->self);
-        // XXX: should this block use newRV_noinc instead?
-        sv_bless(rv, feer_conn_stash);
-        SvREADONLY_on(c->self);
-    }
-    return rv;
+    return newRV_inc(c->self);
 }
 
 static feer_conn_handle *
@@ -881,9 +879,6 @@ try_read_error:
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_write_watcher(c);
-    if (close(c->fd))
-        perror("close on read error");
-    c->fd = 0;
     goto try_read_cleanup;
 
 try_read_bad:
@@ -2034,7 +2029,7 @@ graceful_shutdown (SV *self, SV *cb)
     if (shutting_down)
         croak("already shutting down");
     shutdown_cb_cv = newSVsv(cb);
-    trace("assigned shutdown handler %p\n", SvRV(cb));
+    trace("shutting down, handler=%p, active=%d\n", SvRV(cb), active_conns);
 
     shutting_down = 1;
     ev_io_stop(feersum_ev_loop, &accept_w);
