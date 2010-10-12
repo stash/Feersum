@@ -7,7 +7,7 @@ use Socket qw/SOMAXCONN/;
 use POSIX ();
 use Scalar::Util qw/weaken/;
 
-sub new { my $c = shift; bless {@_},$c }
+sub new { my $c = shift; bless {quiet => 1, @_},$c }
 
 sub _prepare {
     my $self = shift;
@@ -38,7 +38,6 @@ sub _prepare {
     if ($self->{options}) {
         # Plack::Runner puts these here
         $self->{pre_fork} = delete $self->{options}{pre_fork};
-        $self->{quiet} = 1;
     }
 
     $self->{endjinn} = $f;
