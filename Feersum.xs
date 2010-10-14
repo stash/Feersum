@@ -2049,6 +2049,7 @@ graceful_shutdown (SV *self, SV *cb)
     close(accept_w.fd);
 
     if (active_conns <= 0) {
+        trace("shutdown is immediate\n");
         dSP;
         ENTER;
         SAVETMPS;
