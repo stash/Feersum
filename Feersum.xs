@@ -452,10 +452,19 @@ prep_socket(int fd)
     return 0;
 }
 
-static void
-make_blocking(int fd)
+INLINE_UNLESS_DEBUG static void
+safe_close_conn(struct feer_conn *c, const char *where)
 {
-    fcntl(fd, F_SETFL, 0);
+    if (unlikely(c->fd < 0))
+        return;
+
+    // make it blocking
+    fcntl(c->fd, F_SETFL, 0);
+
+    if (unlikely(close(c->fd)))
+        perror(where);
+
+    c->fd = -1;
 }
 
 static struct feer_conn *
@@ -783,10 +792,7 @@ try_write_shutdown:
     trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
     c->responding = RESPOND_SHUTDOWN;
     stop_write_watcher(c);
-    make_blocking(c->fd);
-    if(close(c->fd))
-        perror("close socket at shutdown");
-    c->fd = 0;
+    safe_close_conn(c, "close at write shutdown");
 
 try_write_cleanup:
     SvREFCNT_dec(c->self);
@@ -941,14 +947,12 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         respond_with_server_error(c, msg, 0, 408);
     }
     else {
+        // XXX as of 0.984 this appears to be dead code
         trace("read timeout while writing %d\n",c->fd);
         stop_write_watcher(c);
         stop_read_watcher(c);
         stop_read_timer(c);
-        make_blocking(c->fd);
-        if(close(c->fd))
-            perror("close socket at read timeout");
-        c->fd = 0;
+        safe_close_conn(c, "close at read timeout");
         c->responding = RESPOND_SHUTDOWN;
     }
 
@@ -2497,11 +2501,7 @@ DESTROY (struct feer_conn *c)
 
     if (likely(c->sa)) Safefree(c->sa);
 
-    if (c->fd) {
-        make_blocking(c->fd);
-        if(close(c->fd))
-            perror("close socket at destruction");
-    }
+    safe_close_conn(c, "close at destruction");
 
     if (c->poll_write_cb) SvREFCNT_dec(c->poll_write_cb);
 
