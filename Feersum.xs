@@ -1976,12 +1976,12 @@ set_server_name_and_port(SV *self, SV *name, SV *port)
     PPCODE:
 {
     if (feer_server_name)
-        SvREFCNT_DEC(feer_server_name);
+        SvREFCNT_dec(feer_server_name);
     feer_server_name = newSVsv(name);
     SvREADONLY_on(feer_server_name);
 
     if (feer_server_port)
-        SvREFCNT_DEC(feer_server_port);
+        SvREFCNT_dec(feer_server_port);
     feer_server_port = newSVsv(port);
     SvREADONLY_on(feer_server_port);
 }
