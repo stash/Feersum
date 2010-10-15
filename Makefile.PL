@@ -29,8 +29,8 @@ if ($ARGV[0] =~ /^-DEBUG=?(\d*)$/) {
 }
 elsif ($ARGV[0] eq '-PROFILE') {
     shift @ARGV;
-    $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-arcs -ftest-coverage -fprofile-generate";
-    $otherldflags = '-lgcov -fprofile-generate';
+    $ARGV[0] = "OPTIMIZE=-g -fprofile-arcs -ftest-coverage";
+    $otherldflags = '-lgcov';
 }
 elsif ($ARGV[0] eq '-PROFILEUSE') {
     $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-use";
