@@ -466,10 +466,6 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->self = self;
     c->fd = conn_fd;
     c->sa = sa;
-    if (prep_socket(c->fd)) {
-        perror("prep_socket");
-        trace("prep_socket failed for %d\n", c->fd);
-    }
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -977,6 +973,13 @@ accept_cb (EV_P_ ev_io *w, int revents)
         int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
+
+        if (prep_socket(fd)) {
+            perror("prep_socket");
+            trouble("prep_socket failed for %d\n", fd);
+            close(fd);
+            continue;
+        }
 
         struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
         start_read_watcher(c);
