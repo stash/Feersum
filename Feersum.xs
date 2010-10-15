@@ -535,7 +535,7 @@ static SV *
 new_feer_conn_handle (pTHX_ struct feer_conn *c, bool is_writer)
 {
     SV *sv;
-    SvREFCNT_inc(c->self);
+    SvREFCNT_inc_void_NN(c->self);
     sv = newRV_noinc(newSVuv(PTR2UV(c)));
     sv_bless(sv, is_writer ? feer_conn_writer_stash : feer_conn_reader_stash);
     return sv;
@@ -547,7 +547,7 @@ start_read_watcher(struct feer_conn *c) {
     if (!ev_is_active(&c->read_ev_io)) {
         trace("start read watcher %d\n",c->fd);
         ev_io_start(feersum_ev_loop, &c->read_ev_io);
-        SvREFCNT_inc(c->self);
+        SvREFCNT_inc_void_NN(c->self);
     }
 }
 
@@ -565,7 +565,7 @@ restart_read_timer(struct feer_conn *c) {
     if (!ev_is_active(&c->read_ev_timer)) {
         trace("restart read timer %d\n",c->fd);
         c->read_ev_timer.repeat = read_timeout;
-        SvREFCNT_inc(c->self);
+        SvREFCNT_inc_void_NN(c->self);
     }
     ev_timer_again(feersum_ev_loop, &c->read_ev_timer);
 }
@@ -584,7 +584,7 @@ start_write_watcher(struct feer_conn *c) {
     if (!ev_is_active(&c->write_ev_io)) {
         trace("start write watcher %d\n",c->fd);
         ev_io_start(feersum_ev_loop, &c->write_ev_io);
-        SvREFCNT_inc(c->self);
+        SvREFCNT_inc_void_NN(c->self);
     }
 }
 
@@ -662,7 +662,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     dCONN;
     int i;
 
-    SvREFCNT_inc(c->self);
+    SvREFCNT_inc_void_NN(c->self);
 
     // if it's marked writeable EV suggests we simply try write to it.
     // Otherwise it is stopped and we should ditch this connection.
@@ -806,7 +806,7 @@ static void
 try_conn_read(EV_P_ ev_io *w, int revents)
 {
     dCONN;
-    SvREFCNT_inc(c->self);
+    SvREFCNT_inc_void_NN(c->self);
 
     // if it's marked readable EV suggests we simply try read it. Otherwise it
     // is stopped and we should ditch this connection.
@@ -911,7 +911,7 @@ static void
 conn_read_timeout (EV_P_ ev_timer *w, int revents)
 {
     dCONN;
-    SvREFCNT_inc(c->self);
+    SvREFCNT_inc_void_NN(c->self);
 
     if (!(revents & EV_TIMER) || c->receiving == RECEIVE_SHUTDOWN) {
         // if there's no EV_TIMER then EV has stopped it on an error
@@ -991,7 +991,7 @@ sched_request_callback (struct feer_conn *c)
 {
     trace("sched req callback: %d c=%p, head=%p\n", c->fd, c, request_ready_rinq);
     rinq_push(&request_ready_rinq, c);
-    SvREFCNT_inc(c->self); // for the rinq
+    SvREFCNT_inc_void_NN(c->self); // for the rinq
     if (!ev_is_active(&ei)) {
         ev_idle_start(feersum_ev_loop, &ei);
     }
@@ -1749,7 +1749,7 @@ call_request_callback (struct feer_conn *c)
     dSP;
     int flags;
     c->in_callback++;
-    SvREFCNT_inc(c->self);
+    SvREFCNT_inc_void_NN(c->self);
 
     trace("request callback c=%p\n", c);
 
@@ -1781,7 +1781,7 @@ call_request_callback (struct feer_conn *c)
     SV *psgi_response;
     if (request_cb_is_psgi && returned >= 1) {
         psgi_response = POPs;
-        SvREFCNT_inc(psgi_response);
+        SvREFCNT_inc_void_NN(psgi_response);
     }
 
     trace("leaving request callback\n");
