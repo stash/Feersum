@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.984 Fri Oct 15 10:45:00 2010 -0700
+        Fix a misspelling of SvREFCNT_dec
+
 0.983 Thu Oct 14 17:45:00 2010 -0700
         Add a response_guard() method and psgix.output.guard
 
