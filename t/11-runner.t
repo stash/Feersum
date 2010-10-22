@@ -24,7 +24,7 @@ test_tcp(
             sub {
                 my ($body,$headers) = @_;
                 is $headers->{Status}, 200, "http success";
-                like $body, qr/^Hello customer number \d+$/;
+                like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
                 $cv->end;
             };
         $cv->recv;
@@ -63,7 +63,7 @@ test_tcp(
             sub {
                 my ($body,$headers) = @_;
                 is $headers->{Status}, 200, "script http success";
-                like $body, qr/^Hello customer number \d+$/;
+                like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
                 $cv->end;
             };
         $cv->recv;

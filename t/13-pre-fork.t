@@ -22,7 +22,7 @@ sub simple_get {
         sub {
             my ($body,$headers) = @_;
             is $headers->{Status}, 200, "client $n: http success";
-            like $body, qr/^Hello customer number \d+$/, "client $n: looks good";
+            like $body, qr/^Hello customer number 0x[0-9a-f]+$/, "client $n: looks good";
             $cv->end;
             undef $cli;
         };
