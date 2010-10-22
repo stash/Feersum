@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <sys/queue.h>
 
 #include "ppport.h"
 
@@ -114,6 +115,8 @@ struct feer_conn {
     int fd;
     struct sockaddr *sa;
 
+    STAILQ_ENTRY(feer_conn) req_ready;
+
     struct ev_io read_ev_io;
     struct ev_io write_ev_io;
     struct ev_timer read_ev_timer;
@@ -205,14 +208,15 @@ static ev_prepare ep;
 static ev_check   ec;
 struct ev_idle    ei;
 
-static struct rinq *request_ready_rinq = NULL;
-
 static AV *psgi_ver;
 static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
 
 // TODO: make this thread-local if and when there are multiple C threads:
 struct ev_loop *feersum_ev_loop = NULL;
 static HV *feersum_tmpl_env = NULL;
+
+STAILQ_HEAD(req_ready_qt, feer_conn) req_ready_q
+    = STAILQ_HEAD_INITIALIZER(req_ready_q);
 
 INLINE_UNLESS_DEBUG
 static struct iomatrix *
@@ -612,21 +616,21 @@ stop_write_watcher(struct feer_conn *c) {
 
 
 static void
-process_request_ready_rinq (void)
+process_req_ready (void)
 {
-    while (request_ready_rinq) {
-        struct feer_conn *c =
-            (struct feer_conn *)rinq_shift(&request_ready_rinq);
-        //trace("rinq shifted c=%p, head=%p\n", c, request_ready_rinq);
-
+    struct feer_conn *c_next;
+    struct feer_conn *c = STAILQ_FIRST(&req_ready_q);
+    while (c) {
         call_request_callback(c);
-
         if (likely(c->wbuf_rinq)) {
             // this was deferred until after the perl callback
             conn_write_ready(c);
         }
-        SvREFCNT_dec(c->self); // for the rinq
+        c_next = STAILQ_NEXT(c, req_ready);
+        SvREFCNT_dec(c->self); // for the STAILQ
+        c = c_next;
     }
+    STAILQ_INIT(&req_ready_q);
 }
 
 static void
@@ -652,9 +656,9 @@ check_cb (EV_P_ ev_check *w, int revents)
         ev_unloop(EV_A, EVUNLOOP_ALL);
         return;
     }
-    trace3("check! head=%p\n", request_ready_rinq);
-    if (request_ready_rinq)
-        process_request_ready_rinq();
+    trace3("check!\n");
+    if (!STAILQ_EMPTY(&req_ready_q))
+        process_req_ready();
 }
 
 static void
@@ -665,9 +669,9 @@ idle_cb (EV_P_ ev_idle *w, int revents)
         ev_unloop(EV_A, EVUNLOOP_ALL);
         return;
     }
-    trace3("idle! head=%p\n", request_ready_rinq);
-    if (request_ready_rinq)
-        process_request_ready_rinq();
+    trace3("idle!\n");
+    if (!STAILQ_EMPTY(&req_ready_q))
+        process_req_ready();
     ev_idle_stop(EV_A, w);
 }
 
@@ -1007,9 +1011,9 @@ accept_cb (EV_P_ ev_io *w, int revents)
 static void
 sched_request_callback (struct feer_conn *c)
 {
-    trace("sched req callback: %d c=%p, head=%p\n", c->fd, c, request_ready_rinq);
-    rinq_push(&request_ready_rinq, c);
-    SvREFCNT_inc_void_NN(c->self); // for the rinq
+    trace("sched req callback: %d c=%p\n", c->fd, c);
+    STAILQ_INSERT_TAIL(&req_ready_q, c, req_ready);
+    SvREFCNT_inc_void_NN(c->self); // for the STAILQ
     if (!ev_is_active(&ei)) {
         ev_idle_start(feersum_ev_loop, &ei);
     }
