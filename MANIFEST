@@ -22,6 +22,7 @@ picohttpparser-git/picohttpparser.h
 picohttpparser-git/test.c
 picohttpparser-git/test_response.c
 ppport.h
+queue.h
 t/01-simple.t
 t/02-array-body.t
 t/03-env-hash.t

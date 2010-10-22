@@ -520,4 +520,7 @@ at your option, any later version of Perl 5 you may have available.
 picohttpparser is Copyright 2009 Kazuho Oku.  It is released under the same
 terms as Perl itself.
 
+queue.h is Copyright (c) 1991, 1993 The Regents of the University of
+California.  All rights reserved.  See file for the full license & disclaimer.
+
 =cut

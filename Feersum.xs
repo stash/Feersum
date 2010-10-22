@@ -7,11 +7,11 @@
 #include <ctype.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
-#include <sys/queue.h>
+#include <sys/uio.h>
 
 #include "ppport.h"
-
 #include "picohttpparser-git/picohttpparser.c"
+#include "queue.h"
 
 #ifdef __GNUC__
 # define likely(x)   __builtin_expect(!!(x), 1)
@@ -79,8 +79,8 @@
 #define trace3(...)
 #endif
 
-#include <sys/uio.h>
 #define IOMATRIX_SIZE 63
+#define IOMATRIX_PREALLOC 50
 struct iomatrix {
     struct iovec iov[IOMATRIX_SIZE];
     SV *sv[IOMATRIX_SIZE];
@@ -215,8 +215,41 @@ static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
 struct ev_loop *feersum_ev_loop = NULL;
 static HV *feersum_tmpl_env = NULL;
 
-STAILQ_HEAD(req_ready_qt, feer_conn) req_ready_q
+static STAILQ_HEAD(req_ready_qt, feer_conn) req_ready_q
     = STAILQ_HEAD_INITIALIZER(req_ready_q);
+
+static STAILQ_HEAD(iomatrix_free_qt, iomatrix) iomatrix_free_q
+    = STAILQ_HEAD_INITIALIZER(iomatrix_free_q);
+static int iomatrix_alloc_count = 0;
+
+INLINE_UNLESS_DEBUG
+static struct iomatrix *
+new_iomatrix (void)
+{
+    struct iomatrix *m = STAILQ_FIRST(&iomatrix_free_q);
+    if (m) {
+        STAILQ_REMOVE_HEAD(&iomatrix_free_q, next);
+    }
+    else {
+        Newx(m,1,struct iomatrix);
+        iomatrix_alloc_count++;
+    }
+    m->count = m->offset = 0;
+    return m;
+}
+
+INLINE_UNLESS_DEBUG
+static void
+free_iomatrix (struct iomatrix *m)
+{
+    if (iomatrix_alloc_count <= IOMATRIX_PREALLOC) {
+        STAILQ_INSERT_HEAD(&iomatrix_free_q, m, next);
+    }
+    else {
+        Safefree(m);
+        iomatrix_alloc_count--;
+    }
+}
 
 INLINE_UNLESS_DEBUG
 static struct iomatrix *
@@ -224,16 +257,10 @@ next_iomatrix (struct feer_conn *c)
 {
     // STAILQ_LAST should be able to handle the empty wbuf case:
     struct iomatrix *m = STAILQ_LAST(&c->wbuf, iomatrix, next);
-
     if (!m || m->count >= IOMATRIX_SIZE) {
-        Newx(m,1,struct iomatrix);
-#if DEBUG
-        Poison(m,1,struct iomatrix);
-#endif
-        m->offset = m->count = 0;
+        m = new_iomatrix();
         STAILQ_INSERT_TAIL(&c->wbuf, m, next);
     }
-
     return m;
 }
 
@@ -751,7 +778,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     if (likely(m->offset >= m->count)) {
         trace2("all done with iomatrix %d state=%d\n",w->fd,c->responding);
         STAILQ_REMOVE_HEAD(&c->wbuf, next);
-        Safefree(m);
+        free_iomatrix(m);
         goto try_write_finished;
     }
     // else, fallthrough:
@@ -2487,7 +2514,7 @@ DESTROY (struct feer_conn *c)
             if (m->sv[i]) SvREFCNT_dec(m->sv[i]);
         }
         m_next = STAILQ_NEXT(m, next);
-        Safefree(m);
+        free_iomatrix(m);
     }
 
     if (likely(c->req)) {
@@ -2547,4 +2574,13 @@ BOOT:
 
         Zero(&psgix_io_vtbl, 1, MGVTBL);
         psgix_io_vtbl.svt_get = psgix_io_svt_get;
+
+        int i;
+        for (i=0; i<IOMATRIX_PREALLOC; i++) {
+            struct iomatrix *m;
+            Newx(m,1,struct iomatrix);
+            m->count = m->offset = 0;
+            STAILQ_INSERT_HEAD(&iomatrix_free_q, m, next);
+            iomatrix_alloc_count++;
+        }
     }
