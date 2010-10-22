@@ -13,8 +13,6 @@
 
 #include "picohttpparser-git/picohttpparser.c"
 
-#include "rinq.c"
-
 #ifdef __GNUC__
 # define likely(x)   __builtin_expect(!!(x), 1)
 # define unlikely(x) __builtin_expect(!!(x), 0)
@@ -82,13 +80,15 @@
 #endif
 
 #include <sys/uio.h>
-#define IOMATRIX_SIZE 64
+#define IOMATRIX_SIZE 63
 struct iomatrix {
-    uint16_t offset;
-    uint16_t count;
     struct iovec iov[IOMATRIX_SIZE];
     SV *sv[IOMATRIX_SIZE];
+    unsigned int offset;
+    unsigned int count;
+    STAILQ_ENTRY(iomatrix) next;
 };
+STAILQ_HEAD(iomatrix_qt, iomatrix);
 
 struct feer_req {
     SV *buf;
@@ -122,7 +122,7 @@ struct feer_conn {
     struct ev_timer read_ev_timer;
 
     SV *rbuf;
-    struct rinq *wbuf_rinq;
+    struct iomatrix_qt wbuf;
 
     SV *poll_write_cb;
     SV *ext_guard;
@@ -222,25 +222,16 @@ INLINE_UNLESS_DEBUG
 static struct iomatrix *
 next_iomatrix (struct feer_conn *c)
 {
-    bool add_iomatrix = 0;
-    struct iomatrix *m;
+    // STAILQ_LAST should be able to handle the empty wbuf case:
+    struct iomatrix *m = STAILQ_LAST(&c->wbuf, iomatrix, next);
 
-    if (!c->wbuf_rinq) {
-        add_iomatrix = 1;
-    }
-    else {
-        // get the tail-end struct
-        m = (struct iomatrix *)c->wbuf_rinq->prev->ref;
-        if (m->count >= IOMATRIX_SIZE) {
-            add_iomatrix = 1;
-        }
-    }
-
-    if (add_iomatrix) {
+    if (!m || m->count >= IOMATRIX_SIZE) {
         Newx(m,1,struct iomatrix);
+#if DEBUG
         Poison(m,1,struct iomatrix);
+#endif
         m->offset = m->count = 0;
-        rinq_push(&c->wbuf_rinq, m);
+        STAILQ_INSERT_TAIL(&c->wbuf, m, next);
     }
 
     return m;
@@ -488,6 +479,8 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->fd = conn_fd;
     c->sa = sa;
 
+    STAILQ_INIT(&c->wbuf);
+
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
 
@@ -622,7 +615,7 @@ process_req_ready (void)
     struct feer_conn *c = STAILQ_FIRST(&req_ready_q);
     while (c) {
         call_request_callback(c);
-        if (likely(c->wbuf_rinq)) {
+        if (likely(!STAILQ_EMPTY(&c->wbuf))) {
             // this was deferred until after the perl callback
             conn_write_ready(c);
         }
@@ -691,7 +684,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         goto try_write_finished;
     }
 
-    if (unlikely(!c->wbuf_rinq)) {
+    if (unlikely(STAILQ_EMPTY(&c->wbuf))) {
         if (unlikely(c->responding == RESPOND_SHUTDOWN))
             goto try_write_finished;
 
@@ -711,10 +704,10 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
             call_poll_callback(c, 1);
 
         // callback didn't write anything:
-        if (unlikely(!c->wbuf_rinq)) goto try_write_again;
+        if (unlikely(STAILQ_EMPTY(&c->wbuf))) goto try_write_again;
     }
     
-    struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
+    struct iomatrix *m = STAILQ_FIRST(&c->wbuf);
 #if DEBUG >= 2
     fprintf(stderr,"going to write to %d:\n",c->fd);
     for (i=0; i < m->count; i++) {
@@ -757,7 +750,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 
     if (likely(m->offset >= m->count)) {
         trace2("all done with iomatrix %d state=%d\n",w->fd,c->responding);
-        rinq_shift(&c->wbuf_rinq);
+        STAILQ_REMOVE_HEAD(&c->wbuf, next);
         Safefree(m);
         goto try_write_finished;
     }
@@ -2488,14 +2481,13 @@ DESTROY (struct feer_conn *c)
 
     if (likely(c->rbuf)) SvREFCNT_dec(c->rbuf);
 
-    if (c->wbuf_rinq) {
-        struct iomatrix *m;
-        while ((m = (struct iomatrix *)rinq_shift(&c->wbuf_rinq)) != NULL) {
-            for (i=0; i < m->count; i++) {
-                if (m->sv[i]) SvREFCNT_dec(m->sv[i]);
-            }
-            Safefree(m);
+    struct iomatrix *m, *m_next = STAILQ_FIRST(&c->wbuf);
+    while ((m = m_next)) {
+        for (i=0; i < m->count; i++) {
+            if (m->sv[i]) SvREFCNT_dec(m->sv[i]);
         }
+        m_next = STAILQ_NEXT(m, next);
+        Safefree(m);
     }
 
     if (likely(c->req)) {
