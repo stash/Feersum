@@ -33,4 +33,4 @@ my $t = EV::timer 1, 1, sub {
     print "served $counter\n";
 };
 
-EV::loop;
+EV::run;

@@ -634,7 +634,7 @@ prepare_cb (EV_P_ ev_prepare *w, int revents)
 {
     if (unlikely(revents & EV_ERROR)) {
         trouble("EV error in prepare, revents=0x%08x\n", revents);
-        ev_unloop(EV_A, EVUNLOOP_ALL);
+        ev_unloop(EV_A, EVBREAK_ALL);
         return;
     }
 
@@ -649,7 +649,7 @@ check_cb (EV_P_ ev_check *w, int revents)
 {
     if (unlikely(revents & EV_ERROR)) {
         trouble("EV error in check, revents=0x%08x\n", revents);
-        ev_unloop(EV_A, EVUNLOOP_ALL);
+        ev_unloop(EV_A, EVBREAK_ALL);
         return;
     }
     trace3("check! head=%p\n", request_ready_rinq);
@@ -662,7 +662,7 @@ idle_cb (EV_P_ ev_idle *w, int revents)
 {
     if (unlikely(revents & EV_ERROR)) {
         trouble("EV error in idle, revents=0x%08x\n", revents);
-        ev_unloop(EV_A, EVUNLOOP_ALL);
+        ev_unloop(EV_A, EVBREAK_ALL);
         return;
     }
     trace3("idle! head=%p\n", request_ready_rinq);
@@ -974,7 +974,7 @@ accept_cb (EV_P_ ev_io *w, int revents)
 
     if (unlikely(revents & EV_ERROR)) {
         trouble("EV error in accept_cb, fd=%d, revents=0x%08x\n",w->fd,revents);
-        ev_unloop(EV_A, EVUNLOOP_ALL);
+        ev_unloop(EV_A, EVBREAK_ALL);
         return;
     }
 

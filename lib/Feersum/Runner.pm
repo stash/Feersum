@@ -62,7 +62,7 @@ sub run {
     $self->{_quit} = EV::signal 'QUIT', sub { $self->quit };
 
     $self->pre_fork if $self->{pre_fork};
-    EV::loop;
+    EV::run;
     $self->{quiet} or warn "Feersum [$$]: done\n";
 }
 
@@ -77,7 +77,7 @@ sub fork_another {
         $self->{quiet} or warn "Feersum [$$]: starting\n";
         delete $self->{_kids};
         delete $self->{pre_fork};
-        eval { EV::loop; };
+        eval { EV::run; };
         warn $@ if $@;
         POSIX::exit($@ ? -1 : 0);
     }
@@ -89,7 +89,7 @@ sub fork_another {
             "with rstatus ".$w->rstatus."\n";
         $self->{_n_kids}--;
         if ($self->{_shutdown}) {
-            EV::unloop(EV::UNLOOP_ALL) unless $self->{_n_kids};
+            EV::break(EV::BREAK_ALL) unless $self->{_n_kids};
             return;
         }
         $self->fork_another();

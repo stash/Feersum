@@ -29,7 +29,7 @@ $evh->request_handler(sub {
     $w->write(\$n);
     $w->write("\n");
     $w->close();
-    $evh->graceful_shutdown(sub { EV::unloop });
+    $evh->graceful_shutdown(sub { EV::break });
 });
 
-EV::loop;
+EV::run;

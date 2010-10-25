@@ -53,7 +53,7 @@ WriteMakefile(ev_args(
     AUTHOR        => 'Jeremy Stashewsky <stash@cpan.org>',
     LICENSE       => 'perl',
     CONFIGURE_REQUIRES => {
-        'EV' => 3.9,
+        'EV' => 4.00,
         'ExtUtils::MakeMaker' => 6.51,
     },
     BUILD_REQUIRES => {
@@ -65,7 +65,7 @@ WriteMakefile(ev_args(
         'JSON::XS' => 2.0,
     },
     PREREQ_PM => {
-        'EV' => 3.9,
+        'EV' => 4.00,
     },
     META_MERGE => {
         recommends => {
