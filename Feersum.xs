@@ -11,6 +11,11 @@
 
 #include "ppport.h"
 #include "picohttpparser-git/picohttpparser.c"
+
+// seems this isn't defined by default for linux?
+#ifndef __offsetof
+# define __offsetof(type,field) __builtin_offsetof(type,field)
+#endif
 #include "queue.h"
 
 #ifdef __GNUC__
