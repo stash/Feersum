@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+0.986 Mon Oct 26 09:16:00 2010 -0700
+        Fix compilation for EV 4.00 (thanks au)
+
 0.985 Mon Oct 25 16:18:00 2010 -0700
         Require EV 4.00.
         Make two example scripts emit a constant Content-Length for ab.
