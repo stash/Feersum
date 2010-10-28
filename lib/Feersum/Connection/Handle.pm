@@ -48,6 +48,7 @@ For write handles:
 
     $w->write("scalar");
     $w->write(\"scalar ref");
+    $w->write_array(\@some_stuff);
     $w->poll_cb(sub {
         # use $_[0] instead of $w to avoid a closure
         $_[0]->write(\"some data");
@@ -125,6 +126,12 @@ PSGI env hash (L<Twiggy> supports this too, for example).
 
 Works just like C<write("scalar")> above.  This extension is indicated by
 C<psgix.body.scalar_refs> in the PSGI env hash.
+
+=item C<< $w->write_array(\@array) >>
+
+Pass in an array-ref and it works much like the two C<write()> calls above,
+except it's way more efficient than calling C<write()> over and over.
+Undefined elements of the array are ignored.
 
 =item C<< $w->close() >>
 

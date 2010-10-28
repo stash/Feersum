@@ -182,6 +182,7 @@ static void add_placeholder_to_wbuf (struct feer_conn *c, SV **sv, struct iovec 
 static void uri_decode_sv (SV *sv);
 static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
+static SV* fetch_av_normal (pTHX_ AV *av, I32 i);
 
 static const char const *http_code_to_msg (int code);
 static int prep_socket (int fd);
@@ -213,6 +214,21 @@ static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
 // TODO: make this thread-local if and when there are multiple C threads:
 struct ev_loop *feersum_ev_loop = NULL;
 static HV *feersum_tmpl_env = NULL;
+
+INLINE_UNLESS_DEBUG
+static SV*
+fetch_av_normal (pTHX_ AV *av, I32 i)
+{
+    SV **elt = av_fetch(av, i, 0);
+    if (elt == NULL) return NULL;
+    SV *sv = *elt;
+    // copy to remove magic
+    if (unlikely(SvMAGICAL(sv))) sv = sv_2mortal(newSVsv(sv));
+    if (unlikely(!SvOK(sv))) return NULL;
+    // usually array ref elems aren't RVs (for PSGI anyway)
+    if (unlikely(SvROK(sv))) sv = SvRV(sv);
+    return sv;
+}
 
 INLINE_UNLESS_DEBUG
 static struct iomatrix *
@@ -1611,17 +1627,12 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         I32 amax = av_len(abody);
         RETVAL = 0;
         for (i=0; i<=amax; i++) {
-            SV **elt = av_fetch(abody, i, 0);
-            if (elt == NULL) continue;
-            SV *sv = *elt;
-            // copy to remove magic
-            if (unlikely(SvMAGICAL(sv))) sv = sv_2mortal(newSVsv(sv));
-            if (unlikely(!SvOK(sv))) continue;
-            // usually array ref elems aren't RVs (for PSGI anyway)
-            if (unlikely(SvROK(sv))) sv = SvRV(sv);
-            cur = add_sv_to_wbuf(c,sv);
-            trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
-            RETVAL += cur;
+            SV *sv = fetch_av_normal(aTHX_ abody, i);
+            if (likely(sv)) {
+                cur = add_sv_to_wbuf(c,sv);
+                trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
+                RETVAL += cur;
+            }
         }
     }
 
@@ -2284,6 +2295,34 @@ write (feer_conn_handle *hdl, ...)
 }
     OUTPUT:
         RETVAL
+
+void
+write_array (feer_conn_handle *hdl, AV *abody)
+    PROTOTYPE: $$
+    PPCODE:
+{
+    if (unlikely(c->responding != RESPOND_STREAMING))
+        croak("can only call write in streaming mode");
+
+    trace("write_array fd=%d c=%p, body=%p\n", c->fd, c, body);
+
+    I32 amax = av_len(abody);
+    int i;
+    if (c->is_http11) {
+        for (i=0; i<=amax; i++) {
+            SV *sv = fetch_av_normal(aTHX_ abody, i);
+            if (likely(sv)) add_chunk_sv_to_wbuf(c, sv);
+        }
+    }
+    else {
+        for (i=0; i<=amax; i++) {
+            SV *sv = fetch_av_normal(aTHX_ abody, i);
+            if (likely(sv)) add_sv_to_wbuf(c, sv);
+        }
+    }
+
+    conn_write_ready(c);
+}
 
 int
 seek (feer_conn_handle *hdl, ssize_t offset, ...)
