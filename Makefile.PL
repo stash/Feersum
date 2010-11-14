@@ -1,5 +1,5 @@
 use 5.008007;
-use ExtUtils::MakeMaker;
+use ExtUtils::MakeMaker 6.51;
 use EV::MakeMaker qw/ev_args/;
 
 {
