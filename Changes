@@ -1,5 +1,11 @@
 Revision history for Perl extension Feersum
 
+1.000 Mon Nov 22 12:00:00 2010 -0800
+        Socialtext now runs Feersum in production, hence 1.000
+        Add write_array() to Writer handle (undoc'd Feersum extension)
+        Be explicit about the EU::MM requirement (thanks au)
+        Formally support PSGI 1.1 (thanks miyagawa)
+
 0.986 Mon Oct 26 09:16:00 2010 -0700
         Fix compilation for EV 4.00 (thanks au)
 
