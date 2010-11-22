@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '0.986';
+our $VERSION = '1.000';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
@@ -79,8 +79,9 @@ Feersum - A PSGI engine for Perl based on EV/libev
 
 Feersum is an HTTP server built on L<EV>.  It fully supports the PSGI 1.03
 spec including the C<psgi.streaming> interface and is compatible with Plack.
-Feersum also has its own "native" interface which is similar in a lot of
-ways to PSGI, but is B<not compatible> with PSGI or PSGI middleware.
+PSGI 1.1, which has yet to be published formally, is also supported.  Feersum
+also has its own "native" interface which is similar in a lot of ways to PSGI,
+but is B<not compatible> with PSGI or PSGI middleware.
 
 Feersum uses a single-threaded, event-based programming architecture to scale
 and can handle many concurrent connections efficiently in both CPU and RAM.
@@ -121,9 +122,10 @@ L<feersum>, L<Feersum::Runner> or L<Plack::Handler::Feersum> for details).
 
 There are two handler interfaces for Feersum: The PSGI handler interface and
 the "Feersum-native" handler interface.  The PSGI handler interface is fully
-PSGI 1.03 compatible and supports C<psgi.streaming>.  The Feersum-native
-handler interface is "inspired by" PSGI, but does some things differently for
-speed.
+PSGI 1.03 compatible and supports C<psgi.streaming>. The
+C<psgix.input.buffered> and C<psgix.io> features of PSGI 1.1 are also
+supported.  The Feersum-native handler interface is "inspired by" PSGI, but
+does some things differently for speed.
 
 Feersum will use "Transfer-Encoding: chunked" for HTTP/1.1 clients and
 "Connection: close" streaming as a fallback.  Technically "Connection: close"
@@ -181,8 +183,9 @@ no body to avoid unnecessary work.
     $r->close();
 
 The C<psgi.streaming> interface is fully supported, including the
-writer-object C<poll_cb> callback feature defined in PSGI 1.03.  Feersum calls
-the poll_cb callback after all data has been flushed out and the socket is
+writer-object C<poll_cb> callback feature defined in PSGI 1.03.  B<Note that
+poll_cb is removed from the preliminary PSGI 1.1 spec>.  Feersum calls the
+poll_cb callback after all data has been flushed out and the socket is
 write-ready.  The data is buffered until the callback returns at which point
 it will be immediately flushed to the socket.
 
@@ -225,17 +228,15 @@ B<psgix.output.buffered> in the PSGI env hash.
 
 =item psgix.input.buffered
 
-B<psgix.input.buffered> is also set, which means that calls to read on the
-input handle will also never block.  Feersum currently buffers the entire
-input before calling the callback.
+C<psgix.input.buffered> is defined as part of PSGI 1.1. It means that calls to
+read on the input handle will never block because the complete input has been
+buffered in some way.
 
-This input behaviour will probably change to not be completely buffered. Users
-of Feersum should expect that when no data is available read, the calls to get
-data from the input filehandle will return an empty-string and set C<$!> to
-C<EAGAIN>).  Feersum may also allow for registering a poll_cb() handler that
-works similarly to the method on the "writer" object, although that isn't
-currently part of the PSGI 1.03 spec.  The callback will be called once data
-has been buffered.
+Feersum currently buffers the entire input in memory calling the callback.
+
+B<Feersum's input behaviour MAY eventually change to not be
+psgix.input.buffered!>  Likely, a C<poll_cb()> method similar to how the
+writer handle works could be registered to have input "pushed" to the app.
 
 =item psgix.output.guard
 
@@ -252,8 +253,9 @@ its DESTROY/DEMOLISH method. For example, L<Guard>.
 =item psgix.io
 
 The raw socket extension B<psgix.io> is provided in order to support
-L<Web::Hippie> and websockets.  To obtain the L<IO::Socket> corresponding to
-this connection, read this environment variable.
+L<Web::Hippie> and websockets.  C<psgix.io> is defined as part of PSGI 1.1.
+To obtain the L<IO::Socket> corresponding to this connection, read this
+environment variable.
 
 The underlying file descriptor will have C<O_NONBLOCK>, C<TCP_NODELAY>,
 C<SO_OOBINLINE> enabled and C<SO_LINGER> disabled.
