@@ -2575,12 +2575,10 @@ BOOT:
         feer_conn_reader_stash = gv_stashpv("Feersum::Connection::Reader",0);
         I_EV_API("Feersum");
 
-        SV *ver_svs[2];
-        ver_svs[0] = newSViv(1);
-        ver_svs[1] = newSViv(0);
-        psgi_ver = av_make(2,ver_svs);
-        SvREFCNT_dec(ver_svs[0]);
-        SvREFCNT_dec(ver_svs[1]);
+        psgi_ver = newAV();
+        av_extend(psgi_ver, 2);
+        av_push(psgi_ver, newSViv(1));
+        av_push(psgi_ver, newSViv(1));
         SvREADONLY_on((SV*)psgi_ver);
 
         psgi_serv10 = newSVpvs("HTTP/1.0");
