@@ -33,7 +33,7 @@ Plack::Test::Server::test_psgi(
     app => sub {
         my $env = shift;
         ok $env->{'psgix.body.scalar_refs'}, "seems to be Feersum";
-        is_deeply $env->{'psgi.version'}, [1,0], "is PSGI 1.0";
+        is_deeply $env->{'psgi.version'}, [1,1], "is PSGI 1.1";
         return [ 200, [ 'Content-Type' => 'text/plain' ], [ "Hello World" ] ],
     },
     client => sub {

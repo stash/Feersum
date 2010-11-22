@@ -1298,6 +1298,7 @@ feersum_init_tmpl_env(pTHX)
     // constants
     hv_stores(e, "psgi.version", newRV((SV*)psgi_ver));
     hv_stores(e, "psgi.url_scheme", newSVpvs("http"));
+    hv_stores(e, "psgi.run_once", &PL_sv_no);
     hv_stores(e, "psgi.nonblocking", &PL_sv_yes);
     hv_stores(e, "psgi.multithread", &PL_sv_no);
     hv_stores(e, "psgi.multiprocess", &PL_sv_no);
