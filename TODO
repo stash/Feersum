@@ -51,3 +51,7 @@ WebSocket support (v1.1)
     * will this work for PSGI? magic psgix.web_socket or something?
 
 Release t/Utils.pm's "simple_client" as "anyevent::anotherhttp" or something?
+
+accept4
+    * available on newer linuxes, saves calls to fcntl for setting NONBLOCK
+    and CLOEXEC
