@@ -55,3 +55,10 @@ Release t/Utils.pm's "simple_client" as "anyevent::anotherhttp" or something?
 accept4
     * available on newer linuxes, saves calls to fcntl for setting NONBLOCK
     and CLOEXEC
+
+JSON accelleration?
+    * can write_json() an element in an array of things? automagically call JSON::XS stuff?
+    * middleware with XS-accellerator?
+
+True pre-forking support
+    * serialize accept() calls
