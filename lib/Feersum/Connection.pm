@@ -150,6 +150,34 @@ something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
 
 =back
 
+=begin comment
+
+=head2 Private and or Deprecated Methods
+
+=over 4
+
+=item C<< new() >>
+
+No-op. Feersum will create these objects internally.
+
+=item C<< $req->read_handle >>
+
+use psgi.input instead
+
+=item C<< $req->write_handle >>
+
+=item C<< $req->start_response(...) >>
+
+use start_streaming() or start_whole_response() instead
+
+=item C<< $req->initiate_streaming(...) >>
+
+use start_streaming() and its return value instead
+
+=back
+
+=end comment
+
 =head1 AUTHOR
 
 Jeremy Stashewsky, C<< stash@cpan.org >>

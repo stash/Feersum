@@ -154,6 +154,14 @@ to prevent a circular reference.
 
 Methods in common to both types of handles.
 
+=begin comment
+
+=item C<< Feersum::Connection::Handle->new() >>
+
+Shouldn't be called directly; L<Feersum> will create these objects.
+
+=end comment
+
 =over 4
 
 =item C<< $h->response_guard($guard) >>
@@ -166,6 +174,10 @@ The guard is *not* attached to this handle object; the guard is attached to
 the response.
 
 C<psgix.output.guard> is the PSGI-env extension that indicates this method.
+
+=item C<< $h->fileno >>
+
+Returns the file descriptor number for this connection.
 
 =back
 

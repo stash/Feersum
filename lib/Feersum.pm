@@ -355,6 +355,12 @@ These are methods on the global Feersum singleton.
 
 =over 4
 
+=item C<< new() >>
+
+=item C<< endjinn() >>
+
+Returns the C<Feersum> singleton. Takes no parameters.
+
 =item C<< use_socket($sock) >>
 
 Use the file-descriptor attached to a listen-socket to accept connections.
@@ -371,6 +377,10 @@ A reference to C<$sock> is kept as C<< Feersum->endjinn->{socket} >>.
 Use the specified fileno to accept connections.  May be used as an alternative
 to C<use_socket>.
 
+=item C<< unlisten() >>
+
+Stop listening to the socket specified by use_socket or accept_on_fd.
+
 =item C<< request_handler(sub { my $req = shift; ... }) >>
 
 Sets the global request handler.  Any previous handler is replaced.
@@ -382,6 +392,10 @@ be called B<only> after receiving the body in its entirety.  The headers
 *must* specify a Content-Length of the body otherwise the request will be
 rejected.  The maximum size is hard coded to 2147483647 bytes (this may be
 considered a bug).
+
+=item C<< psgi_request_handler(sub { my $env = shift; ... }) >>
+
+Like request_handler, but assigns a PSGI handler instead.
 
 =item C<< read_timeout() >>
 
@@ -436,6 +450,10 @@ waiting for a request entity body).
 
 Any exceptions thrown in the handler will generate a warning and not
 propagated.
+
+=item C<< set_server_name_and_port($host,$port) >>
+
+Override Feersum's notion of what SERVER_HOST and SERVER_PORT should be.
 
 =back
 

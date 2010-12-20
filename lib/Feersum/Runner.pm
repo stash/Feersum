@@ -1,4 +1,5 @@
 package Feersum::Runner;
+use warnings;
 use strict;
 
 use EV;
@@ -7,7 +8,15 @@ use Socket qw/SOMAXCONN/;
 use POSIX ();
 use Scalar::Util qw/weaken/;
 
-sub new { my $c = shift; bless {quiet => 1, @_},$c }
+{
+    my $INSTANCE;
+    sub new {
+        my $c = shift;
+        return $INSTANCE if $INSTANCE;
+        $INSTANCE = bless {quiet => 1, @_}, $c;
+        return $INSTANCE;
+    }
+}
 
 sub _prepare {
     my $self = shift;
@@ -61,12 +70,12 @@ sub run {
 
     $self->{_quit} = EV::signal 'QUIT', sub { $self->quit };
 
-    $self->pre_fork if $self->{pre_fork};
+    $self->_start_pre_fork if $self->{pre_fork};
     EV::run;
     $self->{quiet} or warn "Feersum [$$]: done\n";
 }
 
-sub fork_another {
+sub _fork_another {
     my ($self, $slot) = @_;
     weaken $self;
 
@@ -92,18 +101,18 @@ sub fork_another {
             EV::break(EV::BREAK_ALL) unless $self->{_n_kids};
             return;
         }
-        $self->fork_another();
+        $self->_fork_another();
     };
 }
 
-sub pre_fork {
+sub _start_pre_fork {
     my $self = shift;
 
     POSIX::setsid();
 
     $self->{_kids} = [];
     $self->{_n_kids} = 0;
-    $self->fork_another($_) for (1 .. $self->{pre_fork});
+    $self->_fork_another($_) for (1 .. $self->{pre_fork});
 
     $self->{endjinn}->unlisten();
 }
@@ -151,11 +160,16 @@ Feersum::Runner
 
 Much like L<Plack::Runner>, but with far fewer options.
 
-=head1 ATTRIBUTES
-
-The following initialization options are available.
+=head1 METHODS
 
 =over 4
+
+=item C<< Feersum::Runner->new(%params) >>
+
+Returns a Feersum::Runner singleton.  Params are only applied for the first
+invocation.
+
+=over 8
 
 =item listen
 
@@ -170,7 +184,7 @@ the C<run()> method).
 
 =item quiet
 
-Don't be so noisy.
+Don't be so noisy. (default: on)
 
 =item app_file
 
@@ -178,14 +192,21 @@ Load this filename as a native feersum app.
 
 =back
 
-=head1 METHODS
-
-=over 4
-
 =item C<< $runner->run($feersum_app) >>
 
 Run Feersum with the specified app code reference.  Note that this is not a
 PSGI app, but a native Feersum app.
+
+=item C<< $runner->assign_request_handler($subref) >>
+
+For sub-classes to override, assigns an app handler. (e.g.
+L<Plack::Handler::Feersum>).  By default, this assigns a Feersum-native (and
+not PSGI) handler.
+
+=item C<< $runner->quit() >>
+
+Initiate a graceful shutdown.  A signal handler for SIGQUIT will call this
+method.
 
 =back
 

@@ -31,10 +31,29 @@ This is a stub module that allows Feersum to be loaded up under C<plackup> and
 other Plack tools.  Set C<< $ENV{PLACK_SERVER} >> to 'Feersum' or use the -s
 parameter to plackup to use Feersum under Plack.
 
+=head2 Experimental Features
+
 A C<--pre-fork=N> parameter can be specified to put feersum into pre-forked
 mode where N is the number of child processes.  The C<--preload-app> parameter
 that L<Starlet> supports isn't supported yet.  The fork is run immediately
 after startup and after the app is loaded (i.e. in the C<run()> method).
+
+=head1 METHODS
+
+=over 4
+
+=item C<< assign_request_handler($app) >>
+
+Assigns the PSGI request handler to Feersum.
+
+Also sets up a SIGTERM handler to call the C<quit()> method so that
+L<Plack::Loader::Restarter> will work.
+
+=back
+
+=head1 SEE ALSO
+
+Most of the functionality is in L<Feersum::Runner> (the base class)
 
 =head1 AUTHOR
 
