@@ -1,8 +1,9 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS_11 => 25;
-use constant CLIENTS_10 => 25;
+use constant HARDER => $ENV{RELEASE_TESTING} ? 10 : 1;
+use constant CLIENTS_11 => HARDER * 2;
+use constant CLIENTS_10 => HARDER * 2;
 use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
 use Test::More tests => 7 + 21 * CLIENTS_11 + 22 * CLIENTS_10;
 use Test::Exception;

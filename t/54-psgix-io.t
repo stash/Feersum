@@ -1,8 +1,8 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 10;
-use constant ROUNDS => 4;
+use constant CLIENTS => $ENV{RELEASE_TESTING} ? 10 : 2;
+use constant ROUNDS => $ENV{RELEASE_TESTING} ? 25 : 4;
 use Scalar::Util qw/refaddr/;
 use Test::More tests => 3 + ROUNDS*(
     CLIENTS*5 + # server setup
@@ -10,7 +10,7 @@ use Test::More tests => 3 + ROUNDS*(
     CLIENTS + # server msg
     CLIENTS + # client send
     CLIENTS*CLIENTS + # client msg
-    4 # round
+    4 # each round
 );
 use lib 't'; use Utils;
 

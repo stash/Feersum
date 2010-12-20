@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use constant CLIENTS => 15;
+use constant CLIENTS => $ENV{RELEASE_TESTING} ? 15 : 2;
 use Test::More tests => 4 + 5*CLIENTS;
 use lib 't'; use Utils;
 

@@ -1,9 +1,10 @@
 #!perl
 use warnings;
 use strict;
-use constant POST_CLIENTS => 5;
-use constant GET_CLIENTS => 5;
-use constant GOOD_CLIENTS => 5;
+use constant HARDER => $ENV{RELEASE_TESTING} ? 10 : 1;
+use constant POST_CLIENTS => HARDER*1;
+use constant GET_CLIENTS => HARDER*1;
+use constant GOOD_CLIENTS => HARDER*1;
 use Test::More tests =>
     17 + 2*POST_CLIENTS + 2*GET_CLIENTS + 4*GOOD_CLIENTS;
 use Test::Exception;

@@ -1,8 +1,9 @@
 #!perl
 use warnings;
 use strict;
-use constant NUM_FORK => 4;
-use constant CLIENTS => 30;
+use constant HARDER => $ENV{RELEASE_TESTING} ? 1 : 0;
+use constant NUM_FORK => HARDER ? 4 : 2;
+use constant CLIENTS => HARDER ? 30 : 4;
 use Test::More tests => 4 + CLIENTS*3;
 use utf8;
 use lib 't'; use Utils;
