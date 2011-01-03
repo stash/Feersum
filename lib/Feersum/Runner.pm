@@ -11,24 +11,37 @@ use Carp qw/carp croak/;
 
 use constant DEATH_TIMER => 5.0; # seconds
 use constant DEATH_TIMER_INCR => 2.0; # seconds
+use constant DEFAULT_HOST => 'localhost';
+use constant DEFAULT_PORT => 5000;
 
-{
-    my $INSTANCE;
-    sub new { ## no critic (RequireArgUnpacking)
-        my $c = shift;
-        return $INSTANCE if $INSTANCE;
-        $INSTANCE = bless {quiet => 1, @_}, $c;
-        return $INSTANCE;
+our $INSTANCE;
+sub new { ## no critic (RequireArgUnpacking)
+    my $c = shift;
+    croak "Only one Feersum::Runner instance can be active at a time"
+        if $INSTANCE && $INSTANCE->{running};
+    $INSTANCE = bless {quiet=>1, @_, running=>0}, $c;
+    return $INSTANCE;
+}
+
+sub DESTROY {
+    local $@;
+    my $self = shift;
+    if (my $f = $self->{endjinn}) {
+        $f->request_handler(sub{});
+        $f->unlisten();
     }
+    $self->{_quit} = undef;
+    return;
 }
 
 sub _prepare {
     my $self = shift;
 
-    my @listen = @{$self->{listen} ||
-        [ ($self->{host} || '') . ":$self->{port}" ]};
-    croak "multiple listen directives not yet supported" if @listen > 1;
-    my $listen = shift @listen;
+    $self->{listen} ||=
+        [ ($self->{host}||DEFAULT_HOST).':'.($self->{port}||DEFAULT_PORT) ];
+    croak "Feersum doesn't support multiple 'listen' directives yet"
+        if @{$self->{listen}} > 1;
+    my $listen = shift @{$self->{listen}};
 
     my $sock;
     if ($listen =~ m#^unix/#) {
@@ -79,6 +92,7 @@ sub run {
     $self->_start_pre_fork if $self->{pre_fork};
     EV::run;
     $self->{quiet} or warn "Feersum [$$]: done\n";
+    $self->DESTROY();
     return;
 }
 
