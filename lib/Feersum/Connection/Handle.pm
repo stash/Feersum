@@ -1,4 +1,5 @@
 package Feersum::Connection::Handle;
+use warnings;
 use strict;
 
 sub new {
@@ -6,20 +7,24 @@ sub new {
 }
 
 package Feersum::Connection::Reader;
+use warnings;
 use strict;
 use base 'Feersum::Connection::Handle';
 
-sub write { Carp::croak "can't call write() on a read-only handle" }
+sub write { ## no critic (BuiltinHomonyms)
+    Carp::croak "can't call write() on a read-only handle" }
 
 package Feersum::Connection::Writer;
+use warnings;
 use strict;
 use base 'Feersum::Connection::Handle';
 
-sub read { Carp::croak "can't call read() on a write-only handle" }
-sub seek { Carp::croak "can't call seek() on a write-only handle" }
+sub read { ## no critic (BuiltinHomonyms)
+    Carp::croak "can't call read() on a write-only handle" }
+sub seek { ## no critic (BuiltinHomonyms)
+    Carp::croak "can't call seek() on a write-only handle" }
 
 package Feersum::Connection::Handle;
-
 1;
 __END__
 

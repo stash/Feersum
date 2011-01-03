@@ -1,4 +1,5 @@
 package Plack::Handler::Feersum;
+use warnings;
 use strict;
 use Feersum::Runner;
 use base 'Feersum::Runner';
@@ -10,6 +11,7 @@ sub assign_request_handler {
     $self->{endjinn}->psgi_request_handler(shift);
     # Plack::Loader::Restarter will SIGTERM the parent
     $self->{_term} = EV::signal 'TERM', sub { $self->quit };
+    return;
 }
 
 1;

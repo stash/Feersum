@@ -7,10 +7,14 @@ use Feersum;
 use Socket qw/SOMAXCONN/;
 use POSIX ();
 use Scalar::Util qw/weaken/;
+use Carp qw/carp croak/;
+
+use constant DEATH_TIMER => 5.0; # seconds
+use constant DEATH_TIMER_INCR => 2.0; # seconds
 
 {
     my $INSTANCE;
-    sub new {
+    sub new { ## no critic (RequireArgUnpacking)
         my $c = shift;
         return $INSTANCE if $INSTANCE;
         $INSTANCE = bless {quiet => 1, @_}, $c;
@@ -21,13 +25,14 @@ use Scalar::Util qw/weaken/;
 sub _prepare {
     my $self = shift;
 
-    my @listen = @{$self->{listen} || [ ($self->{host} || '') . ":$self->{port}" ]};
-    die "multiple listen directives not yet supported" if @listen > 1;
+    my @listen = @{$self->{listen} ||
+        [ ($self->{host} || '') . ":$self->{port}" ]};
+    croak "multiple listen directives not yet supported" if @listen > 1;
     my $listen = shift @listen;
 
     my $sock;
     if ($listen =~ m#^unix/#) {
-        die "listening on a unix socket isn't supported yet";
+        croak "listening on a unix socket isn't supported yet";
     }
     else {
         require IO::Socket::INET;
@@ -38,7 +43,7 @@ sub _prepare {
             Listen => SOMAXCONN,
             Blocking => 0,
         );
-        die "couldn't bind to socket: $!" unless $sock;
+        croak "couldn't bind to socket: $!" unless $sock;
     }
     $self->{sock} = $sock;
     my $f = Feersum->endjinn;
@@ -50,11 +55,12 @@ sub _prepare {
     }
 
     $self->{endjinn} = $f;
+    return;
 }
 
 # for overriding:
-sub assign_request_handler {
-    $_[0]->{endjinn}->request_handler($_[1]);
+sub assign_request_handler { ## no critic (RequireArgUnpacking)
+    return $_[0]->{endjinn}->request_handler($_[1]);
 }
 
 sub run {
@@ -73,6 +79,7 @@ sub run {
     $self->_start_pre_fork if $self->{pre_fork};
     EV::run;
     $self->{quiet} or warn "Feersum [$$]: done\n";
+    return;
 }
 
 sub _fork_another {
@@ -80,15 +87,15 @@ sub _fork_another {
     weaken $self;
 
     my $pid = fork;
-    die "failed to fork: $!" unless defined $pid;
+    croak "failed to fork: $!" unless defined $pid;
     unless ($pid) {
         EV::default_loop()->loop_fork;
         $self->{quiet} or warn "Feersum [$$]: starting\n";
         delete $self->{_kids};
         delete $self->{pre_fork};
-        eval { EV::run; };
-        warn $@ if $@;
-        POSIX::exit($@ ? -1 : 0);
+        eval { EV::run; }; ## no critic (RequireCheckingReturnValueOfEval)
+        carp $@ if $@;
+        POSIX::exit($@ ? -1 : 0); ## no critic (ProhibitMagicNumbers)
     }
 
     $self->{_n_kids}++;
@@ -103,6 +110,7 @@ sub _fork_another {
         }
         $self->_fork_another();
     };
+    return;
 }
 
 sub _start_pre_fork {
@@ -115,6 +123,7 @@ sub _start_pre_fork {
     $self->_fork_another($_) for (1 .. $self->{pre_fork});
 
     $self->{endjinn}->unlisten();
+    return;
 }
 
 sub quit {
@@ -123,12 +132,12 @@ sub quit {
 
     $self->{_shutdown} = 1;
     $self->{quiet} or warn "Feersum [$$]: shutting down...\n";
-    my $death = 5;
+    my $death = DEATH_TIMER;
 
     if ($self->{_n_kids}) {
-        # in parent, broadcast SIGQUIT to the group
-        kill 3, -$$; # kill process group, but not self
-        $death += 2;
+        # in parent, broadcast SIGQUIT to the group (not self)
+        kill 3, -$$; ## no critic (ProhibitMagicNumbers)
+        $death += DEATH_TIMER_INCR;
     }
     else {
         # in child or solo process
@@ -136,6 +145,7 @@ sub quit {
     }
 
     $self->{_death} = EV::timer $death, 0, sub { POSIX::exit(1) };
+    return;
 }
 
 1;

@@ -14,7 +14,7 @@ XSLoader::load('Feersum', $VERSION);
 
 # numify as per
 # http://www.dagolden.com/index.php/369/version-numbers-should-be-boring/
-$VERSION = eval $VERSION;
+$VERSION = eval $VERSION; ## no critic (StringyEval, ConstantVersion)
 
 our $INSTANCE;
 
@@ -29,12 +29,13 @@ sub new {
 sub use_socket {
     my ($self, $sock) = @_;
     $self->{socket} = $sock;
-    my $fd = fileno($sock);
+    my $fd = fileno $sock;
     $self->accept_on_fd($fd);
 
     my $host = eval { $sock->sockhost() } || 'localhost';
-    my $port = eval { $sock->sockport() } || 80;
+    my $port = eval { $sock->sockport() } || 80; ## no critic (MagicNumbers)
     $self->set_server_name_and_port($host,$port);
+    return;
 }
 
 # overload this to catch Feersum errors and exceptions thrown by request
