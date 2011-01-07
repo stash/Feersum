@@ -2305,7 +2305,7 @@ write_array (feer_conn_handle *hdl, AV *abody)
     if (unlikely(c->responding != RESPOND_STREAMING))
         croak("can only call write in streaming mode");
 
-    trace("write_array fd=%d c=%p, body=%p\n", c->fd, c, body);
+    trace("write_array fd=%d c=%p, body=%p\n", c->fd, c, abody);
 
     I32 amax = av_len(abody);
     int i;
