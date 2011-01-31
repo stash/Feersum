@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 10;
-use Test::Exception;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -26,9 +26,9 @@ $evh->request_handler(sub {
     die "holy crap!";
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cv = AE::cv;
 $cv->begin;

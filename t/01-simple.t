@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 31;
-use Test::Exception;
+use Test::Fatal;
 use utf8;
 use lib 't'; use Utils;
 
@@ -14,9 +14,9 @@ ok $socket->fileno, "has a fileno";
 
 my $evh = Feersum->new();
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cb;
 {
@@ -24,9 +24,9 @@ my $cb;
     $cb = sub { $g = $g; fail "old callback" };
 }
 
-lives_ok {
+is exception {
     $evh->request_handler($cb);
-} "can assign code block";
+}, undef, "can assign code block";
 
 undef $cb;
 pass "after undef cb";
@@ -52,9 +52,9 @@ $cb = sub {
     pass "done request handler";
 };
 
-lives_ok {
+is exception {
     $evh->request_handler($cb);
-} "can assign another code block";
+}, undef, "can assign another code block";
 
 my $cv = AE::cv;
 $cv->begin;

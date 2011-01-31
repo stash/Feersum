@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 14;
-use Test::Exception;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -26,14 +26,14 @@ $evh->request_handler(sub {
     my $w = $r->start_streaming(200, []);
     $w->write("hello ");
     $w->write("world!\n");
-    lives_ok {
+    is exception {
         undef $w;
-    } 'no death on undef';
+    }, undef, 'no death on undef';
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cv = AE::cv;
 

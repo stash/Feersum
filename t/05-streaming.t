@@ -5,7 +5,7 @@ use constant CLIENTS_11 => 25;
 use constant CLIENTS_10 => 25;
 use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
 use Test::More tests => 7 + 21 * CLIENTS_11 + 22 * CLIENTS_10;
-use Test::Exception;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -80,9 +80,9 @@ $evh->request_handler(sub {
                 ok blessed($w), "still blessed? $cnum";
                 $w->close();
                 pass "async writer finished $cnum";
-                dies_ok {
+                like exception {
                     $w->write("after completion");
-                } "can't write after completion $cnum";
+                }, qr/closed/i, "can't write after completion $cnum";
                 $finished++;
                 $cv->end;
                 undef $t; # important ref
@@ -93,9 +93,9 @@ $evh->request_handler(sub {
     };
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 sub client {
     my $cnum = sprintf("%04d",shift);

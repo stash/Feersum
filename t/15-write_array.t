@@ -3,7 +3,6 @@ use warnings;
 use strict;
 use constant CLIENTS => 3;
 use Test::More tests => 4 + 10 * CLIENTS;
-use Test::Exception;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };

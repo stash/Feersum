@@ -3,7 +3,7 @@ use warnings;
 use strict;
 use constant CLIENTS => 15;
 use Test::More tests => 10 + 11 * CLIENTS;
-use Test::Exception;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -41,10 +41,10 @@ $evh->request_handler(sub {
     isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
     isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
     my $t; $t = AE::timer 1.5+rand(0.5), 0, sub {
-        lives_ok {
+        is exception {
             $w->write("So graceful!\n");
             $w->close();
-        } "wrote after waiting a little $cnum";
+        }, undef, "wrote after waiting a little $cnum";
         undef $t; # keep timer alive until it runs
         undef $w;
         $cv->end;
@@ -52,9 +52,9 @@ $evh->request_handler(sub {
     };
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my @got;
 sub client {

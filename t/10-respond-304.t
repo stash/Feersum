@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 21;
-use Test::Exception;
+use Test::Fatal;
 use utf8;
 use lib 't'; use Utils;
 
@@ -19,19 +19,19 @@ $evh->request_handler(sub {
     isa_ok $r, 'Feersum::Connection', 'got an object!';
     my $env = $r->env;
     ok $env, 'got env';
-    lives_ok {
+    is exception {
         if ($env->{HTTP_X_CLIENT} == 1) {
             $r->send_response("304", [], []); # explicit string, not num
         }
         else {
             $r->send_response("304 Not Modified", ['Content-Length'=>123], []);
         }
-    } 'sent response for '.$env->{HTTP_X_CLIENT};
+    }, undef, 'sent response for '.$env->{HTTP_X_CLIENT};
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cv = AE::cv;
 $cv->begin;

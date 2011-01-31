@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 12;
-use Test::Exception;
+use Test::Fatal;
 use utf8;
 use lib 't'; use Utils;
 
@@ -17,17 +17,17 @@ my $evh = Feersum->new();
 $evh->request_handler(sub {
     my $r = shift;
     isa_ok $r, 'Feersum::Connection', 'got an object!';
-    lives_ok {
+    is exception {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain; charset=UTF-8',
             'Connection' => 'close',
         ], ['this ',\'should ',undef,'be ','cøncātenated.']);
-    } 'sent response';
+    }, undef, 'sent response';
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cv = AE::cv;
 $cv->begin;

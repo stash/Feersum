@@ -2,8 +2,8 @@
 use warnings;
 use strict;
 use Test::More tests => 143;
-use Test::Exception;
 use utf8;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -27,7 +27,7 @@ $evh->request_handler(sub {
     my $r = shift;
     isa_ok $r, 'Feersum::Connection', 'connection';
     my $env;
-    lives_ok { $env = $r->env() } 'obtain env';
+    is exception { $env = $r->env() }, undef, 'obtain env';
     ok $env && ref($env) eq 'HASH', "env hash";
 
     my $tn = $env->{HTTP_X_TEST_NUM} || 0;
@@ -43,7 +43,7 @@ $evh->request_handler(sub {
 
     my $errfh = $env->{'psgi.errors'};
     ok $errfh, 'got psgi.errors';
-    lives_ok { $errfh->print() } "errors fh can print()";
+    is exception { $errfh->print() }, undef, "errors fh can print()";
 
     is $env->{REQUEST_METHOD}, ($tn == 5 ? 'POST' : 'GET'), "got req method";
     like $env->{HTTP_USER_AGENT}, qr/FeersumSimpleClient/, "got UA";
@@ -91,17 +91,17 @@ $evh->request_handler(sub {
     ok !exists $env->{HTTP_ACCEPT_LANGUAGE},
         "spot check that a placeholder Accept-Language isn't there";
 
-    lives_ok {
+    is exception {
         $r->send_response("200 OK", [
             'Content-Type' => 'text/plain; charset=UTF-8',
             'Connection' => 'close',
         ], ["Oh Hai $env->{HTTP_X_TEST_NUM}\n"]);
-    } 'sent response';
+    }, undef, 'sent response';
 });
 
-lives_ok {
+is exception {
     $evh->use_socket($socket);
-} 'assigned socket';
+}, undef, 'assigned socket';
 
 my $cv = AE::cv;
 $cv->begin;

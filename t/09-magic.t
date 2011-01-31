@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 25;
-use Test::Exception;
+use Test::Fatal;
 use utf8;
 use lib 't'; use Utils;
 
@@ -52,32 +52,32 @@ $evh->request_handler(sub {
         # magic scalar
         tie my $ms, 'My::MagicScalar';
         $ms = "foobar";
-        lives_ok(sub {
+        is exception {
             $r->send_response("200 OK", [
                 'Content-Type' => 'text/plain',
             ], \$ms);
-        }, "sent response for $type");
+        }, undef, "sent response for $type";
     }
     elsif ($type eq 'ARRAY') {
         # magic array
         tie my @ma, 'My::MagicArray';
         @ma = ("aaaa","bbb");
-        lives_ok(sub {
+        is exception {
             $r->send_response("200 OK", [
                 'Content-Type' => 'text/plain',
             ], \@ma);
-        }, "sent response for $type");
+        }, undef, "sent response for $type";
     }
     else {
         tie my $ms, 'My::MagicScalar';
         $ms = "dddd";
         tie my @ma, 'My::MagicArray';
         @ma = ("cccc",\$ms);
-        lives_ok(sub {
+        is exception {
             $r->send_response("200 OK", [
                 'Content-Type' => 'text/plain',
             ], \@ma);
-        }, "sent response for $type");
+        }, undef, "sent response for $type";
     }
 });
 
