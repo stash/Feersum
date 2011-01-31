@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.001
+        Address RT#65239 by making Plack a true dep if present. Test::TCP is
+        now a hard testing dependency.
+
 1.000 Mon Nov 22 12:00:00 2010 -0800
         Socialtext now runs Feersum in production, hence 1.000
         Add write_array() to Writer handle (undoc'd Feersum extension)

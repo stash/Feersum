@@ -19,6 +19,7 @@ use EV::MakeMaker qw/ev_args/;
 }
 
 my $otherldflags = '';
+my $convert_deps = 1;
 if ($ARGV[0] =~ /^-DEBUG=?(\d*)$/) {
     my $n = $1 || 1;
     my $opt = "OPTIMIZE=-DDEBUG=$n -g";
@@ -35,6 +36,17 @@ elsif ($ARGV[0] eq '-PROFILE') {
 elsif ($ARGV[0] eq '-PROFILEUSE') {
     $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-use";
     $otherldflags = '-fprofile-use';
+}
+elsif ($ARGV[0] eq '-CPAN') {
+    $convert_deps = 0;
+}
+
+# Convert optional Plack dependency to a real dependency if it's present at
+# build-time. (Fix: https://rt.cpan.org/Public/Bug/Display.html?id=65239)
+my $plack_req = 0.995;
+my $have_plack;
+if ($convert_deps) {
+    $have_plack = eval 'require Plack; $Plack::VERSION >= 0.995';
 }
 
 # Set this to false if you get core-dumps. Gives a pretty good perf boost for
@@ -59,18 +71,18 @@ WriteMakefile(ev_args(
     BUILD_REQUIRES => {
         'AnyEvent' => 5.261,
         'Guard' => 1.012,
-        'Scalar::Util' => 1.19,
         'Test::More' => 0.94,
         'Test::Exception' => 0.29,
-        'JSON::XS' => 2.0,
+        'Test::TCP' => 1.06,
     },
     PREREQ_PM => {
         'EV' => 4.00,
+        'Scalar::Util' => 1.19,
+        ($have_plack ? (Plack => $plack_req) : ()),
     },
     META_MERGE => {
         recommends => {
-            'Plack' => 0.9950,
-            'Test::TCP' => 0.16,
+            ($have_plack ? () : (Plack => $plack_req)),
         },
         resources => {
             repository => 'git://github.com/stash/Feersum.git',
