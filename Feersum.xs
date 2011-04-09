@@ -104,8 +104,8 @@
 #include <sys/uio.h>
 #define IOMATRIX_SIZE 64
 struct iomatrix {
-    uint16_t offset;
-    uint16_t count;
+    unsigned offset;
+    unsigned count;
     struct iovec iov[IOMATRIX_SIZE];
     SV *sv[IOMATRIX_SIZE];
 };
