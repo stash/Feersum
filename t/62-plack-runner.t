@@ -10,8 +10,9 @@ BEGIN {
         unless eval 'require Test::TCP; $Test::TCP::VERSION >= 1.06';
 }
 
-plan tests => 7;
+plan tests => 6;
 use Test::TCP;
+use Config;
 
 test_tcp(
     client => sub {
@@ -36,30 +37,38 @@ test_tcp(
    },
 );
 
-# XXX: ugh, what's a better cross-platform way of doing this?
-my $plackup = `which plackup`;
-chomp $plackup;
-ok $plackup, 'found plackup';
-
-test_tcp(
-    client => sub {
-        my $port = shift;
-        my $cv = AE::cv;
-        $cv->begin;
-        my $cli = simple_client GET => '/',
-            port => $port,
-            name => 'plackup runner',
-            sub {
-                my ($body,$headers) = @_;
-                is $headers->{Status}, 200, "script http success";
-                like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
-                $cv->end;
-            };
-        $cv->recv;
-    },
-    server => sub {
-        my $port = shift;
-        exec "$^X -Mblib $plackup -E deployment ".
-            "-s Feersum --listen localhost:$port eg/app.psgi";
-   },
-);
+my $plackup;
+for my $dir (@Config{qw(sitebin sitescript vendbin vendscript)}) {
+    my $pu = "$dir/plackup";
+    if (-e $pu && -x _) {
+        $plackup = $pu;
+        diag "plackup: $plackup";
+        last;
+    }
+}
+SKIP: {
+    skip "can't locate plackup in sitebin/sitescript/vendbin/vendscript", 2
+        unless $plackup;
+    test_tcp(
+        client => sub {
+            my $port = shift;
+            my $cv = AE::cv;
+            $cv->begin;
+            my $cli = simple_client GET => '/',
+                port => $port,
+                name => 'plackup runner',
+                sub {
+                    my ($body,$headers) = @_;
+                    is $headers->{Status}, 200, "script http success";
+                    like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
+                    $cv->end;
+                };
+            $cv->recv;
+        },
+        server => sub {
+            my $port = shift;
+            exec "$^X -Mblib $plackup -E deployment ".
+                "-s Feersum --listen localhost:$port eg/app.psgi";
+       },
+    );
+}
