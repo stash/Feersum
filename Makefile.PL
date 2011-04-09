@@ -73,7 +73,7 @@ WriteMakefile(ev_args(
         'Guard' => 1.012,
         'Test::More' => 0.94,
         'Test::Fatal' => 0.003,
-        'Test::TCP' => 1.06,
+        'Test::TCP' => 1.12,
     },
     PREREQ_PM => {
         'EV' => 4.00,
