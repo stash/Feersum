@@ -42,10 +42,18 @@ for my $dir (@Config{qw(sitebin sitescript vendbin vendscript)}) {
     my $pu = "$dir/plackup";
     if (-e $pu && -x _) {
         $plackup = $pu;
-        diag "plackup: $plackup";
+        my $plackup_ver = `$^X $plackup --version`;
+        chomp $plackup_ver;
+        if ($plackup_ver =~ /Plack (\d.\d+)/ && $1 >= 0.995) {
+            diag "plackup: $plackup ($plackup_ver)";
+        }
+        else {
+            next;
+        }
         last;
     }
 }
+
 SKIP: {
     skip "can't locate plackup in sitebin/sitescript/vendbin/vendscript", 2
         unless $plackup;
