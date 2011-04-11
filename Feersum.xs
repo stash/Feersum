@@ -7,12 +7,9 @@
 #include <ctype.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <sys/uio.h>
 
 #include "ppport.h"
-
-#include "picohttpparser-git/picohttpparser.c"
-
-#include "rinq.c"
 
 #ifdef __GNUC__
 # define likely(x)   __builtin_expect(!!(x), 1)
@@ -101,13 +98,21 @@
 #define trace3(...)
 #endif
 
-#include <sys/uio.h>
-#define IOMATRIX_SIZE 64
+#include "picohttpparser-git/picohttpparser.c"
+#include "rinq.c"
+
+// Check FEERSUM_IOMATRIX_SIZE against what's actually usable on this
+// platform.  See $iomatrix_size in Makefile.PL for the default.
+#if FEERSUM_IOMATRIX_SIZE > IOV_MAX
+# undef FEERSUM_IOMATRIX_SIZE
+# define FEERSUM_IOMATRIX_SIZE IOV_MAX
+#endif
+
 struct iomatrix {
     unsigned offset;
     unsigned count;
-    struct iovec iov[IOMATRIX_SIZE];
-    SV *sv[IOMATRIX_SIZE];
+    struct iovec iov[FEERSUM_IOMATRIX_SIZE];
+    SV *sv[FEERSUM_IOMATRIX_SIZE];
 };
 
 struct feer_req {
@@ -2613,4 +2618,15 @@ BOOT:
 
         Zero(&psgix_io_vtbl, 1, MGVTBL);
         psgix_io_vtbl.svt_get = psgix_io_svt_get;
+
+        trace3("Feersum booted, iomatrix %lu "
+                "(IOV_MAX=%u, FEERSUM_IOMATRIX_SIZE=%u), "
+            "feer_req %lu, "
+            "feer_conn %lu\n",
+            (long unsigned int)sizeof(struct iomatrix),
+                (unsigned int)IOV_MAX,
+                (unsigned int)FEERSUM_IOMATRIX_SIZE,
+            (long unsigned int)sizeof(struct feer_req),
+            (long unsigned int)sizeof(struct feer_conn)
+        );
     }

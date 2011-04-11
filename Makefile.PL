@@ -58,6 +58,17 @@ if ($convert_deps) {
 use Config;
 my $steal = ($] >= 5.012 && !defined($Config{useithreads}));
 
+# Control the size of the main write-buffer structure in feersum.  Making this
+# value lower will use slightly less memory per connection at the cost of
+# speed and vice-versa.  It's most noticeable when you're app is buffering a
+# lot of sparce writes.  The default of 64 generally keeps usage under 4k per
+# connection on full 64-bit when you take into account the other connection
+# and request structures.
+# NOTE: If your OS defines IOV_MAX or UIO_MAXIOV then this value will be
+# forced to be at most that size with a #define.  Solaris defines IOV_MAX to
+# be 16.  Linux and OSX generally have IOV_MAX as 1024.
+my $iomatrix_size = 64;
+
 WriteMakefile(ev_args(
     NAME          => 'Feersum',
     VERSION_FROM  => 'lib/Feersum.pm',
@@ -92,7 +103,8 @@ WriteMakefile(ev_args(
     },
     LIBS   => [''],
     EXE_FILES => ['bin/feersum'],
-    DEFINE => ($steal ? '-DFEERSUM_STEAL' : ''),
+    DEFINE => "-DFEERSUM_IOMATRIX_SIZE=$iomatrix_size ".
+        ($steal ? '-DFEERSUM_STEAL' : ''),
     INC    => '-I.',
     dynamic_lib => {OTHERLDFLAGS => $otherldflags},
 ));
