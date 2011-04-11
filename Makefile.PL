@@ -44,9 +44,11 @@ elsif ($ARGV[0] eq '-CPAN') {
 # Convert optional Plack dependency to a real dependency if it's present at
 # build-time. (Fix: https://rt.cpan.org/Public/Bug/Display.html?id=65239)
 my $plack_req = 0.995;
-my $have_plack;
+my $json_xs_req = 2.0;
+my $have_plack, $have_json_xs;
 if ($convert_deps) {
     $have_plack = eval 'require Plack; $Plack::VERSION >= 0.995';
+    $have_json_xs = eval 'require JSON::XS; $JSON::XS::VERSION >= 2.0';
 }
 
 # Set this to false if you get core-dumps. Gives a pretty good perf boost for
@@ -90,10 +92,12 @@ WriteMakefile(ev_args(
         'EV' => 4.00,
         'Scalar::Util' => 1.19,
         ($have_plack ? (Plack => $plack_req) : ()),
+        ($have_json_xs ? ('JSON::XS' => $json_xs_req) : ()),
     },
     META_MERGE => {
         recommends => {
             ($have_plack ? () : (Plack => $plack_req)),
+            ($have_json_xs ? () : ('JSON::XS' => $json_xs_req)),
         },
         resources => {
             repository => 'git://github.com/stash/Feersum.git',
