@@ -23,20 +23,22 @@ struct rinq {
     (x_)->next = (x_)->prev = (x_); \
 } while(0)
  
-static void
-rinq_unshift(struct rinq **head, void *ref)
-{
-    struct rinq *x;
-    RINQ_NEW(x,ref);
-
-    if ((*head) != NULL) {
-        x->next = (*head)->next;
-        x->prev = (*head);
-        x->next->prev = x->prev->next = x;
-    }
-    (*head) = x;
-}
+// INLINE_UNLESS_DEBUG
+// static void
+// rinq_unshift(struct rinq **head, void *ref)
+// {
+//     struct rinq *x;
+//     RINQ_NEW(x,ref);
+// 
+//     if ((*head) != NULL) {
+//         x->next = (*head)->next;
+//         x->prev = (*head);
+//         x->next->prev = x->prev->next = x;
+//     }
+//     (*head) = x;
+// }
  
+INLINE_UNLESS_DEBUG
 static void
 rinq_push (struct rinq **head, void *ref)
 {
@@ -54,28 +56,31 @@ rinq_push (struct rinq **head, void *ref)
 }
 
 // remove element from tail of rinq
-static void *
-rinq_pop (struct rinq **head) {
-    void *ref;
-    struct rinq *x;
-
-    if ((*head) == NULL) return NULL;
-
-    if (RINQ_IS_DETACHED((*head))) {
-        x = (*head);
-        (*head) = NULL;
-    }
-    else {
-        x = (*head)->prev;
-        RINQ_DETACH(x);
-    }
-
-    ref = x->ref;
-    free(x);
-    return ref;
-}
+// not actually used
+// INLINE_UNLESS_DEBUG
+// static void *
+// rinq_pop (struct rinq **head) {
+//     void *ref;
+//     struct rinq *x;
+// 
+//     if ((*head) == NULL) return NULL;
+// 
+//     if (RINQ_IS_DETACHED((*head))) {
+//         x = (*head);
+//         (*head) = NULL;
+//     }
+//     else {
+//         x = (*head)->prev;
+//         RINQ_DETACH(x);
+//     }
+// 
+//     ref = x->ref;
+//     free(x);
+//     return ref;
+// }
 
 // remove element from head of rinq
+INLINE_UNLESS_DEBUG
 static void *
 rinq_shift (struct rinq **head) {
     void *ref;
