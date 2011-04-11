@@ -198,6 +198,7 @@ static void pump_io_handle (struct feer_conn *c, SV *io);
 static void conn_write_ready (struct feer_conn *c);
 static void respond_with_server_error(struct feer_conn *c, const char *msg, STRLEN msg_len, int code);
 
+static void update_wbuf_placeholder(struct feer_conn *c, SV *sv, struct iovec *iov);
 static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
 #define add_crlf_to_wbuf(c) add_const_to_wbuf(c,CRLF,2)
@@ -370,6 +371,7 @@ add_placeholder_to_wbuf(struct feer_conn *c, SV **sv, struct iovec **iov_ref)
     *iov_ref = &m->iov[idx];
 }
 
+INLINE_UNLESS_DEBUG
 static void
 finish_wbuf(struct feer_conn *c)
 {
@@ -377,7 +379,15 @@ finish_wbuf(struct feer_conn *c)
     add_const_to_wbuf(c, "0\r\n\r\n", 5); // terminating chunk
 }
 
-#define update_wbuf_placeholder(c,sv,iov) iov->iov_base = SvPV(sv, iov->iov_len)
+INLINE_UNLESS_DEBUG
+static void
+update_wbuf_placeholder(struct feer_conn *c, SV *sv, struct iovec *iov)
+{
+    STRLEN cur;
+    // can't pass iov_len for cur; incompatible pointer type on some systems:
+    iov->iov_base = SvPV(sv,cur);
+    iov->iov_len = cur;
+}
 
 static void
 add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
