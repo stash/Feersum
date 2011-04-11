@@ -532,8 +532,8 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     ev_init(&c->read_ev_timer, conn_read_timeout);
     c->read_ev_timer.data = (void *)c;
 
-    trace3("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
-        c->fd, self, c, SvCUR(self), SvLEN(self));
+    trace3("made conn fd=%d self=%p, c=%p, cur=%"Sz_uf", len=%"Sz_uf"\n",
+        c->fd, self, c, (Sz)SvCUR(self), (Sz)SvLEN(self));
 
     SV *rv = newRV_inc(c->self);
     sv_bless(rv, feer_conn_stash); // so DESTROY can get called on read errors
@@ -754,9 +754,10 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     
     struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
 #if DEBUG >= 2
-    fprintf(stderr,"going to write to %d:\n",c->fd);
+    warn("going to write to %d:\n",c->fd);
     for (i=0; i < m->count; i++) {
-        fprintf(stderr,"%.*s",m->iov[i].iov_len, m->iov[i].iov_base);
+        fprintf(stderr,"%.*s",
+            (int)m->iov[i].iov_len, (char*)m->iov[i].iov_base);
     }
 #endif
 
@@ -1560,7 +1561,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         if (unlikely(numtype != IS_NUMBER_IN_UV))
             code = 0;
     }
-    trace2("starting response fd=%d code=%u\n",c->fd,code);
+    trace2("starting response fd=%d code=%"UVuf"\n",c->fd,code);
 
     if (unlikely(!code))
         croak("first parameter is not a number or doesn't start with digits");
@@ -2279,7 +2280,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     }
     else {
         src_ptr += offset;
-        trace2("appending partial rbuf fd=%d len=%d off=%d ptr=%p\n",
+        trace2("appending partial rbuf fd=%d len=%"Sz_uf" off=%"Ssz_df" ptr=%p\n",
             c->fd, len, offset, src_ptr);
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
