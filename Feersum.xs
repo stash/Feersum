@@ -264,23 +264,29 @@ next_iomatrix (struct feer_conn *c)
     struct iomatrix *m;
 
     if (!c->wbuf_rinq) {
+        trace3("next_iomatrix(%d): head\n", c->fd);
         add_iomatrix = 1;
     }
     else {
         // get the tail-end struct
         m = (struct iomatrix *)c->wbuf_rinq->prev->ref;
-        if (m->count >= IOMATRIX_SIZE) {
+        trace3("next_iomatrix(%d): tail, count=%d, offset=%d\n", 
+            c->fd, m->count, m->offset);
+        if (m->count >= FEERSUM_IOMATRIX_SIZE) {
             add_iomatrix = 1;
         }
     }
 
     if (add_iomatrix) {
+        trace3("next_iomatrix(%d): malloc\n", c->fd);
         Newx(m,1,struct iomatrix);
         Poison(m,1,struct iomatrix);
         m->offset = m->count = 0;
         rinq_push(&c->wbuf_rinq, m);
     }
 
+    trace3("next_iomatrix(%d): end, count=%d, offset=%d\n", 
+        c->fd, m->count, m->offset);
     return m;
 }
 
@@ -718,6 +724,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
     dCONN;
     int i;
+    struct iomatrix *m;
 
     SvREFCNT_inc_void_NN(c->self);
 
@@ -752,7 +759,8 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         if (unlikely(!c->wbuf_rinq)) goto try_write_again;
     }
     
-    struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
+try_write_again_immediately:
+    m = (struct iomatrix *)c->wbuf_rinq->ref;
 #if DEBUG >= 2
     warn("going to write to %d:\n",c->fd);
     for (i=0; i < m->count; i++) {
@@ -800,9 +808,13 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         trace2("all done with iomatrix %d state=%d\n",w->fd,c->responding);
         rinq_shift(&c->wbuf_rinq);
         Safefree(m);
-        goto try_write_finished;
+        if (!c->wbuf_rinq)
+            goto try_write_finished;
+        trace2("write again immediately %d state=%d\n",w->fd,c->responding);
+        goto try_write_again_immediately;
     }
     // else, fallthrough:
+    trace2("write fallthrough %d state=%d\n",w->fd,c->responding);
 
 try_write_again:
     trace("write again %d state=%d\n",w->fd,c->responding);
