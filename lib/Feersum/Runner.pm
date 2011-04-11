@@ -55,9 +55,20 @@ sub run {
     $self->{quiet} or warn "Feersum [$$]: starting...\n";
     $self->_prepare();
 
-    my $rh = shift || delete $self->{app} || do $self->{app_file};
-    $self->assign_request_handler($rh);
-    undef $rh;
+    my $app = shift || delete $self->{app};
+
+    if (!$app && $self->{app_file}) {
+        local ($@, $!);
+        $app = do $self->{app_file};
+        warn "couldn't parse $self->{app_file}: $@" if $@;
+        warn "couldn't do $self->{app_file}: $!" if ($! && !defined $app);
+        warn "couldn't run $self->{app_file}: didn't return anything"
+            unless $app;
+    }
+    die "app not defined or failed to compile" unless $app;
+
+    $self->assign_request_handler($app);
+    undef $app;
 
     $self->{_quit} = EV::signal 'QUIT', sub { $self->quit };
 
