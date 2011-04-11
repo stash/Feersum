@@ -1,5 +1,10 @@
 Revision history for Perl extension Feersum
 
+1.100 Mon Apr 11 12:40:00 2011 -0700
+        Fix major defect: truncated writes (fbb3664)
+        Finish Solaris compatibility (thanks konobi)
+        Fix t/11-runner.t failing when JSON::XS missing
+
 1.002 Sat Apr  9 16:15:00 2011 -0700
         Try to fix persistent failing of 62-plack-runner.t
         Update picohttpparser from upstream
