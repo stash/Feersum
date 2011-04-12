@@ -38,24 +38,24 @@ test_tcp(
 );
 
 my $plackup;
-for my $dir (@Config{qw(sitebin sitescript vendbin vendscript)}) {
+for my $key (qw(bin scriptdir sitebin sitescript vendbin vendscript)) {
+    my $dir = $Config{$key.'exp'};
+    next unless $dir;
+
     my $pu = "$dir/plackup";
-    if (-e $pu && -x _) {
-        $plackup = $pu;
-        my $plackup_ver = `$^X $plackup --version`;
-        chomp $plackup_ver;
-        if ($plackup_ver =~ /Plack (\d.\d+)/ && $1 >= 0.995) {
-            diag "plackup: $plackup ($plackup_ver)";
-        }
-        else {
-            next;
-        }
-        last;
-    }
+    next unless (-e $pu && -x _);
+
+    my $plackup_ver = `$^X $pu --version`;
+    next unless ($plackup_ver =~ /Plack (\d.\d+)/ && $1 >= 0.995);
+
+    $plackup = $pu;
+    chomp $plackup_ver;
+    diag "found plackup: $plackup ($plackup_ver)";
+    last;
 }
 
 SKIP: {
-    skip "can't locate plackup in sitebin/sitescript/vendbin/vendscript", 2
+    skip "can't locate plackup in script/bin dirs", 3
         unless $plackup;
     test_tcp(
         client => sub {
