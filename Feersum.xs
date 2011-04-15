@@ -126,14 +126,35 @@ struct feer_req {
     struct phr_header headers[MAX_HEADERS];
 };
 
-#define RESPOND_NOT_STARTED 0
-#define RESPOND_NORMAL 1
-#define RESPOND_STREAMING 2
-#define RESPOND_SHUTDOWN 3
-#define RECEIVE_HEADERS 0
-#define RECEIVE_BODY 1
-#define RECEIVE_STREAMING 2
-#define RECEIVE_SHUTDOWN 3
+enum feer_respond_state {
+    RESPOND_NOT_STARTED = 0,
+    RESPOND_NORMAL = 1,
+    RESPOND_STREAMING = 2,
+    RESPOND_SHUTDOWN = 3
+};
+#define RESPOND_STR(_n,_s) do { \
+    switch(_n) { \
+    case RESPOND_NOT_STARTED: _s = "NOT_STARTED(0)"; break; \
+    case RESPOND_NORMAL:      _s = "NORMAL(1)"; break; \
+    case RESPOND_STREAMING:   _s = "STREAMING(2)"; break; \
+    case RESPOND_SHUTDOWN:    _s = "SHUTDOWN(4)"; break; \
+    } \
+} while (0)
+
+enum feer_receive_state {
+    RECEIVE_HEADERS = 0,
+    RECEIVE_BODY = 1,
+    RECEIVE_STREAMING = 2,
+    RECEIVE_SHUTDOWN = 3
+};
+#define RECEIVE_STR(_n,_s) do { \
+    switch(_n) { \
+    case RECEIVE_HEADERS:   _s = "HEADERS(0)"; break; \
+    case RECEIVE_BODY:      _s = "BODY(1)"; break; \
+    case RECEIVE_STREAMING: _s = "STREAMING(2)"; break; \
+    case RECEIVE_SHUTDOWN:  _s = "SHUTDOWN(3)"; break; \
+    } \
+} while (0)
 
 struct feer_conn {
     SV *self;
@@ -154,13 +175,13 @@ struct feer_conn {
     ssize_t expected_cl;
     ssize_t received_cl;
 
-    U16 in_callback;
-    U16 responding;
-    U16 receiving;
-    U16 _reservedflags:13;
-    U16 is_http11:1;
-    U16 poll_write_cb_is_io_handle:1;
-    U16 auto_cl:1;
+    enum feer_respond_state responding;
+    enum feer_receive_state receiving;
+
+    int in_callback;
+    int is_http11:1;
+    int poll_write_cb_is_io_handle:1;
+    int auto_cl:1;
 };
 
 typedef struct feer_conn feer_conn_handle; // for typemap
@@ -541,6 +562,8 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->self = self;
     c->fd = conn_fd;
     c->sa = sa;
+    c->responding = RESPOND_NOT_STARTED;
+    c->receiving = RECEIVE_HEADERS;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -612,6 +635,35 @@ new_feer_conn_handle (pTHX_ struct feer_conn *c, bool is_writer)
     return sv;
 }
 
+#if DEBUG
+# define change_responding_state(c, _to) do { \
+    enum feer_respond_state __to = (_to); \
+    enum feer_respond_state __from = c->responding; \
+    const char *_from_str, *_to_str; \
+    if (likely(__from != __to)) { \
+        RESPOND_STR(c->responding, _from_str); \
+        RESPOND_STR(__to, _to_str); \
+        trace2("==> responding state %d: %s to %s\n", \
+            c->fd,_from_str,_to_str); \
+        c->responding = __to; \
+    } \
+} while (0)
+# define change_receiving_state(c, _to) do { \
+    enum feer_receive_state __to = (_to); \
+    enum feer_receive_state __from = c->receiving; \
+    const char *_from_str, *_to_str; \
+    if (likely(__from != __to)) { \
+        RECEIVE_STR(c->receiving, _from_str); \
+        RECEIVE_STR(__to, _to_str); \
+        trace2("==> receiving state %d: %s to %s\n", \
+            c->fd,_from_str,_to_str); \
+        c->receiving = __to; \
+    } \
+} while (0)
+#else
+# define change_responding_state(c, _to) c->responding = _to
+# define change_receiving_state(c, _to) c->receiving = _to
+#endif
 
 INLINE_UNLESS_DEBUG static void
 start_read_watcher(struct feer_conn *c) {
@@ -742,12 +794,12 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     // Otherwise it is stopped and we should ditch this connection.
     if (unlikely(revents & EV_ERROR && !(revents & EV_WRITE))) {
         trace("EV error on write, fd=%d revents=0x%08x\n", w->fd, revents);
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
         goto try_write_finished;
     }
 
     if (unlikely(!c->wbuf_rinq)) {
-        if (unlikely(c->responding == RESPOND_SHUTDOWN))
+        if (unlikely(c->responding >= RESPOND_SHUTDOWN))
             goto try_write_finished;
 
         if (!c->poll_write_cb) {
@@ -756,7 +808,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
                 goto try_write_paused;
 
             trace("tried to write with an empty buffer %d resp=%d\n",w->fd,c->responding);
-            c->responding = RESPOND_SHUTDOWN;
+            change_responding_state(c, RESPOND_SHUTDOWN);
             goto try_write_finished;
         }
 
@@ -790,7 +842,7 @@ try_write_again_immediately:
         if (likely(errno == EAGAIN || errno == EINTR))
             goto try_write_again;
         perror("Feersum try_conn_write");
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
         goto try_write_finished;
     }
     
@@ -857,7 +909,7 @@ try_write_paused:
 
 try_write_shutdown:
     trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
-    c->responding = RESPOND_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
     stop_write_watcher(c);
     safe_close_conn(c, "close at write shutdown");
 
@@ -957,8 +1009,8 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     // fallthrough:
 try_read_error:
     trace("READ ERROR %d, refcnt=%d\n", w->fd, SvREFCNT(c->self));
-    c->receiving = RECEIVE_SHUTDOWN;
-    c->responding = RESPOND_SHUTDOWN;
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
+    change_responding_state(c, RESPOND_SHUTDOWN);
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_write_watcher(c);
@@ -971,7 +1023,7 @@ try_read_bad:
     // fallthrough:
 dont_read_again:
     trace("done reading %d\n", w->fd);
-    c->receiving = RECEIVE_SHUTDOWN;
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
     stop_read_watcher(c);
     stop_read_timer(c);
     goto try_read_cleanup;
@@ -1021,7 +1073,7 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         stop_read_watcher(c);
         stop_read_timer(c);
         safe_close_conn(c, "close at read timeout");
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
     }
 
 read_timeout_cleanup:
@@ -1098,7 +1150,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
 
     c->is_http11 = (req->minor_version == 1);
 
-    c->receiving = RECEIVE_BODY;
+    change_receiving_state(c, RECEIVE_BODY);
 
     if (likely(str_eq("GET", 3, req->method, req->method_len))) {
         // Not supposed to have a body.  Additional bytes are either a
@@ -1206,7 +1258,7 @@ got_cl:
         // TODO: schedule the callback immediately and support a non-blocking
         // ->read method.
         // sched_request_callback(c);
-        // c->receiving = RECEIVE_STREAM;
+        // change_receiving_state(c, RECEIVE_STREAM);
         return 1;
     }
     // fallthrough: have enough bytes
@@ -1261,8 +1313,8 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
 
     stop_read_watcher(c);
     stop_read_timer(c);
-    c->responding = RESPOND_SHUTDOWN;
-    c->receiving = RECEIVE_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
     conn_write_ready(c);
 }
 
@@ -1559,9 +1611,9 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
 
     trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
 
-    if (unlikely(c->responding))
-        croak("already responding!");
-    c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
+    if (unlikely(c->responding != RESPOND_NOT_STARTED))
+        croak("already responding?!");
+    change_responding_state(c, streaming ? RESPOND_STREAMING : RESPOND_NORMAL);
 
     if (unlikely(!SvOK(message) || !(SvIOK(message) || SvPOK(message)))) {
         croak("Must define an HTTP status code or message");
@@ -1697,7 +1749,7 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         update_wbuf_placeholder(c, cl_sv, cl_iov);
     }
 
-    c->responding = RESPOND_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
     conn_write_ready(c);
     return RETVAL;
 }
@@ -1796,7 +1848,7 @@ feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
         if (c->responding < RESPOND_SHUTDOWN) {
             finish_wbuf(c);
             conn_write_ready(c);
-            c->responding = RESPOND_SHUTDOWN;
+            change_responding_state(c, RESPOND_SHUTDOWN);
         }
         RETVAL = 1;
     }
@@ -1808,7 +1860,7 @@ feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
             c->rbuf = NULL;
         }
         RETVAL = shutdown(c->fd, SHUT_RD);
-        c->receiving = RECEIVE_SHUTDOWN;
+        change_receiving_state(c, RECEIVE_SHUTDOWN);
     }
 
     // disassociate the handle from the conn
@@ -1992,7 +2044,7 @@ pump_io_handle (struct feer_conn *c, SV *io)
         SvREFCNT_dec(c->poll_write_cb);
         c->poll_write_cb = NULL;
         finish_wbuf(c);
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
 
         goto done_pump_io;
     }
