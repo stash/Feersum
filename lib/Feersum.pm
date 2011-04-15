@@ -486,7 +486,8 @@ entity size.
 Although not explicitly a bug, the following may cause undesirable behavior.
 Feersum will have set SIGPIPE to be ignored by the time your handler gets
 called.  If your handler needs to detect SIGPIPE, be sure to do a 
-C<local $SIG{PIPE} = 'DEFAULT'> to make it active just for your lexical scope.
+C<local $SIG{PIPE} = ...> (L<perlipc>) to make it active just during the
+necessary scope.
 
 =head1 SEE ALSO
 
