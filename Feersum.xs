@@ -833,8 +833,9 @@ try_write_again_immediately:
 
     trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
     errno = 0;
+    sig_t old = signal(SIGPIPE, SIG_IGN);
     ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
-    trace("wrote %"Sz_uf" bytes to %d, errno=%d\n", (Sz)wrote, w->fd, errno);
+    trace("wrote %"Ssz_df" bytes to %d, errno=%d\n", (Ssz)wrote, w->fd, errno);
 
     if (unlikely(wrote <= 0)) {
         if (unlikely(wrote == 0))
@@ -846,13 +847,15 @@ try_write_again_immediately:
         goto try_write_finished;
     }
     
-    for (i = 0; i < m->count; i++) {
+    for (i = m->offset; i < m->count && wrote > 0; i++) {
         struct iovec *v = &m->iov[i];
         if (unlikely(v->iov_len > wrote)) {
             trace3("offset vector %d  base=%p len=%"Sz_uf"\n",
                 w->fd, v->iov_base, (Sz)v->iov_len);
             v->iov_base += wrote;
             v->iov_len  -= wrote;
+            // don't consume any more:
+            wrote = 0;
         }
         else {
             trace3("consume vector %d base=%p len=%"Sz_uf" sv=%p\n",
