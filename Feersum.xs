@@ -833,7 +833,6 @@ try_write_again_immediately:
 
     trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
     errno = 0;
-    sig_t old = signal(SIGPIPE, SIG_IGN);
     ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
     trace("wrote %"Ssz_df" bytes to %d, errno=%d\n", (Ssz)wrote, w->fd, errno);
 
@@ -2148,6 +2147,8 @@ accept_on_fd(SV *self, int fd)
 {
     trace("going to accept on %d\n",fd);
     feersum_ev_loop = EV_DEFAULT;
+
+    signal(SIGPIPE, SIG_IGN);
 
     ev_prepare_init(&ep, prepare_cb);
     ev_prepare_start(feersum_ev_loop, &ep);
