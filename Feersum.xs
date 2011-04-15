@@ -81,7 +81,7 @@
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
 
 #ifdef DEBUG
-#define trace(f_, ...) warn("%s:%d [%d] " f_, __FILE__, __LINE__, (int)getpid(), ##__VA_ARGS__)
+#define trace(f_, ...) warn("%s:%-4d [%d] " f_, __FILE__, __LINE__, (int)getpid(), ##__VA_ARGS__)
 #else
 #define trace(...)
 #endif
