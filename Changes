@@ -1,6 +1,9 @@
 Revision history for Perl extension Feersum
 
-1.101 Mon Apr 13 12:00:00 2011 -0700
+1.200 Fri Apr 15 12:00:00 2011 -0700
+        Fix major defect: corrupted large static files (thanks leedo)
+
+1.101 Wed Apr 13 12:00:00 2011 -0700
         Fix 62-plack-runner.t again (thanks cpantesters)
 
 1.100 Mon Apr 11 12:40:00 2011 -0700
