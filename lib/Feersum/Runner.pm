@@ -119,7 +119,7 @@ sub _fork_another {
             "with rstatus ".$w->rstatus."\n";
         $self->{_n_kids}--;
         if ($self->{_shutdown}) {
-            EV::break(EV::BREAK_ALL) unless $self->{_n_kids};
+            EV::break(EV::BREAK_ALL()) unless $self->{_n_kids};
             return;
         }
         $self->_fork_another();
