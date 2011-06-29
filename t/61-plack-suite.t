@@ -12,7 +12,11 @@ use Feersum;
 
 {
     no warnings 'redefine';
-    *Feersum::DIED = sub { diag "Feersum caught: ",@_ };
+    *Feersum::DIED = sub { 
+        # for cleaner TAP output:
+        return if $_[0] =~ /Server shouldn't crash/;
+        diag "Feersum caught: ",@_;
+    };
 }
 
 use Plack::Test::Suite;
