@@ -2,13 +2,17 @@
 use warnings;
 use strict;
 use constant CLIENTS => 10;
-use Test::More tests => 7 + 4*CLIENTS;
+use Test::More;
 
 BEGIN {
-    plan skip_all => "Need Test::LeakTrace >= 0.13 to run this test"
-        unless eval q{
-            require Test::LeakTrace; $Test::LeakTrace::VERSION >= 0.13
-        };
+    if (eval q{
+        require Test::LeakTrace; $Test::LeakTrace::VERSION >= 0.13
+    }) {
+        plan tests => 7 + 4*CLIENTS;
+    }
+    else {
+        plan skip_all => "Need Test::LeakTrace >= 0.13 to run this test"
+    }
 }
 
 use lib 't'; use Utils;
