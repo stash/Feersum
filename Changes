@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+1.201 Wed Jun 29 11:00:00 2011 -0700
+        Fix sockaddr memory leak (thanks bfg)
+
 1.200 Fri Apr 15 12:00:00 2011 -0700
         Fix major defect: corrupted large static files (thanks leedo)
 
