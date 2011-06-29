@@ -41,14 +41,22 @@ elsif ($ARGV[0] eq '-CPAN') {
     $convert_deps = 0;
 }
 
-# Convert optional Plack dependency to a real dependency if it's present at
-# build-time. (Fix: https://rt.cpan.org/Public/Bug/Display.html?id=65239)
-my $plack_req = 0.995;
-my $json_xs_req = 2.0;
-my $have_plack, $have_json_xs;
+# Convert optional Plack and other dependencies to a real dependency if it's
+# present at build-time. (Fix:
+# https://rt.cpan.org/Public/Bug/Display.html?id=65239)
+my %want = (
+    'Plack'           => 0.995,
+    'JSON::XS'        => 2.0,
+    'Test::LeakTrace' => 0.13,
+    'Test::TCP'       => 1.12,
+);
+my %have;
+
 if ($convert_deps) {
-    $have_plack = eval 'require Plack; $Plack::VERSION >= 0.995';
-    $have_json_xs = eval 'require JSON::XS; $JSON::XS::VERSION >= 2.0';
+    local $@;
+    while (my ($pkg,$ver) = each %want) {
+        $have{$pkg} = eval "require $pkg; \$$pkg\::VERSION >= $ver";
+    }
 }
 
 # Set this to false if you get core-dumps. Gives a pretty good perf boost for
@@ -86,18 +94,16 @@ WriteMakefile(ev_args(
         'Guard' => 1.012,
         'Test::More' => 0.94,
         'Test::Fatal' => 0.003,
-        'Test::TCP' => 1.12,
+        map { $_ => $want{$_} } grep { /^Test::/ && $have{$_} } keys %want
     },
     PREREQ_PM => {
         'EV' => 4.00,
         'Scalar::Util' => 1.19,
-        ($have_plack ? (Plack => $plack_req) : ()),
-        ($have_json_xs ? ('JSON::XS' => $json_xs_req) : ()),
+        map { $_ => $want{$_} } grep { !/^Test::/ && $have{$_} } keys %want
     },
     META_MERGE => {
         recommends => {
-            ($have_plack ? () : (Plack => $plack_req)),
-            ($have_json_xs ? () : ('JSON::XS' => $json_xs_req)),
+            map { $_ => $want{$_} } grep { !$have{$_} } keys %want
         },
         resources => {
             repository => 'git://github.com/stash/Feersum.git',
