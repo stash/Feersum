@@ -1087,6 +1087,9 @@ read_timeout_cleanup:
 static void
 accept_cb (EV_P_ ev_io *w, int revents)
 {
+    struct sockaddr_storage sa_buf;
+    socklen_t sa_len;
+
     if (unlikely(shutting_down)) {
         // shouldn't get called, but be defensive
         ev_io_stop(EV_A, w);
@@ -1103,14 +1106,14 @@ accept_cb (EV_P_ ev_io *w, int revents)
     trace2("accept! revents=0x%08x\n", revents);
 
     while (1) {
-        struct sockaddr_storage *sa;
-        Newx(sa,1,struct sockaddr_storage);
-        socklen_t sl = sizeof(struct sockaddr_storage);
+        sa_len = sizeof(struct sockaddr_storage);
         errno = 0;
-        int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
+
+        int fd = accept(w->fd, (struct sockaddr *)&sa_buf, &sa_len);
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
 
+        assert(sa_len <= sizeof(struct sockaddr_storage));
         if (unlikely(prep_socket(fd))) {
             perror("prep_socket");
             trouble("prep_socket failed for %d\n", fd);
@@ -1118,7 +1121,9 @@ accept_cb (EV_P_ ev_io *w, int revents)
             continue;
         }
 
-        struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
+        struct sockaddr *sa = (struct sockaddr *)malloc(sa_len);
+        memcpy(sa,&sa_buf,(size_t)sa_len);
+        struct feer_conn *c = new_feer_conn(EV_A,fd,sa);
         start_read_watcher(c);
         restart_read_timer(c);
         assert(SvREFCNT(c->self) == 3);
@@ -2647,7 +2652,7 @@ DESTROY (struct feer_conn *c)
         Safefree(c->req);
     }
 
-    if (likely(c->sa)) Safefree(c->sa);
+    if (likely(c->sa)) free(c->sa);
 
     safe_close_conn(c, "close at destruction");
 
