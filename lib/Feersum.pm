@@ -5,7 +5,7 @@ use warnings;
 use EV ();
 use Carp ();
 
-our $VERSION = '1.201';
+our $VERSION = '1.202';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
