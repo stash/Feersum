@@ -22,9 +22,10 @@ sub new {
     unless ($INSTANCE) {
         $INSTANCE = bless {}, __PACKAGE__;
     }
+    $SIG{PIPE} = 'IGNORE';
     return $INSTANCE;
 }
-*endjinn = \&new;
+*endjinn = *new;
 
 sub use_socket {
     my ($self, $sock) = @_;
@@ -500,6 +501,12 @@ Currently there's no way to limit the request entity length of a POST/PUT/etc.
 This could lead to a DoS attack on a Feersum server.  Suggested remedy is to
 only run Feersum behind some other web server and to use that to limit the
 entity size.
+
+Although not explicitly a bug, the following may cause undesirable behavior.
+Feersum will have set SIGPIPE to be ignored by the time your handler gets
+called.  If your handler needs to detect SIGPIPE, be sure to do a 
+C<local $SIG{PIPE} = ...> (L<perlipc>) to make it active just during the
+necessary scope.
 
 =head1 SEE ALSO
 

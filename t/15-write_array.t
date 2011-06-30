@@ -4,7 +4,6 @@ use strict;
 use constant HARDER => $ENV{RELEASE_TESTING} ? 10 : 1;
 use constant CLIENTS => HARDER * 2;
 use Test::More tests => 4 + 10 * CLIENTS;
-use Test::Exception;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };

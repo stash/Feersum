@@ -7,12 +7,9 @@
 #include <ctype.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <sys/uio.h>
 
 #include "ppport.h"
-
-#include "picohttpparser-git/picohttpparser.c"
-
-#include "rinq.c"
 
 #ifdef __GNUC__
 # define likely(x)   __builtin_expect(!!(x), 1)
@@ -31,6 +28,27 @@
 #ifndef SOL_TCP
  #define SOL_TCP IPPROTO_TCP
 #endif
+
+// Wish-list: %z formats for perl sprintf.  Would make compiling a lot less
+// noisy for systems that warn size_t and STRLEN are incompatible with
+// %d/%u/%x.
+#if Size_t_size == LONGSIZE
+# define Sz_f "l"
+# define Sz_t long
+#elif Size_t_size == 8 && defined HAS_QUAD && QUADKIND == QUAD_IS_LONG_LONG
+# define Sz_f "ll"
+# define Sz_t long long
+#else
+// hope "int" works.
+# define Sz_f ""
+# define Sz_t int
+#endif
+
+#define Sz_uf Sz_f"u"
+#define Sz_xf Sz_f"x"
+#define Ssz_df Sz_f"d"
+#define Sz unsigned Sz_t
+#define Ssz Sz_t
 
 // if you change these, also edit the LIMITS section in the POD
 #define MAX_HEADERS 64
@@ -66,7 +84,7 @@
 #define trouble(f_, ...) warn(WARN_PREFIX f_, ##__VA_ARGS__);
 
 #ifdef DEBUG
-#define trace(f_, ...) warn("%s:%d [%d] " f_, __FILE__, __LINE__, (int)getpid(), ##__VA_ARGS__)
+#define trace(f_, ...) warn("%s:%-4d [%d] " f_, __FILE__, __LINE__, (int)getpid(), ##__VA_ARGS__)
 #else
 #define trace(...)
 #endif
@@ -83,13 +101,21 @@
 #define trace3(...)
 #endif
 
-#include <sys/uio.h>
-#define IOMATRIX_SIZE 64
+#include "picohttpparser-git/picohttpparser.c"
+#include "rinq.c"
+
+// Check FEERSUM_IOMATRIX_SIZE against what's actually usable on this
+// platform.  See $iomatrix_size in Makefile.PL for the default.
+#if FEERSUM_IOMATRIX_SIZE > IOV_MAX
+# undef FEERSUM_IOMATRIX_SIZE
+# define FEERSUM_IOMATRIX_SIZE IOV_MAX
+#endif
+
 struct iomatrix {
-    uint16_t offset;
-    uint16_t count;
-    struct iovec iov[IOMATRIX_SIZE];
-    SV *sv[IOMATRIX_SIZE];
+    unsigned offset;
+    unsigned count;
+    struct iovec iov[FEERSUM_IOMATRIX_SIZE];
+    SV *sv[FEERSUM_IOMATRIX_SIZE];
 };
 
 struct feer_req {
@@ -103,14 +129,35 @@ struct feer_req {
     struct phr_header headers[MAX_HEADERS];
 };
 
-#define RESPOND_NOT_STARTED 0
-#define RESPOND_NORMAL 1
-#define RESPOND_STREAMING 2
-#define RESPOND_SHUTDOWN 3
-#define RECEIVE_HEADERS 0
-#define RECEIVE_BODY 1
-#define RECEIVE_STREAMING 2
-#define RECEIVE_SHUTDOWN 3
+enum feer_respond_state {
+    RESPOND_NOT_STARTED = 0,
+    RESPOND_NORMAL = 1,
+    RESPOND_STREAMING = 2,
+    RESPOND_SHUTDOWN = 3
+};
+#define RESPOND_STR(_n,_s) do { \
+    switch(_n) { \
+    case RESPOND_NOT_STARTED: _s = "NOT_STARTED(0)"; break; \
+    case RESPOND_NORMAL:      _s = "NORMAL(1)"; break; \
+    case RESPOND_STREAMING:   _s = "STREAMING(2)"; break; \
+    case RESPOND_SHUTDOWN:    _s = "SHUTDOWN(4)"; break; \
+    } \
+} while (0)
+
+enum feer_receive_state {
+    RECEIVE_HEADERS = 0,
+    RECEIVE_BODY = 1,
+    RECEIVE_STREAMING = 2,
+    RECEIVE_SHUTDOWN = 3
+};
+#define RECEIVE_STR(_n,_s) do { \
+    switch(_n) { \
+    case RECEIVE_HEADERS:   _s = "HEADERS(0)"; break; \
+    case RECEIVE_BODY:      _s = "BODY(1)"; break; \
+    case RECEIVE_STREAMING: _s = "STREAMING(2)"; break; \
+    case RECEIVE_SHUTDOWN:  _s = "SHUTDOWN(3)"; break; \
+    } \
+} while (0)
 
 struct feer_conn {
     SV *self;
@@ -131,13 +178,13 @@ struct feer_conn {
     ssize_t expected_cl;
     ssize_t received_cl;
 
-    U16 in_callback;
-    U16 responding;
-    U16 receiving;
-    U16 _reservedflags:13;
-    U16 is_http11:1;
-    U16 poll_write_cb_is_io_handle:1;
-    U16 auto_cl:1;
+    enum feer_respond_state responding;
+    enum feer_receive_state receiving;
+
+    int in_callback;
+    int is_http11:1;
+    int poll_write_cb_is_io_handle:1;
+    int auto_cl:1;
 };
 
 typedef struct feer_conn feer_conn_handle; // for typemap
@@ -149,7 +196,7 @@ typedef struct feer_conn feer_conn_handle; // for typemap
 static HV* feersum_env(pTHX_ struct feer_conn *c);
 static void feersum_start_response
     (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
-static int feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
+static size_t feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
 static void feersum_handle_psgi_response(
     pTHX_ struct feer_conn *c, SV *ret, bool can_recurse);
 static int feersum_close_handle(pTHX_ struct feer_conn *c, bool is_writer);
@@ -175,6 +222,7 @@ static void pump_io_handle (struct feer_conn *c, SV *io);
 static void conn_write_ready (struct feer_conn *c);
 static void respond_with_server_error(struct feer_conn *c, const char *msg, STRLEN msg_len, int code);
 
+static void update_wbuf_placeholder(struct feer_conn *c, SV *sv, struct iovec *iov);
 static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
 static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
 #define add_crlf_to_wbuf(c) add_const_to_wbuf(c,CRLF,2)
@@ -241,23 +289,29 @@ next_iomatrix (struct feer_conn *c)
     struct iomatrix *m;
 
     if (!c->wbuf_rinq) {
+        trace3("next_iomatrix(%d): head\n", c->fd);
         add_iomatrix = 1;
     }
     else {
         // get the tail-end struct
         m = (struct iomatrix *)c->wbuf_rinq->prev->ref;
-        if (m->count >= IOMATRIX_SIZE) {
+        trace3("next_iomatrix(%d): tail, count=%d, offset=%d\n", 
+            c->fd, m->count, m->offset);
+        if (m->count >= FEERSUM_IOMATRIX_SIZE) {
             add_iomatrix = 1;
         }
     }
 
     if (add_iomatrix) {
+        trace3("next_iomatrix(%d): malloc\n", c->fd);
         Newx(m,1,struct iomatrix);
         Poison(m,1,struct iomatrix);
         m->offset = m->count = 0;
         rinq_push(&c->wbuf_rinq, m);
     }
 
+    trace3("next_iomatrix(%d): end, count=%d, offset=%d\n", 
+        c->fd, m->count, m->offset);
     return m;
 }
 
@@ -341,6 +395,7 @@ add_placeholder_to_wbuf(struct feer_conn *c, SV **sv, struct iovec **iov_ref)
     *iov_ref = &m->iov[idx];
 }
 
+INLINE_UNLESS_DEBUG
 static void
 finish_wbuf(struct feer_conn *c)
 {
@@ -348,7 +403,15 @@ finish_wbuf(struct feer_conn *c)
     add_const_to_wbuf(c, "0\r\n\r\n", 5); // terminating chunk
 }
 
-#define update_wbuf_placeholder(c,sv,iov) iov->iov_base = SvPV(sv, iov->iov_len)
+INLINE_UNLESS_DEBUG
+static void
+update_wbuf_placeholder(struct feer_conn *c, SV *sv, struct iovec *iov)
+{
+    STRLEN cur;
+    // can't pass iov_len for cur; incompatible pointer type on some systems:
+    iov->iov_base = SvPV(sv,cur);
+    iov->iov_len = cur;
+}
 
 static void
 add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
@@ -358,7 +421,7 @@ add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
     add_placeholder_to_wbuf(c, &chunk, &chunk_iov);
     STRLEN cur = add_sv_to_wbuf(c, sv);
     add_crlf_to_wbuf(c);
-    sv_setpvf(chunk, "%x" CRLF, cur);
+    sv_setpvf(chunk, "%"Sz_xf CRLF, (Sz)cur);
     update_wbuf_placeholder(c, chunk, chunk_iov);
 }
 
@@ -502,6 +565,8 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->self = self;
     c->fd = conn_fd;
     c->sa = sa;
+    c->responding = RESPOND_NOT_STARTED;
+    c->receiving = RECEIVE_HEADERS;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -509,8 +574,8 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     ev_init(&c->read_ev_timer, conn_read_timeout);
     c->read_ev_timer.data = (void *)c;
 
-    trace3("made conn fd=%d self=%p, c=%p, cur=%d, len=%d\n",
-        c->fd, self, c, SvCUR(self), SvLEN(self));
+    trace3("made conn fd=%d self=%p, c=%p, cur=%"Sz_uf", len=%"Sz_uf"\n",
+        c->fd, self, c, (Sz)SvCUR(self), (Sz)SvLEN(self));
 
     SV *rv = newRV_inc(c->self);
     sv_bless(rv, feer_conn_stash); // so DESTROY can get called on read errors
@@ -573,6 +638,35 @@ new_feer_conn_handle (pTHX_ struct feer_conn *c, bool is_writer)
     return sv;
 }
 
+#if DEBUG
+# define change_responding_state(c, _to) do { \
+    enum feer_respond_state __to = (_to); \
+    enum feer_respond_state __from = c->responding; \
+    const char *_from_str, *_to_str; \
+    if (likely(__from != __to)) { \
+        RESPOND_STR(c->responding, _from_str); \
+        RESPOND_STR(__to, _to_str); \
+        trace2("==> responding state %d: %s to %s\n", \
+            c->fd,_from_str,_to_str); \
+        c->responding = __to; \
+    } \
+} while (0)
+# define change_receiving_state(c, _to) do { \
+    enum feer_receive_state __to = (_to); \
+    enum feer_receive_state __from = c->receiving; \
+    const char *_from_str, *_to_str; \
+    if (likely(__from != __to)) { \
+        RECEIVE_STR(c->receiving, _from_str); \
+        RECEIVE_STR(__to, _to_str); \
+        trace2("==> receiving state %d: %s to %s\n", \
+            c->fd,_from_str,_to_str); \
+        c->receiving = __to; \
+    } \
+} while (0)
+#else
+# define change_responding_state(c, _to) c->responding = _to
+# define change_receiving_state(c, _to) c->receiving = _to
+#endif
 
 INLINE_UNLESS_DEBUG static void
 start_read_watcher(struct feer_conn *c) {
@@ -695,6 +789,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 {
     dCONN;
     int i;
+    struct iomatrix *m;
 
     SvREFCNT_inc_void_NN(c->self);
 
@@ -702,12 +797,12 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
     // Otherwise it is stopped and we should ditch this connection.
     if (unlikely(revents & EV_ERROR && !(revents & EV_WRITE))) {
         trace("EV error on write, fd=%d revents=0x%08x\n", w->fd, revents);
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
         goto try_write_finished;
     }
 
     if (unlikely(!c->wbuf_rinq)) {
-        if (unlikely(c->responding == RESPOND_SHUTDOWN))
+        if (unlikely(c->responding >= RESPOND_SHUTDOWN))
             goto try_write_finished;
 
         if (!c->poll_write_cb) {
@@ -716,7 +811,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
                 goto try_write_paused;
 
             trace("tried to write with an empty buffer %d resp=%d\n",w->fd,c->responding);
-            c->responding = RESPOND_SHUTDOWN;
+            change_responding_state(c, RESPOND_SHUTDOWN);
             goto try_write_finished;
         }
 
@@ -729,18 +824,20 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         if (unlikely(!c->wbuf_rinq)) goto try_write_again;
     }
     
-    struct iomatrix *m = (struct iomatrix *)c->wbuf_rinq->ref;
+try_write_again_immediately:
+    m = (struct iomatrix *)c->wbuf_rinq->ref;
 #if DEBUG >= 2
-    fprintf(stderr,"going to write to %d:\n",c->fd);
+    warn("going to write to %d:\n",c->fd);
     for (i=0; i < m->count; i++) {
-        fprintf(stderr,"%.*s",m->iov[i].iov_len, m->iov[i].iov_base);
+        fprintf(stderr,"%.*s",
+            (int)m->iov[i].iov_len, (char*)m->iov[i].iov_base);
     }
 #endif
 
     trace("going to write %d off=%d count=%d\n", w->fd, m->offset, m->count);
     errno = 0;
     ssize_t wrote = writev(w->fd, &m->iov[m->offset], m->count - m->offset);
-    trace("wrote %d bytes to %d, errno=%d\n", wrote, w->fd, errno);
+    trace("wrote %"Ssz_df" bytes to %d, errno=%d\n", (Ssz)wrote, w->fd, errno);
 
     if (unlikely(wrote <= 0)) {
         if (unlikely(wrote == 0))
@@ -748,19 +845,23 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         if (likely(errno == EAGAIN || errno == EINTR))
             goto try_write_again;
         perror("Feersum try_conn_write");
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
         goto try_write_finished;
     }
     
-    for (i = 0; i < m->count; i++) {
+    for (i = m->offset; i < m->count && wrote > 0; i++) {
         struct iovec *v = &m->iov[i];
         if (unlikely(v->iov_len > wrote)) {
-            trace3("offset vector %d  base=%p len=%lu\n", w->fd, v->iov_base, v->iov_len);
+            trace3("offset vector %d  base=%p len=%"Sz_uf"\n",
+                w->fd, v->iov_base, (Sz)v->iov_len);
             v->iov_base += wrote;
             v->iov_len  -= wrote;
+            // don't consume any more:
+            wrote = 0;
         }
         else {
-            trace3("consume vector %d base=%p len=%lu sv=%p\n", w->fd, v->iov_base, v->iov_len, m->sv[i]);
+            trace3("consume vector %d base=%p len=%"Sz_uf" sv=%p\n",
+                w->fd, v->iov_base, (Sz)v->iov_len, m->sv[i]);
             wrote -= v->iov_len;
             m->offset++;
             if (m->sv[i]) {
@@ -774,9 +875,13 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         trace2("all done with iomatrix %d state=%d\n",w->fd,c->responding);
         rinq_shift(&c->wbuf_rinq);
         Safefree(m);
-        goto try_write_finished;
+        if (!c->wbuf_rinq)
+            goto try_write_finished;
+        trace2("write again immediately %d state=%d\n",w->fd,c->responding);
+        goto try_write_again_immediately;
     }
     // else, fallthrough:
+    trace2("write fallthrough %d state=%d\n",w->fd,c->responding);
 
 try_write_again:
     trace("write again %d state=%d\n",w->fd,c->responding);
@@ -809,7 +914,7 @@ try_write_paused:
 
 try_write_shutdown:
     trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
-    c->responding = RESPOND_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
     stop_write_watcher(c);
     safe_close_conn(c, "close at write shutdown");
 
@@ -861,7 +966,8 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     ssize_t space_free = SvLEN(c->rbuf) - SvCUR(c->rbuf);
     if (unlikely(space_free < READ_BUFSZ)) { // unlikely = optimize for small
         size_t new_len = SvLEN(c->rbuf) + READ_GROW_FACTOR*READ_BUFSZ;
-        trace("moar memory %d: %d to %d\n",w->fd, SvLEN(c->rbuf),new_len);
+        trace("moar memory %d: %"Sz_uf" to %"Sz_uf"\n",
+            w->fd, (Sz)SvLEN(c->rbuf), (Sz)new_len);
         SvGROW(c->rbuf, new_len);
         space_free += READ_GROW_FACTOR*READ_BUFSZ;
     }
@@ -880,7 +986,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
         goto try_read_error;
     }
 
-    trace("read %d %d\n", w->fd, got_n);
+    trace("read %d %"Ssz_df"\n", w->fd, (Ssz)got_n);
     SvCUR(c->rbuf) += got_n;
     // likely = optimize for small requests
     if (likely(c->receiving == RECEIVE_HEADERS)) {
@@ -927,8 +1033,8 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     // fallthrough:
 try_read_error:
     trace("READ ERROR %d, refcnt=%d\n", w->fd, SvREFCNT(c->self));
-    c->receiving = RECEIVE_SHUTDOWN;
-    c->responding = RESPOND_SHUTDOWN;
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
+    change_responding_state(c, RESPOND_SHUTDOWN);
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_write_watcher(c);
@@ -941,7 +1047,7 @@ try_read_bad:
     // fallthrough:
 dont_read_again:
     trace("done reading %d\n", w->fd);
-    c->receiving = RECEIVE_SHUTDOWN;
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
     stop_read_watcher(c);
     stop_read_timer(c);
     goto try_read_cleanup;
@@ -991,7 +1097,7 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         stop_read_watcher(c);
         stop_read_timer(c);
         safe_close_conn(c, "close at read timeout");
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
     }
 
 read_timeout_cleanup:
@@ -1003,6 +1109,9 @@ read_timeout_cleanup:
 static void
 accept_cb (EV_P_ ev_io *w, int revents)
 {
+    struct sockaddr_storage sa_buf;
+    socklen_t sa_len;
+
     if (unlikely(shutting_down)) {
         // shouldn't get called, but be defensive
         ev_io_stop(EV_A, w);
@@ -1019,14 +1128,14 @@ accept_cb (EV_P_ ev_io *w, int revents)
     trace2("accept! revents=0x%08x\n", revents);
 
     while (1) {
-        struct sockaddr_storage *sa;
-        Newx(sa,1,struct sockaddr_storage);
-        socklen_t sl = sizeof(struct sockaddr_storage);
+        sa_len = sizeof(struct sockaddr_storage);
         errno = 0;
-        int fd = accept(w->fd, (struct sockaddr *)sa, &sl);
+
+        int fd = accept(w->fd, (struct sockaddr *)&sa_buf, &sa_len);
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
 
+        assert(sa_len <= sizeof(struct sockaddr_storage));
         if (unlikely(prep_socket(fd))) {
             perror("prep_socket");
             trouble("prep_socket failed for %d\n", fd);
@@ -1034,7 +1143,9 @@ accept_cb (EV_P_ ev_io *w, int revents)
             continue;
         }
 
-        struct feer_conn *c = new_feer_conn(EV_A,fd,(struct sockaddr *)sa);
+        struct sockaddr *sa = (struct sockaddr *)malloc(sa_len);
+        memcpy(sa,&sa_buf,(size_t)sa_len);
+        struct feer_conn *c = new_feer_conn(EV_A,fd,sa);
         start_read_watcher(c);
         restart_read_timer(c);
         assert(SvREFCNT(c->self) == 3);
@@ -1068,7 +1179,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
 
     c->is_http11 = (req->minor_version == 1);
 
-    c->receiving = RECEIVE_BODY;
+    change_receiving_state(c, RECEIVE_BODY);
 
     if (likely(str_eq("GET", 3, req->method, req->method_len))) {
         // Not supposed to have a body.  Additional bytes are either a
@@ -1166,7 +1277,8 @@ got_bad_request:
 got_cl:
     c->expected_cl = (ssize_t)expected;
     c->received_cl = SvCUR(c->rbuf);
-    trace("expecting body %d size=%d have=%d\n",c->fd, c->expected_cl,c->received_cl);
+    trace("expecting body %d size=%"Ssz_df" have=%"Ssz_df"\n",
+        c->fd, (Ssz)c->expected_cl, (Ssz)c->received_cl);
     SvGROW(c->rbuf, c->expected_cl + 1);
 
     // don't have enough bytes to schedule immediately?
@@ -1175,7 +1287,7 @@ got_cl:
         // TODO: schedule the callback immediately and support a non-blocking
         // ->read method.
         // sched_request_callback(c);
-        // c->receiving = RECEIVE_STREAM;
+        // change_receiving_state(c, RECEIVE_STREAM);
         return 1;
     }
     // fallthrough: have enough bytes
@@ -1214,20 +1326,24 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
     }
 
     if (!msg_len) msg_len = strlen(msg);
+    assert(msg_len < INT_MAX);
 
-    tmp = newSVpvf("HTTP/1.1 %d %s" CRLF
+    tmp = newSVpvf("HTTP/1.%d %d %s" CRLF
                    "Content-Type: text/plain" CRLF
                    "Connection: close" CRLF
                    "Cache-Control: no-cache, no-store" CRLF
-                   "Content-Length: %d" CRLFx2
+                   "Content-Length: %"Ssz_df"" CRLFx2
                    "%.*s",
-              err_code, http_code_to_msg(err_code), msg_len, msg_len, msg);
+              c->is_http11 ? 1 : 0,
+              err_code, http_code_to_msg(err_code),
+              (Ssz)msg_len,
+              (int)msg_len, msg);
     add_sv_to_wbuf(c, sv_2mortal(tmp));
 
     stop_read_watcher(c);
     stop_read_timer(c);
-    c->responding = RESPOND_SHUTDOWN;
-    c->receiving = RECEIVE_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
+    change_receiving_state(c, RECEIVE_SHUTDOWN);
     conn_write_ready(c);
 }
 
@@ -1380,7 +1496,7 @@ feersum_env(pTHX_ struct feer_conn *c)
     e = newHVhv(feersum_tmpl_env);
 
     trace("generating header (fd %d) %.*s\n",
-        c->fd, r->path_len, r->path);
+        c->fd, (int)r->path_len, r->path);
 
     SV *path = newSVpvn(r->path, r->path_len);
     hv_stores(e, "SERVER_NAME", newSVsv(feer_server_name));
@@ -1465,7 +1581,7 @@ feersum_env(pTHX_ struct feer_conn *c)
     for (i=0; i<r->num_headers; i++) {
         struct phr_header *hdr = &(r->headers[i]);
         if (unlikely(hdr->name == NULL && val != NULL)) {
-            trace("... multiline %.*s\n", hdr->value_len, hdr->value);
+            trace("... multiline %.*s\n", (int)hdr->value_len, hdr->value);
             sv_catpvn(val, hdr->value, hdr->value_len);
             continue;
         }
@@ -1496,13 +1612,14 @@ feersum_env(pTHX_ struct feer_conn *c)
 
         SV **val = hv_fetch(e, kbuf, klen, 1);
         trace("adding header to env (fd %d) %.*s: %.*s\n",
-            c->fd, klen, kbuf, hdr->value_len, hdr->value);
+            c->fd, (int)klen, kbuf, (int)hdr->value_len, hdr->value);
 
         assert(val != NULL); // "fetch is store" flag should ensure this
         if (unlikely(SvPOK(*val))) {
             trace("... is multivalue\n");
             // extend header with comma
-            sv_catpvf(*val, ", %.*s", hdr->value_len, hdr->value);
+            sv_catpvn(*val, ", ", 2);
+            sv_catpvn(*val, hdr->value, hdr->value_len);
         }
         else {
             // change from undef to a real value
@@ -1519,14 +1636,13 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
                         int streaming)
 {
     const char *ptr;
-    STRLEN len;
     I32 i;
 
     trace("start_response fd=%d streaming=%d\n", c->fd, streaming);
 
-    if (unlikely(c->responding))
-        croak("already responding!");
-    c->responding = streaming ? RESPOND_STREAMING : RESPOND_NORMAL;
+    if (unlikely(c->responding != RESPOND_NOT_STARTED))
+        croak("already responding?!");
+    change_responding_state(c, streaming ? RESPOND_STREAMING : RESPOND_NORMAL);
 
     if (unlikely(!SvOK(message) || !(SvIOK(message) || SvPOK(message)))) {
         croak("Must define an HTTP status code or message");
@@ -1548,7 +1664,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         if (unlikely(numtype != IS_NUMBER_IN_UV))
             code = 0;
     }
-    trace2("starting response fd=%d code=%u\n",c->fd,code);
+    trace2("starting response fd=%d code=%"UVuf"\n",c->fd,code);
 
     if (unlikely(!code))
         croak("first parameter is not a number or doesn't start with digits");
@@ -1556,8 +1672,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     // for PSGI it's always just an IV so optimize for that
     if (likely(!SvPOK(message) || SvCUR(message) == 3)) {
         ptr = http_code_to_msg(code);
-        len = strlen(ptr);
-        message = sv_2mortal(newSVpvf("%d %.*s",code,len,ptr));
+        message = sv_2mortal(newSVpvf("%"UVuf" %s",code,ptr));
     }
     
     // don't generate or strip Content-Length headers for 304 or 1xx
@@ -1605,10 +1720,10 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     conn_write_ready(c);
 }
 
-static int
+static size_t
 feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
 {
-    int RETVAL;
+    size_t RETVAL;
     int i;
     bool body_is_string = 0;
     STRLEN cur;
@@ -1651,20 +1766,19 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
         RETVAL = 0;
         for (i=0; i<=amax; i++) {
             SV *sv = fetch_av_normal(aTHX_ abody, i);
-            if (likely(sv)) {
-                cur = add_sv_to_wbuf(c,sv);
-                trace("body part i=%d sv=%p cur=%d\n", i, sv, cur);
-                RETVAL += cur;
-            }
+            if (unlikely(!sv)) continue;
+            cur = add_sv_to_wbuf(c,sv);
+            trace("body part i=%d sv=%p cur=%"Sz_uf"\n", i, sv, (Sz)cur);
+            RETVAL += cur;
         }
     }
 
     if (likely(c->auto_cl)) {
-        sv_setpvf(cl_sv, "Content-Length: %d" CRLFx2, RETVAL);
+        sv_setpvf(cl_sv, "Content-Length: %"Sz_uf"" CRLFx2, (Sz)RETVAL);
         update_wbuf_placeholder(c, cl_sv, cl_iov);
     }
 
-    c->responding = RESPOND_SHUTDOWN;
+    change_responding_state(c, RESPOND_SHUTDOWN);
     conn_write_ready(c);
     return RETVAL;
 }
@@ -1763,7 +1877,7 @@ feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
         if (c->responding < RESPOND_SHUTDOWN) {
             finish_wbuf(c);
             conn_write_ready(c);
-            c->responding = RESPOND_SHUTDOWN;
+            change_responding_state(c, RESPOND_SHUTDOWN);
         }
         RETVAL = 1;
     }
@@ -1775,7 +1889,7 @@ feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
             c->rbuf = NULL;
         }
         RETVAL = shutdown(c->fd, SHUT_RD);
-        c->receiving = RECEIVE_SHUTDOWN;
+        change_receiving_state(c, RECEIVE_SHUTDOWN);
     }
 
     // disassociate the handle from the conn
@@ -1798,9 +1912,7 @@ call_died (pTHX_ struct feer_conn *c, const char *cb_type)
 {
     dSP;
 #if DEBUG >= 1
-    STRLEN err_len;
-    char *err = SvPV(ERRSV,err_len);
-    trace("An error was thrown in the %s callback: %.*s\n",cb_type,err_len,err);
+    trace("An error was thrown in the %s callback: %-p\n",cb_type,ERRSV);
 #endif
     PUSHMARK(SP);
     mXPUSHs(newSVsv(ERRSV));
@@ -1955,15 +2067,13 @@ pump_io_handle (struct feer_conn *c, SV *io)
         SPAGAIN;
 
         if (unlikely(SvTRUE(ERRSV))) {
-            STRLEN len;
-            const char *err = SvPV(ERRSV,len);
-            trouble("Couldn't close body IO handle: %.*s",len,err);
+            trouble("Couldn't close body IO handle: %-p",ERRSV);
         }
 
         SvREFCNT_dec(c->poll_write_cb);
         c->poll_write_cb = NULL;
         finish_wbuf(c);
-        c->responding = RESPOND_SHUTDOWN;
+        change_responding_state(c, RESPOND_SHUTDOWN);
 
         goto done_pump_io;
     }
@@ -2064,6 +2174,8 @@ accept_on_fd(SV *self, int fd)
 {
     trace("going to accept on %d\n",fd);
     feersum_ev_loop = EV_DEFAULT;
+
+    signal(SIGPIPE, SIG_IGN);
 
     ev_prepare_init(&ep, prepare_cb);
     ev_prepare_start(feersum_ev_loop, &ep);
@@ -2214,7 +2326,8 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     else
         offset = 0;
 
-    trace("read fd=%d : request    len=%d off=%d\n", c->fd, len, offset);
+    trace("read fd=%d : request    len=%"Sz_uf" off=%"Ssz_df"\n",
+        c->fd, (Sz)len, (Ssz)offset);
 
     if (unlikely(c->receiving <= RECEIVE_HEADERS))
         // XXX as of 0.984 this is dead code
@@ -2245,8 +2358,8 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     if (unlikely(len + offset > src_len)) 
         len = src_len - offset;
 
-    trace("read fd=%d : normalized len=%d off=%d src_len=%d\n",
-        c->fd, len, offset, src_len);
+    trace("read fd=%d : normalized len=%"Sz_uf" off=%"Ssz_df" src_len=%"Sz_uf"\n",
+        c->fd, (Sz)len, (Ssz)offset, (Sz)src_len);
 
     if (unlikely(!c->rbuf || src_len == 0 || offset >= c->received_cl)) {
         trace2("rbuf empty during read %d\n", c->fd);
@@ -2272,7 +2385,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     }
     else {
         src_ptr += offset;
-        trace2("appending partial rbuf fd=%d len=%d off=%d ptr=%p\n",
+        trace2("appending partial rbuf fd=%d len=%"Sz_uf" off=%"Ssz_df" ptr=%p\n",
             c->fd, len, offset, src_ptr);
         SvGROW(buf, SvCUR(buf) + len);
         sv_catpvn(buf, src_ptr, len);
@@ -2327,7 +2440,7 @@ write_array (feer_conn_handle *hdl, AV *abody)
     if (unlikely(c->responding != RESPOND_STREAMING))
         croak("can only call write in streaming mode");
 
-    trace("write_array fd=%d c=%p, body=%p\n", c->fd, c, abody);
+    trace("write_array fd=%d c=%p, abody=%p\n", c->fd, c, abody);
 
     I32 amax = av_len(abody);
     int i;
@@ -2356,7 +2469,7 @@ seek (feer_conn_handle *hdl, ssize_t offset, ...)
     if (items == 3 && SvOK(ST(2)) && SvIOK(ST(2)))
         whence = SvIV(ST(2));
 
-    trace("seek fd=%d offset=%d whence=%d\n", c->fd, offset, whence);
+    trace("seek fd=%d offset=%"Ssz_df" whence=%d\n", c->fd, offset, whence);
 
     if (unlikely(!c->rbuf)) {
         // handle is effectively "closed"
@@ -2462,7 +2575,7 @@ start_streaming (struct feer_conn *c, SV *message, AV *headers)
     OUTPUT:
         RETVAL
 
-int
+size_t
 send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
     PROTOTYPE: $$\@$
     CODE:
@@ -2561,7 +2674,7 @@ DESTROY (struct feer_conn *c)
         Safefree(c->req);
     }
 
-    if (likely(c->sa)) Safefree(c->sa);
+    if (likely(c->sa)) free(c->sa);
 
     safe_close_conn(c, "close at destruction");
 
@@ -2611,4 +2724,15 @@ BOOT:
 
         Zero(&psgix_io_vtbl, 1, MGVTBL);
         psgix_io_vtbl.svt_get = psgix_io_svt_get;
+
+        trace3("Feersum booted, iomatrix %lu "
+                "(IOV_MAX=%u, FEERSUM_IOMATRIX_SIZE=%u), "
+            "feer_req %lu, "
+            "feer_conn %lu\n",
+            (long unsigned int)sizeof(struct iomatrix),
+                (unsigned int)IOV_MAX,
+                (unsigned int)FEERSUM_IOMATRIX_SIZE,
+            (long unsigned int)sizeof(struct feer_req),
+            (long unsigned int)sizeof(struct feer_conn)
+        );
     }

@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 use Test::More tests => 53;
-use Test::Exception;
+use Test::Fatal;
 use Fcntl qw/SEEK_CUR SEEK_SET SEEK_END/;
 use lib 't'; use Utils;
 
@@ -75,9 +75,9 @@ $evh->request_handler(sub {
         fail "don't know about client $env->{HTTP_X_CLIENT}";
     }
 
-    lives_ok {
+    is exception {
         $input->close();
-    } 'closed handle';
+    }, undef, 'closed handle';
 
     $r->send_response(200, ['Content-Type' => 'text/plain'], [uc $body]);
     pass "sent response";

@@ -1,5 +1,32 @@
 Revision history for Perl extension Feersum
 
+1.202 Thu Jun 30 00:45:00 2011 -0700
+        Fix double-plan test failures when Test::LeakTrace missing (au++)
+
+1.201 Wed Jun 29 11:00:00 2011 -0700
+        Fix sockaddr memory leak (thanks bfg)
+
+1.200 Fri Apr 15 12:00:00 2011 -0700
+        Fix major defect: corrupted large static files (thanks leedo)
+
+1.101 Wed Apr 13 12:00:00 2011 -0700
+        Fix 62-plack-runner.t again (thanks cpantesters)
+
+1.100 Mon Apr 11 12:40:00 2011 -0700
+        Fix major defect: truncated writes (fbb3664)
+        Finish Solaris compatibility (thanks konobi)
+        Fix t/11-runner.t failing when JSON::XS missing
+
+1.002 Sat Apr  9 16:15:00 2011 -0700
+        Try to fix persistent failing of 62-plack-runner.t
+        Update picohttpparser from upstream
+        Fix printf warnings on Lucid
+
+1.001 Mon Jan 31 10:00:00 2011 -0800
+        Address RT#65239 by making Plack a true dep. if present.
+        Test::TCP is now a hard build dependency.
+        Use Test::Fatal instead of Test::Exception.
+
 1.000 Mon Nov 22 12:00:00 2010 -0800
         Socialtext now runs Feersum in production, hence 1.000
         Add write_array() to Writer handle (undoc'd Feersum extension)

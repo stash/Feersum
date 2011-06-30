@@ -10,8 +10,23 @@ BEGIN {
         unless eval 'require Test::TCP; $Test::TCP::VERSION >= 1.06';
 }
 
-plan tests => 13;
 use Test::TCP;
+
+my $feersum_script;
+for my $dir (qw(blib/script blib/bin)) {
+    if (-f "$dir/feersum") {
+        $feersum_script = "$dir/feersum";
+        last;
+    }
+}
+
+plan skip_all => "can't locate feersum starter script"
+    unless $feersum_script;
+
+plan tests => 15;
+
+ok -f 'eg/app.feersum' && -r _, "found eg/app.feersum";
+ok -f 'eg/chat.feersum' && -r _, "found eg/chat.feersum";
 
 test_tcp(
     client => sub {
@@ -70,30 +85,35 @@ test_tcp(
     },
     server => sub {
         my $port = shift;
-        exec "$^X -Mblib blib/script/feersum --listen localhost:$port ".
+        exec "$^X -Mblib $feersum_script --listen localhost:$port ".
             "--native eg/app.feersum";
    },
 );
 
-test_tcp(
-    client => sub {
-        my $port = shift;
-        my $cv = AE::cv;
-        $cv->begin;
-        my $cli = simple_client GET => '/',
-            port => $port,
-            name => 'chat runner',
-            sub {
-                my ($body,$headers) = @_;
-                is $headers->{Status}, 200, "chat http success";
-                like $body, qr{<title>Chat!</title>};
-                $cv->end;
-            };
-        $cv->recv;
-    },
-    server => sub {
-        my $port = shift;
-        exec "$^X -Mblib blib/script/feersum --listen localhost:$port ".
-            "--native eg/chat.feersum";
-   },
-);
+SKIP: {
+    skip "can't locate JSON::XS", 3
+        unless eval "require JSON::XS";
+
+    test_tcp(
+        client => sub {
+            my $port = shift;
+            my $cv = AE::cv;
+            $cv->begin;
+            my $cli = simple_client GET => '/',
+                port => $port,
+                name => 'chat runner',
+                sub {
+                    my ($body,$headers) = @_;
+                    is $headers->{Status}, 200, "chat http success";
+                    like $body, qr{<title>Chat!</title>};
+                    $cv->end;
+                };
+            $cv->recv;
+        },
+        server => sub {
+            my $port = shift;
+            exec "$^X -Mblib $feersum_script --listen localhost:$port ".
+                "--native eg/chat.feersum";
+       },
+    );
+}

@@ -10,32 +10,9 @@ BEGIN {
         unless eval 'require Test::TCP; $Test::TCP::VERSION >= 1.06';
 }
 
-plan tests => 10;
+plan tests => 6;
 use Test::TCP;
-use File::Spec ();
 use Config;
-
-my $eg = File::Spec->catfile('eg','app.psgi');
-my $eg_feersum = File::Spec->catfile('eg','app.feersum');
-
-my $plackup = File::Spec->catfile($Config{sitescriptexp}, "plackup");
-ok -e $plackup, 'found plackup';
-
-sub run_client {
-    my ($name, $port) = @_;
-    my $cv = AE::cv;
-    $cv->begin;
-    my $cli = simple_client GET => '/',
-        port => $port,
-        name => $name,
-        sub {
-            my ($body,$headers) = @_;
-            is $headers->{Status}, 200, "script http success";
-            like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
-            $cv->end;
-        };
-    $cv->recv;
-}
 
 test_tcp(
     client => sub { run_client('feersum psgi runner',shift) },
@@ -48,26 +25,46 @@ test_tcp(
    },
 );
 
-test_tcp(
-    client => sub { run_client('plackup psgi runner',shift) },
-    server => sub {
-        my $port = shift;
-        exec $^X, '-Mblib', $plackup,
-            '-E' => 'deployment',
-            '-s' => 'Feersum',
-            '--listen' => "localhost:$port",
-            $eg;
-   },
-);
+my $plackup;
+for my $key (qw(bin scriptdir sitebin sitescript vendbin vendscript)) {
+    my $dir = $Config{$key.'exp'};
+    next unless $dir;
 
-test_tcp(
-    client => sub { run_client('feersum native runner',shift) },
-    server => sub {
-        my $port = shift;
-        exec $^X, '-Mblib',
-            File::Spec->catfile('blib','script','feersum'),
-            '--native',
-            '--listen' => "localhost:$port",
-            $eg_feersum;
-   },
-);
+    my $pu = "$dir/plackup";
+    next unless (-e $pu && -x _);
+
+    my $plackup_ver = `$^X $pu --version`;
+    next unless ($plackup_ver =~ /Plack (\d.\d+)/ && $1 >= 0.995);
+
+    $plackup = $pu;
+    chomp $plackup_ver;
+    diag "found plackup: $plackup ($plackup_ver)";
+    last;
+}
+
+SKIP: {
+    skip "can't locate plackup in script/bin dirs", 3
+        unless $plackup;
+    test_tcp(
+        client => sub {
+            my $port = shift;
+            my $cv = AE::cv;
+            $cv->begin;
+            my $cli = simple_client GET => '/',
+                port => $port,
+                name => 'plackup runner',
+                sub {
+                    my ($body,$headers) = @_;
+                    is $headers->{Status}, 200, "script http success";
+                    like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
+                    $cv->end;
+                };
+            $cv->recv;
+        },
+        server => sub {
+            my $port = shift;
+            exec "$^X -Mblib $plackup -E deployment ".
+                "-s Feersum --listen localhost:$port eg/app.psgi";
+       },
+    );
+}

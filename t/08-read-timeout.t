@@ -6,8 +6,8 @@ use constant POST_CLIENTS => HARDER*1;
 use constant GET_CLIENTS => HARDER*1;
 use constant GOOD_CLIENTS => HARDER*1;
 use Test::More tests =>
-    17 + 2*POST_CLIENTS + 2*GET_CLIENTS + 4*GOOD_CLIENTS;
-use Test::Exception;
+    19 + 2*POST_CLIENTS + 2*GET_CLIENTS + 4*GOOD_CLIENTS;
+use Test::Fatal;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -17,7 +17,7 @@ ok $socket, "made listen socket";
 ok $socket->fileno, "has a fileno";
 
 my $evh = Feersum->new();
-lives_ok { $evh->use_socket($socket) };
+is exception { $evh->use_socket($socket) }, undef,;
 $evh->request_handler(sub {
     my $r = shift;
     my $env = $r->env();
@@ -28,22 +28,30 @@ $evh->request_handler(sub {
 my $default = $evh->read_timeout;
 is $default, 5.0, "default timeout is 5 seconds";
 
-dies_ok { $evh->read_timeout(-1.0) } "can't set a negative number";
+like exception { $evh->read_timeout(-1.0) },
+    qr/^must set a positive \(non-zero\) value for the timeout/,
+    "can't set a negative number";
 is $evh->read_timeout, 5.0;
 
-dies_ok {
+like exception { $evh->read_timeout(0) },
+    qr/^must set a positive \(non-zero\) value for the timeout/,
+    "can't set a negative number";
+is $evh->read_timeout, 5.0;
+
+like exception {
     no warnings 'numeric';
     $evh->read_timeout("this isn't a number");
-} "can't set a string as the timeout";
+}, qr/^must set a positive \(non-zero\) value for the timeout/,
+   "can't set a string as the timeout";
 is $evh->read_timeout, 5.0;
 
-lives_ok { $evh->read_timeout(6+1) } "IV is OK";
+is exception { $evh->read_timeout(6+1) }, undef, "IV is OK";
 is $evh->read_timeout, 7.0, "new timeout set";
 
-lives_ok { $evh->read_timeout("8.0") } "NV-as-string is OK";
+is exception { $evh->read_timeout("8.0") }, undef, "NV-as-string is OK";
 is $evh->read_timeout, 8.0, "new timeout set";
 
-lives_ok { $evh->read_timeout($default) } "NV is OK";
+is exception { $evh->read_timeout($default) }, undef, "NV is OK";
 is $evh->read_timeout, $default, "reset to default";
 
 
@@ -123,5 +131,5 @@ timeout_post_client($_) for (1 .. POST_CLIENTS);
 good_client($_) for (1 .. GOOD_CLIENTS);
 $cv->end;
 
-lives_ok { $cv->recv } "no client errors";
+is exception { $cv->recv }, undef, "no client errors";
 pass "all done";

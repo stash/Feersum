@@ -19,6 +19,7 @@ use EV::MakeMaker qw/ev_args/;
 }
 
 my $otherldflags = '';
+my $convert_deps = 1;
 if ($ARGV[0] =~ /^-DEBUG=?(\d*)$/) {
     my $n = $1 || 1;
     my $opt = "OPTIMIZE=-DDEBUG=$n -g";
@@ -36,6 +37,27 @@ elsif ($ARGV[0] eq '-PROFILEUSE') {
     $ARGV[0] = "OPTIMIZE=-g -O3 -fprofile-use";
     $otherldflags = '-fprofile-use';
 }
+elsif ($ARGV[0] eq '-CPAN') {
+    $convert_deps = 0;
+}
+
+# Convert optional Plack and other dependencies to a real dependency if it's
+# present at build-time. (Fix:
+# https://rt.cpan.org/Public/Bug/Display.html?id=65239)
+my %want = (
+    'Plack'           => 0.995,
+    'JSON::XS'        => 2.0,
+    'Test::LeakTrace' => 0.13,
+    'Test::TCP'       => 1.12,
+);
+my %have;
+
+if ($convert_deps) {
+    local $@;
+    while (my ($pkg,$ver) = each %want) {
+        $have{$pkg} = eval "require $pkg; \$$pkg\::VERSION >= $ver";
+    }
+}
 
 # Set this to false if you get core-dumps. Gives a pretty good perf boost for
 # simple responses. Look for FEERSUM_STEAL in the code to see what this does.
@@ -45,6 +67,17 @@ elsif ($ARGV[0] eq '-PROFILEUSE') {
 # 5.12.0.
 use Config;
 my $steal = ($] >= 5.012 && !defined($Config{useithreads}));
+
+# Control the size of the main write-buffer structure in feersum.  Making this
+# value lower will use slightly less memory per connection at the cost of
+# speed and vice-versa.  It's most noticeable when you're app is buffering a
+# lot of sparce writes.  The default of 64 generally keeps usage under 4k per
+# connection on full 64-bit when you take into account the other connection
+# and request structures.
+# NOTE: If your OS defines IOV_MAX or UIO_MAXIOV then this value will be
+# forced to be at most that size with a #define.  Solaris defines IOV_MAX to
+# be 16.  Linux and OSX generally have IOV_MAX as 1024.
+my $iomatrix_size = 64;
 
 WriteMakefile(ev_args(
     NAME          => 'Feersum',
@@ -59,18 +92,18 @@ WriteMakefile(ev_args(
     BUILD_REQUIRES => {
         'AnyEvent' => 5.261,
         'Guard' => 1.012,
-        'Scalar::Util' => 1.19,
         'Test::More' => 0.94,
-        'Test::Exception' => 0.29,
-        'JSON::XS' => 2.0,
+        'Test::Fatal' => 0.003,
+        map { $_ => $want{$_} } grep { /^Test::/ && $have{$_} } keys %want
     },
     PREREQ_PM => {
         'EV' => 4.00,
+        'Scalar::Util' => 1.19,
+        map { $_ => $want{$_} } grep { !/^Test::/ && $have{$_} } keys %want
     },
     META_MERGE => {
         recommends => {
-            'Plack' => 0.9950,
-            'Test::TCP' => 0.16,
+            map { $_ => $want{$_} } grep { !$have{$_} } keys %want
         },
         resources => {
             repository => 'git://github.com/stash/Feersum.git',
@@ -80,7 +113,8 @@ WriteMakefile(ev_args(
     },
     LIBS   => [''],
     EXE_FILES => ['bin/feersum'],
-    DEFINE => ($steal ? '-DFEERSUM_STEAL' : ''),
+    DEFINE => "-DFEERSUM_IOMATRIX_SIZE=$iomatrix_size ".
+        ($steal ? '-DFEERSUM_STEAL' : ''),
     INC    => '-I.',
     dynamic_lib => {OTHERLDFLAGS => $otherldflags},
 ));
