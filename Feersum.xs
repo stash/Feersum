@@ -49,6 +49,9 @@
 // try to immediately write otherwise)
 #define AUTOCORK_WRITES 1
 
+// Setting this to true will enable Flash Socket Policy support
+#define FLASH_SOCKET_POLICY_SUPPORT 1
+
 #define WARN_PREFIX "Feersum: "
 
 #ifndef DEBUG
@@ -881,6 +884,25 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     SvCUR(c->rbuf) += got_n;
     // likely = optimize for small requests
     if (likely(c->receiving == RECEIVE_HEADERS)) {
+#ifdef FLASH_SOCKET_POLICY_SUPPORT
+        if (unlikely(*SvPVX(c->rbuf) == '<')) {
+            if (likely(SvCUR(c->rbuf) >= 22)) {
+                if (strnEQ(SvPVX(c->rbuf), "<policy-file-request/>", 22)) {
+                    add_const_to_wbuf(c, "<?xml version=\"1.0\"?>\n<!DOCTYPE cross-domain-policy SYSTEM \"/xml/dtds/cross-domain-policy.dtd\">\n<cross-domain-policy>\n<site-control permitted-cross-domain-policies=\"master-only\"/>\n<allow-access-from domain=\"*\" to-ports=\"*\" secure=\"false\"/>\n</cross-domain-policy>\n", 263);
+                    conn_write_ready(c);
+                    stop_read_watcher(c);
+                    stop_read_timer(c);
+                    change_receiving_state(c, RECEIVE_SHUTDOWN);
+                    change_responding_state(c, RESPOND_SHUTDOWN);
+                    goto dont_read_again;
+                }
+            }
+            else if (likely(strnEQ(SvPVX(c->rbuf), "<policy-file-request/>", SvCUR(c->rbuf)))) {
+                goto try_read_again;
+            }
+        }
+#endif
+
         int ret = try_parse_http(c, (size_t)got_n);
         if (ret == -1) goto try_read_bad;
         if (ret == -2) goto try_read_again;
