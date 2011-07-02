@@ -15,13 +15,25 @@ use Test::TCP;
 use Config;
 
 test_tcp(
-    client => sub { run_client('feersum psgi runner',shift) },
+    client => sub {
+        my $port = shift;
+        my $cv = AE::cv;
+        $cv->begin;
+        my $cli = simple_client GET => '/',
+            port => $port,
+            name => 'feersum runner',
+            sub {
+                my ($body,$headers) = @_;
+                is $headers->{Status}, 200, "script http success";
+                like $body, qr/^Hello customer number 0x[0-9a-f]+$/;
+                $cv->end;
+            };
+        $cv->recv;
+    },
     server => sub {
         my $port = shift;
-        exec $^X, '-Mblib',
-            File::Spec->catfile('blib','script','feersum'),
-            '--listen' => "localhost:$port",
-            $eg;
+        exec "$^X -Mblib blib/script/feersum --listen localhost:$port ".
+            "eg/app.psgi";
    },
 );
 
