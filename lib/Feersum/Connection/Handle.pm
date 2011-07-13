@@ -57,6 +57,8 @@ For write handles:
     $w->poll_cb(sub {
         # use $_[0] instead of $w to avoid a closure
         $_[0]->write(\"some data");
+        # check if the socket is connected
+        $_[0]->connected();
         # can close() or unregister the poll_cb in here
         $_[0]->close();
     });
@@ -137,6 +139,13 @@ C<psgix.body.scalar_refs> in the PSGI env hash.
 Pass in an array-ref and it works much like the two C<write()> calls above,
 except it's way more efficient than calling C<write()> over and over.
 Undefined elements of the array are ignored.
+
+=item C<< $w->connected() >>
+
+Uses getpeername in order to determine if the underlying socket is connected.
+It will return true even if the socket is in CLOSE_WAIT state. If the TCP 
+socket is closed (after TCP timeout) by the system it will return false 
+value. The implementations is consistent with IO::Handle.
 
 =item C<< $w->close() >>
 
