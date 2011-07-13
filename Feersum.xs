@@ -2511,6 +2511,24 @@ seek (feer_conn_handle *hdl, ssize_t offset, ...)
         RETVAL
 
 int
+connected (feer_conn_handle *hdl)
+    PROTOTYPE: $
+    CODE:
+{
+    assert(ix);
+    socklen_t addrlen;
+    int res;
+    res = getpeername(hdl->fd, hdl->sa, &addrlen);
+    if (res == 0) {
+        RETVAL = 1;
+    } else {
+        RETVAL = 0;
+    }
+}
+    OUTPUT:
+        RETVAL
+
+int
 close (feer_conn_handle *hdl)
     PROTOTYPE: $
     ALIAS:
