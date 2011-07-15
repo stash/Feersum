@@ -1946,8 +1946,6 @@ call_request_callback (struct feer_conn *c)
 
     trace("leaving request callback\n");
     PUTBACK;
-    FREETMPS;
-    LEAVE;
 
     if (request_cb_is_psgi && likely(returned >= 1)) {
         feersum_handle_psgi_response(aTHX_ c, psgi_response, 1); // can_recurse
@@ -1956,6 +1954,9 @@ call_request_callback (struct feer_conn *c)
 
     c->in_callback--;
     SvREFCNT_dec(c->self);
+
+    FREETMPS;
+    LEAVE;
 }
 
 static void
