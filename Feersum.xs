@@ -926,9 +926,13 @@ try_parse_http(struct feer_conn *c, size_t last_read)
     struct feer_req *req = c->req;
     if (likely(!req)) {
         Newxz(req,1,struct feer_req);
-        req->num_headers = MAX_HEADERS;
         c->req = req;
     }
+
+    // GH#12 - incremental parsing sets num_headers to 0 each time; force it
+    // back on every invocation
+    req->num_headers = MAX_HEADERS;
+
     return phr_parse_request(SvPVX(c->rbuf), SvCUR(c->rbuf),
         &req->method, &req->method_len,
         &req->path, &req->path_len, &req->minor_version,
