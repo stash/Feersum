@@ -518,7 +518,7 @@ option.
 
 =item FLASH_SOCKET_POLICY
 
-FLASH_SOCKET_POLICY_SUPPORT defaults to enabled.
+FLASH_SOCKET_POLICY_SUPPORT defaults to disabled.
 
 When it's enabled, Feersum will detect a Flash C<< <policy-file-request/> >>
 packet and respond with the FLASH_SOCKET_POLICY string.
@@ -532,9 +532,11 @@ The default FLASH_SOCKET_POLICY string looks like this:
       <allow-access-from domain="*" to-ports="*" secure="false"/>
     </cross-domain-policy>
 
-Since that's fairly wide-open, you may wish to disable
-FLASH_SOCKET_POLICY_SUPPORT.  Note that this feature likely won't work if you
-use a front-end HTTP server like nginx since the request isn't valid HTTP.
+Since that's fairly wide-open, you may not wish to enable
+FLASH_SOCKET_POLICY_SUPPORT.
+
+Note that this feature likely won't work if you use a front-end HTTP server
+(e.g. nginx) since the request isn't valid HTTP.
 
 =item FEERSUM_IOMATRIX_SIZE
 

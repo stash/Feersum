@@ -25,8 +25,10 @@
 
 #define AUTOCORK_WRITES 1
 
-#define FLASH_SOCKET_POLICY_SUPPORT
-#define FLASH_SOCKET_POLICY "<?xml version=\"1.0\"?>\n<!DOCTYPE cross-domain-policy SYSTEM \"/xml/dtds/cross-domain-policy.dtd\">\n<cross-domain-policy>\n<site-control permitted-cross-domain-policies=\"master-only\"/>\n<allow-access-from domain=\"*\" to-ports=\"*\" secure=\"false\"/>\n</cross-domain-policy>\n"
+#if 0
+# define FLASH_SOCKET_POLICY_SUPPORT
+# define FLASH_SOCKET_POLICY "<?xml version=\"1.0\"?>\n<!DOCTYPE cross-domain-policy SYSTEM \"/xml/dtds/cross-domain-policy.dtd\">\n<cross-domain-policy>\n<site-control permitted-cross-domain-policies=\"master-only\"/>\n<allow-access-from domain=\"*\" to-ports=\"*\" secure=\"false\"/>\n</cross-domain-policy>\n"
+#endif
 
 // may be lower for your platform (e.g. Solaris is 16).  See POD.
 #define FEERSUM_IOMATRIX_SIZE 64
