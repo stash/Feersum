@@ -929,9 +929,13 @@ try_parse_http(struct feer_conn *c, size_t last_read)
     struct feer_req *req = c->req;
     if (likely(!req)) {
         Newxz(req,1,struct feer_req);
-        req->num_headers = MAX_HEADERS;
         c->req = req;
     }
+
+    // GH#12 - incremental parsing sets num_headers to 0 each time; force it
+    // back on every invocation
+    req->num_headers = MAX_HEADERS;
+
     return phr_parse_request(SvPVX(c->rbuf), SvCUR(c->rbuf),
         &req->method, &req->method_len,
         &req->path, &req->path_len, &req->minor_version,
@@ -1968,8 +1972,6 @@ call_request_callback (struct feer_conn *c)
 
     trace("leaving request callback\n");
     PUTBACK;
-    FREETMPS;
-    LEAVE;
 
     if (request_cb_is_psgi && likely(returned >= 1)) {
         feersum_handle_psgi_response(aTHX_ c, psgi_response, 1); // can_recurse
@@ -1978,6 +1980,9 @@ call_request_callback (struct feer_conn *c)
 
     c->in_callback--;
     SvREFCNT_dec(c->self);
+
+    FREETMPS;
+    LEAVE;
 }
 
 static void

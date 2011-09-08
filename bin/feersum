@@ -37,8 +37,7 @@ else {
         server => 'Feersum',
         env => 'deployment',
         version_cb => sub {
-            require Feersum;
-            print "Feersum $Feersum::VERSION\n";
+            print "Feersum $Feersum::VERSION on EV $EV::VERSION\n";
         }
     );
     require Plack::Runner;
