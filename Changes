@@ -1,5 +1,19 @@
 Revision history for Perl extension Feersum
 
+1.400 Wed Sep  7 20:00:00 2011 -0700
+        Features
+        - Add flash socket policy support (au++)
+        Bugfixes
+        - mortal scalar leak (thanks bfg)
+        - 400s on incremental request parsing (GH#12 thanks danmcc)
+        Docs
+        - policy support and other tunables
+        - add some missed API
+        - mark the --pre-fork option as Experimental
+        Tests
+        - a bunch of author tests
+        - reduce the amount of parallelism in tests (makes them faster)
+
 1.202 Thu Jun 30 00:45:00 2011 -0700
         Fix double-plan test failures when Test::LeakTrace missing (au++)
 
