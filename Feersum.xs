@@ -27,6 +27,9 @@
 
 #if 0
 # define FLASH_SOCKET_POLICY_SUPPORT
+#endif
+
+#ifndef FLASH_SOCKET_POLICY
 # define FLASH_SOCKET_POLICY "<?xml version=\"1.0\"?>\n<!DOCTYPE cross-domain-policy SYSTEM \"/xml/dtds/cross-domain-policy.dtd\">\n<cross-domain-policy>\n<site-control permitted-cross-domain-policies=\"master-only\"/>\n<allow-access-from domain=\"*\" to-ports=\"*\" secure=\"false\"/>\n</cross-domain-policy>\n"
 #endif
 
