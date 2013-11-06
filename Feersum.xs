@@ -241,7 +241,7 @@ static void respond_with_server_error(struct feer_conn *c, const char *msg, STRL
 
 static void update_wbuf_placeholder(struct feer_conn *c, SV *sv, struct iovec *iov);
 static STRLEN add_sv_to_wbuf (struct feer_conn *c, SV *sv);
-static STRLEN add_const_to_wbuf (struct feer_conn *c, const char const *str, size_t str_len);
+static STRLEN add_const_to_wbuf (struct feer_conn *c, const char *str, size_t str_len);
 #define add_crlf_to_wbuf(c) add_const_to_wbuf(c,CRLF,2)
 static void finish_wbuf (struct feer_conn *c);
 static void add_chunk_sv_to_wbuf (struct feer_conn *c, SV *sv);
@@ -252,7 +252,7 @@ static bool str_eq(const char *a, int a_len, const char *b, int b_len);
 static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 static SV* fetch_av_normal (pTHX_ AV *av, I32 i);
 
-static const char const *http_code_to_msg (int code);
+static const char *http_code_to_msg (int code);
 static int prep_socket (int fd);
 
 static HV *feer_stash, *feer_conn_stash;
@@ -347,7 +347,7 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
         // reference.  TEMPs maybe behave in a similar way and are potentially
         // stealable.  If not stealing, we must make a copy.
 #ifdef FEERSUM_STEAL
-        if (SvFLAGS(sv) == SVs_PADTMP|SVf_POK|SVp_POK) {
+        if (SvFLAGS(sv) == (SVs_PADTMP|SVf_POK|SVp_POK)) {
             trace3("STEALING\n");
             SV *theif = newSV(0);
             sv_upgrade(theif, SVt_PV);
@@ -386,7 +386,7 @@ add_sv_to_wbuf(struct feer_conn *c, SV *sv)
 
 INLINE_UNLESS_DEBUG
 static STRLEN
-add_const_to_wbuf(struct feer_conn *c, const char const *str, size_t str_len)
+add_const_to_wbuf(struct feer_conn *c, const char *str, size_t str_len)
 {
     struct iomatrix *m = next_iomatrix(c);
     int idx = m->count++;
@@ -438,7 +438,7 @@ add_chunk_sv_to_wbuf(struct feer_conn *c, SV *sv)
     update_wbuf_placeholder(c, chunk, chunk_iov);
 }
 
-static const char const *
+static const char *
 http_code_to_msg (int code) {
     // http://en.wikipedia.org/wiki/List_of_HTTP_status_codes
     switch (code) {
