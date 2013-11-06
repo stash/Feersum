@@ -1,5 +1,10 @@
 Revision history for Perl extension Feersum
 
+1.401 Wed Nov  6 21:53:25 2013 +0800
+        Bugfixes
+        - Fix tests for newer Plack::Test (@gfx++)
+        - Suppress compilation warnings under clang. (@gfx++)
+
 1.400 Wed Sep  7 20:00:00 2011 -0700
         Features
         - Add flash socket policy support (au++)
