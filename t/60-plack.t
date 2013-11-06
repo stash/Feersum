@@ -2,7 +2,7 @@
 use strict;
 use Test::More;
 use blib;
-BEGIN { 
+BEGIN {
     $Plack::Test::Impl = 'Server';
     $ENV{PLACK_SERVER} = 'Feersum';
     $ENV{PLACK_ENV} = 'development';
@@ -12,7 +12,6 @@ BEGIN {
 }
 
 use Plack::Test;
-use Plack::Test::Server;
 use Plack::Loader;
 
 plan tests => 7;
@@ -29,7 +28,7 @@ loader_auto: {
     isa_ok $svr, 'Plack::Handler::Feersum', "auto-load";
 }
 
-Plack::Test::Server::test_psgi(
+test_psgi(
     app => sub {
         my $env = shift;
         ok $env->{'psgix.body.scalar_refs'}, "seems to be Feersum";
