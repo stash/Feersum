@@ -1559,7 +1559,7 @@ feersum_env(pTHX_ struct feer_conn *c)
 
     if (unlikely(c->expected_cl > 0)) {
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
-        hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));
+        hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));        
     }
     else if (request_cb_is_psgi) {
         // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
@@ -1996,6 +1996,12 @@ call_request_callback (struct feer_conn *c)
         feersum_handle_psgi_response(aTHX_ c, psgi_response, 1); // can_recurse
         SvREFCNT_dec(psgi_response);
     }
+
+    //fangyousong
+    if (request_cb_is_psgi && c->expected_cl > 0) {
+        SvREFCNT_dec(c->self);
+    }
+    
 
     c->in_callback--;
     SvREFCNT_dec(c->self);
