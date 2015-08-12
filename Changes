@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.403 Wed Aug 12 19:19:57 2015 +0800
+        Features
+        - Add OPTIONS method support (mgreter++)
+
 1.402 Fri Jul 31 12:02:30 2015 +0800
         Bugfixes
         - memeory leak if request method is POST (fangyousong++)
