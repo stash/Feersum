@@ -1210,6 +1210,10 @@ process_request_headers (struct feer_conn *c, int body_offset)
         // HTTP/1.1
         next_req_follows = 1;
     }
+    else if (likely(str_eq("OPTIONS", 7, req->method, req->method_len))) {
+        body_is_required = 1;
+        next_req_follows = 1;
+    }
     else if (likely(str_eq("POST", 4, req->method, req->method_len))) {
         body_is_required = 1;
     }
