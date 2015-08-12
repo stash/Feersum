@@ -139,7 +139,7 @@ struct feer_req {
     SV *buf;
     const char* method;
     size_t method_len;
-    const char* path; 
+    const char* path;
     size_t path_len;
     int minor_version;
     size_t num_headers;
@@ -312,7 +312,7 @@ next_iomatrix (struct feer_conn *c)
     else {
         // get the tail-end struct
         m = (struct iomatrix *)c->wbuf_rinq->prev->ref;
-        trace3("next_iomatrix(%d): tail, count=%d, offset=%d\n", 
+        trace3("next_iomatrix(%d): tail, count=%d, offset=%d\n",
             c->fd, m->count, m->offset);
         if (m->count >= FEERSUM_IOMATRIX_SIZE) {
             add_iomatrix = 1;
@@ -327,7 +327,7 @@ next_iomatrix (struct feer_conn *c)
         rinq_push(&c->wbuf_rinq, m);
     }
 
-    trace3("next_iomatrix(%d): end, count=%d, offset=%d\n", 
+    trace3("next_iomatrix(%d): end, count=%d, offset=%d\n",
         c->fd, m->count, m->offset);
     return m;
 }
@@ -836,7 +836,7 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
         // callback didn't write anything:
         if (unlikely(!c->wbuf_rinq)) goto try_write_again;
     }
-    
+
 try_write_again_immediately:
     m = (struct iomatrix *)c->wbuf_rinq->ref;
 #if DEBUG >= 2
@@ -861,7 +861,7 @@ try_write_again_immediately:
         change_responding_state(c, RESPOND_SHUTDOWN);
         goto try_write_finished;
     }
-    
+
     for (i = m->offset; i < m->count && wrote > 0; i++) {
         struct iovec *v = &m->iov[i];
         if (unlikely(v->iov_len > wrote)) {
@@ -952,7 +952,7 @@ try_parse_http(struct feer_conn *c, size_t last_read)
     return phr_parse_request(SvPVX(c->rbuf), SvCUR(c->rbuf),
         &req->method, &req->method_len,
         &req->path, &req->path_len, &req->minor_version,
-        req->headers, &req->num_headers, 
+        req->headers, &req->num_headers,
         (SvCUR(c->rbuf)-last_read));
 }
 
@@ -1233,7 +1233,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
     if (body_is_required)
         trace2("body is required fd=%d, boff=%d\n",c->fd,body_offset);
 #endif
-    
+
     // a body or follow-on data potentially follows the headers. Let feer_req
     // retain its pointers into rbuf and make a new scalar for more body data.
     STRLEN from_len;
@@ -1502,7 +1502,7 @@ feersum_init_tmpl_env(pTHX)
     hv_stores(e, "HTTP_CACHE_CONTROL", &PL_sv_placeholder);
 
     hv_stores(e, "psgix.io", &PL_sv_placeholder);
-    
+
     feersum_tmpl_env = e;
 }
 
@@ -1559,7 +1559,7 @@ feersum_env(pTHX_ struct feer_conn *c)
 
     if (unlikely(c->expected_cl > 0)) {
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
-        hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));        
+        hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));
     }
     else if (request_cb_is_psgi) {
         // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
@@ -1575,7 +1575,7 @@ feersum_env(pTHX_ struct feer_conn *c)
     {
         const char *qpos = r->path;
         SV *pinfo, *qstr;
-        
+
         // rather than memchr, for speed:
         while (*qpos != '?' && qpos < r->path + r->path_len)
             qpos++;
@@ -1697,7 +1697,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         ptr = http_code_to_msg(code);
         message = sv_2mortal(newSVpvf("%"UVuf" %s",code,ptr));
     }
-    
+
     // don't generate or strip Content-Length headers for 304 or 1xx
     c->auto_cl = (code == 304 || (100 <= code && code <= 199)) ? 0 : 1;
 
@@ -1724,7 +1724,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
             unlikely(str_case_eq("content-length",14,hp,hlen)))
         {
             trace("ignoring content-length header in the response\n");
-            continue; 
+            continue;
         }
 
         add_sv_to_wbuf(c, *hdr);
@@ -2001,7 +2001,7 @@ call_request_callback (struct feer_conn *c)
     if (request_cb_is_psgi && c->expected_cl > 0) {
         SvREFCNT_dec(c->self);
     }
-    
+
 
     c->in_callback--;
     SvREFCNT_dec(c->self);
@@ -2015,7 +2015,7 @@ call_poll_callback (struct feer_conn *c, bool is_write)
 {
     dTHX;
     dSP;
-    
+
     SV *cb = (is_write) ? c->poll_write_cb : NULL;
 
     if (unlikely(cb == NULL)) return;
@@ -2179,7 +2179,7 @@ psgix_io_svt_get (pTHX_ SV *sv, MAGIC *mg)
     return 0;
 }
 
-MODULE = Feersum		PACKAGE = Feersum		
+MODULE = Feersum		PACKAGE = Feersum
 
 PROTOTYPES: ENABLE
 
@@ -2350,7 +2350,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     char *buf_ptr, *src_ptr;
 
     // optimizes for the "read everything" case.
-    
+
     if (unlikely(items == 4) && SvOK(ST(3)) && SvIOK(ST(3)))
         offset = SvIV(ST(3));
     else
@@ -2385,7 +2385,7 @@ read (feer_conn_handle *hdl, SV *buf, size_t len, ...)
     if (unlikely(offset < 0))
         offset = (-offset >= c->received_cl) ? 0 : c->received_cl + offset;
 
-    if (unlikely(len + offset > src_len)) 
+    if (unlikely(len + offset > src_len))
         len = src_len - offset;
 
     trace("read fd=%d : normalized len=%"Sz_uf" off=%"Ssz_df" src_len=%"Sz_uf"\n",
@@ -2731,7 +2731,7 @@ DESTROY (struct feer_conn *c)
     }
 }
 
-MODULE = Feersum	PACKAGE = Feersum		
+MODULE = Feersum	PACKAGE = Feersum
 
 BOOT:
     {
