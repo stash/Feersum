@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.402 Fri Jul 31 12:02:30 2015 +0800
+        Bugfixes
+        - memeory leak if request method is POST (fangyousong++)
+
 1.401 Wed Nov  6 21:53:25 2013 +0800
         Bugfixes
         - Fix tests for newer Plack::Test (@gfx++)

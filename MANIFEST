@@ -57,3 +57,5 @@ t/Utils.pm
 typemap
 xt/50-psgi-simple-stress.t
 t/perlcriticrc
+META.yml                                 Module YAML meta-data (added by MakeMaker)
+META.json                                Module JSON meta-data (added by MakeMaker)
