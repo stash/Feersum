@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.404 Tue Nov  1 22:52:42 2016 +0800
+        Features
+        - Unix socket support (hoytech++)
+
 1.403 Wed Aug 12 19:19:57 2015 +0800
         Features
         - Add OPTIONS method support (mgreter++)
