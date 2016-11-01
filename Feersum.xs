@@ -253,7 +253,7 @@ static bool str_case_eq(const char *a, int a_len, const char *b, int b_len);
 static SV* fetch_av_normal (pTHX_ AV *av, I32 i);
 
 static const char *http_code_to_msg (int code);
-static int prep_socket (int fd);
+static int prep_socket (int fd, int is_tcp);
 
 static HV *feer_stash, *feer_conn_stash;
 static HV *feer_conn_reader_stash = NULL, *feer_conn_writer_stash = NULL;
@@ -520,7 +520,7 @@ http_code_to_msg (int code) {
 }
 
 static int
-prep_socket(int fd)
+prep_socket(int fd, int is_tcp)
 {
     int flags;
 
@@ -529,10 +529,12 @@ prep_socket(int fd)
     if (unlikely(fcntl(fd, F_SETFL, flags) < 0))
         return -1;
 
-    // flush writes immediately
-    flags = 1;
-    if (unlikely(setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int))))
-        return -1;
+    if (likely(is_tcp)) {
+        // flush writes immediately
+        flags = 1;
+        if (unlikely(setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int))))
+            return -1;
+    }
 
     // handle URG data inline
     flags = 1;
@@ -1158,8 +1160,13 @@ accept_cb (EV_P_ ev_io *w, int revents)
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
 
+        int is_tcp = 1;
+#ifdef AF_UNIX
+        if (unlikely(sa_buf.ss_family == AF_UNIX)) is_tcp = 0;
+#endif
+
         assert(sa_len <= sizeof(struct sockaddr_storage));
-        if (unlikely(prep_socket(fd))) {
+        if (unlikely(prep_socket(fd, is_tcp))) {
             perror("prep_socket");
             trouble("prep_socket failed for %d\n", fd);
             close(fd);
@@ -1550,6 +1557,14 @@ feersum_env(pTHX_ struct feer_conn *c)
         addr = newSV(INET6_ADDRSTRLEN);
         str_addr = inet_ntop(AF_INET6,&in6->sin6_addr,SvPVX(addr),INET6_ADDRSTRLEN);
         s_port = ntohs(in6->sin6_port);
+    }
+#endif
+#ifdef AF_UNIX
+    else if (c->sa->sa_family == AF_UNIX) {
+        str_addr = "unix";
+        addr = newSV(sizeof(str_addr));
+        memcpy(SvPVX(addr), str_addr, sizeof(str_addr));
+        s_port = 0;
     }
 #endif
 
