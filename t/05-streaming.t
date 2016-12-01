@@ -5,7 +5,7 @@ use constant HARDER => $ENV{RELEASE_TESTING} ? 10 : 1;
 use constant CLIENTS_11 => HARDER * 2;
 use constant CLIENTS_10 => HARDER * 2;
 use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
-use Test::More tests => 7 + 21 * CLIENTS_11 + 22 * CLIENTS_10;
+use Test::More tests => 7 + 22 * CLIENTS_11 + 23 * CLIENTS_10;
 use Test::Fatal;
 use lib 't'; use Utils;
 
@@ -45,6 +45,7 @@ $evh->request_handler(sub {
     $started++;
     isa_ok($w, 'Feersum::Connection::Writer', "got a writer $cnum");
     isa_ok($w, 'Feersum::Connection::Handle', "... it's a handle $cnum");
+    ok $w->connected, "connected method works on write handle";
     my $n = 0;
     my $wrote_third = 0;
     my $t; $t = AE::timer rand()/5,rand()/5, sub {
