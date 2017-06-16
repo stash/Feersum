@@ -14,6 +14,14 @@ sub assign_request_handler {
     return;
 }
 
+sub _prepare {
+    my $self = shift;
+    $self->SUPER::_prepare(@_);
+    $self->{server_ready}->($self)
+        if $self->{server_ready};
+    return;
+}
+
 1;
 __END__
 
