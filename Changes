@@ -1,5 +1,12 @@
 Revision history for Perl extension Feersum
 
+1.405 Sun Jun 18 00:55:56 2017 +0800
+        Features
+        - Handle server_ready option in plack handler (haarg++)
+
+        Bugfixes
+        - Handle POST with empty content (hoytech++)
+
 1.404 Tue Nov  1 22:52:42 2016 +0800
         Features
         - Unix socket support (hoytech++)
