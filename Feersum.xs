@@ -1576,10 +1576,10 @@ feersum_env(pTHX_ struct feer_conn *c)
     hv_stores(e, "REMOTE_ADDR", addr);
     hv_stores(e, "REMOTE_PORT", port);
 
-    if (unlikely(c->expected_cl > 0)) {
+    // if (unlikely(c->expected_cl > 0)) { /* #23 - POST can still have empty content */
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
         hv_stores(e, "psgi.input", new_feer_conn_handle(aTHX_ c,0));
-    }
+    // }
     else if (request_cb_is_psgi) {
         // TODO: make psgi.input a valid, but always empty stream for PSGI mode?
     }
