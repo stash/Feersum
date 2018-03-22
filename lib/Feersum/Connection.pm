@@ -84,7 +84,7 @@ For a response with a Content-Length header:
 
 =head1 DESCRIPTION
 
-Encapsulates an HTTP connection to Feersum.  It's roughly analagous to an
+Encapsulates an HTTP connection to Feersum.  It's roughly analogous to an
 C<Apache::Request> or C<Apache2::Connection> object, but differs significantly
 in functionality.
 
