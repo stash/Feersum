@@ -1,6 +1,7 @@
 package Feersum::Connection::Handle;
 use warnings;
 use strict;
+use Carp qw/croak/;
 
 sub new {
     Carp::croak "Cannot instantiate Feersum::Connection::Handles directly";
