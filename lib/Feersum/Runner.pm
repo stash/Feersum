@@ -178,7 +178,7 @@ __END__
 
 =head1 NAME
 
-Feersum::Runner
+Feersum::Runner - feersum script core
 
 =head1 SYNOPSIS
 
