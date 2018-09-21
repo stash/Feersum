@@ -88,6 +88,7 @@ WriteMakefile(ev_args(
     PREREQ_PM => {
         'EV' => 4.00,
         'Scalar::Util' => 1.19,
+        'HTTP::Entity::Parser' => '0.20',
         map { $_ => $want{$_} } grep { !/^Test::/ && $have{$_} } keys %want
     },
     META_MERGE => {
