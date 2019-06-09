@@ -20,6 +20,7 @@ use Plack::Builder;
 use Plack::App::File;
 use Plack::App::Cascade;
 use Plack::Request;
+use Plack::LWPish;
 use Test::TCP;
 
 via_map: test_psgi(
@@ -57,6 +58,10 @@ cascaded: test_psgi(
 );
 
 via_redirect: test_psgi(
+    # these two tests fail randomly on some platforms with keep_alive on.
+    # from the pod...
+    #   BUGS - Keep-alive is ignored completely.
+    ua => Plack::LWPish->new( no_proxy => [qw/127.0.0.1/], keep_alive => 0 ),
     app => builder {
         mount '/static' => Plack::App::Cascade->new(apps => [
             Plack::App::File->new(root => 'notfound')->to_app,
