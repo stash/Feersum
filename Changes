@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.406 Sun Jun  9 16:17:30 2019 +0800
+        Bugfixes
+        - Fix interim test failures (snakpak++)
+
 1.405 Sun Jun 18 00:55:56 2017 +0800
         Features
         - Handle server_ready option in plack handler (haarg++)
