@@ -48,7 +48,10 @@ sub _prepare {
         require IO::Socket::UNIX;
         unlink $listen if -S $listen;
         my $saved = umask(0);
-        $sock = IO::Socket::UNIX->new(Local => $listen, Listen => SOMAXCONN);
+        $sock = IO::Socket::UNIX->new(
+           Local => $listen,
+           Listen => SOMAXCONN,
+        );
         umask($saved);
         croak "couldn't bind to socket: $!" unless $sock;
         $sock->blocking(0) || croak "couldn't unblock socket: $!";
