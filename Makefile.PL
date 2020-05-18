@@ -49,6 +49,7 @@ my %want = (
     'JSON::XS'        => 2.0,
     'Test::LeakTrace' => 0.13,
     'Test::TCP'       => 1.12,
+    'Test::SharedFork'=> 0.25,
 );
 my %have;
 
