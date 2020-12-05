@@ -1,5 +1,12 @@
 Revision history for Perl extension Feersum
 
+1.410 Sat Dec  5 14:32:22 2020 +0800
+        Features
+        - Add unix domain socket support (vividsnow++)
+         # for example:
+         plackup -E production -l /tmp/app.sock -s Feersum --pre-fork N app.psgi
+         feersum --native --listen /tmp/app.sock --pre-fork N ./app.feersum
+
 1.407 Sun Jun  9 16:17:30 2019 +0800
         Bugfixes
         - Fix interim test failures (snakpak++)

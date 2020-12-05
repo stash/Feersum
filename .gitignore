@@ -12,3 +12,4 @@ pm_to_blib
 Feersum-*.tar.gz
 MYMETA.yml
 .DS_Store
+MYMETA.json
