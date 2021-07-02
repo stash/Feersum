@@ -18,6 +18,9 @@ $VERSION = eval $VERSION; ## no critic (StringyEval, ConstantVersion)
 
 our $INSTANCE;
 
+use Exporter 'import';
+our @EXPORT_OK = qw(HEADER_NORM_UPCASE HEADER_NORM_LOCASE HEADER_NORM_LOCASE_DASH);
+
 sub new {
     unless ($INSTANCE) {
         $INSTANCE = bless {}, __PACKAGE__;
@@ -55,7 +58,7 @@ Feersum - A PSGI engine for Perl based on EV/libev
     use Feersum;
     my $ngn = Feersum->endjinn; # singleton
     $ngn->use_socket($io_socket);
-    
+
     # register a PSGI handler
     $ngn->psgi_request_handler(sub {
         my $env = shift;
@@ -63,7 +66,7 @@ Feersum - A PSGI engine for Perl based on EV/libev
             ['Content-Type'=>'text/plain'],
             ["You win one cryptosphere!\n"]];
     });
-    
+
     # register a Feersum handler:
     $ngn->request_handler(sub {
         my $req = shift;
@@ -269,7 +272,7 @@ the streaming callback B<MUST NOT> be called for the same reason.
     my $env = shift;
     return sub {
         my $fh = $env->{'psgix.io'};
-        syswrite $fh, 
+        syswrite $fh,
     };
 
 =back
@@ -545,7 +548,7 @@ value lower will use slightly less memory per connection at the cost of speed
 (and vice-versa for raising the value).  The effect is most noticeable when
 you're app is making a lot of sparce writes.  The default of 64 generally
 keeps usage under 4k per connection on full 64-bit platforms when you take
-into account the other connection and request structures. 
+into account the other connection and request structures.
 
 B<NOTE>: FEERSUM_IOMATRIX_SIZE cannot exceed your OS's defined IOV_MAX or
 UIO_MAXIOV constant.  Solaris defines IOV_MAX to be 16, making it the default
@@ -584,7 +587,7 @@ limit the entity size.
 
 Although not explicitly a bug, the following may cause undesirable behavior.
 Feersum will have set SIGPIPE to be ignored by the time your handler gets
-called.  If your handler needs to detect SIGPIPE, be sure to do a 
+called.  If your handler needs to detect SIGPIPE, be sure to do a
 C<local $SIG{PIPE} = ...> (L<perlipc>) to make it active just during the
 necessary scope.
 

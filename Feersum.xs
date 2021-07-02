@@ -139,11 +139,15 @@ struct feer_req {
     SV *buf;
     const char* method;
     size_t method_len;
-    const char* path;
-    size_t path_len;
+    const char* uri;
+    size_t uri_len;
     int minor_version;
     size_t num_headers;
     struct phr_header headers[MAX_HEADERS];
+    SV* path;
+    SV* query;
+    SV* addr;
+    SV* port;
 };
 
 enum feer_respond_state {
@@ -204,13 +208,34 @@ struct feer_conn {
     int auto_cl:1;
 };
 
+enum feer_header_norm_style {
+    HEADER_NORM_SKIP = 0,
+    HEADER_NORM_UPCASE_DASH = 1,
+    HEADER_NORM_LOCASE_DASH = 2,
+    HEADER_NORM_UPCASE = 3,
+    HEADER_NORM_LOCASE = 4
+};
+
 typedef struct feer_conn feer_conn_handle; // for typemap
 
 #define dCONN struct feer_conn *c = (struct feer_conn *)w->data
 #define IsArrayRef(_x) (SvROK(_x) && SvTYPE(SvRV(_x)) == SVt_PVAV)
 #define IsCodeRef(_x) (SvROK(_x) && SvTYPE(SvRV(_x)) == SVt_PVCV)
 
+static SV* feersum_env_method(pTHX_ struct feer_req *r);
+static SV* feersum_env_uri(pTHX_ struct feer_req *r);
+static SV* feersum_env_protocol(pTHX_ struct feer_req *r);
+static void feersum_set_path_and_query(pTHX_ struct feer_req *r);
+static void feersum_set_remote_info(pTHX_ struct feer_req *r, struct sockaddr *sa);
 static HV* feersum_env(pTHX_ struct feer_conn *c);
+static SV* feersum_env_path(pTHX_ struct feer_req *r);
+static SV* feersum_env_query(pTHX_ struct feer_req *r);
+static HV* feersum_env_headers(pTHX_ struct feer_req *r, int norm);
+static SV* feersum_env_header(pTHX_ struct feer_req *r, SV* name);
+static SV* feersum_env_addr(pTHX_ struct feer_conn *c);
+static SV* feersum_env_port(pTHX_ struct feer_conn *c);
+static ssize_t feersum_env_content_length(pTHX_ struct feer_conn *c);
+static SV* feersum_env_io(pTHX_ struct feer_conn *c);
 static void feersum_start_response
     (pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
 static size_t feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
@@ -528,7 +553,6 @@ prep_socket(int fd, int is_tcp)
     flags = O_NONBLOCK;
     if (unlikely(fcntl(fd, F_SETFL, flags) < 0))
         return -1;
-
     if (likely(is_tcp)) {
         // flush writes immediately
         flags = 1;
@@ -953,7 +977,7 @@ try_parse_http(struct feer_conn *c, size_t last_read)
 
     return phr_parse_request(SvPVX(c->rbuf), SvCUR(c->rbuf),
         &req->method, &req->method_len,
-        &req->path, &req->path_len, &req->minor_version,
+        &req->uri, &req->uri_len, &req->minor_version,
         req->headers, &req->num_headers,
         (SvCUR(c->rbuf)-last_read));
 }
@@ -1155,7 +1179,6 @@ accept_cb (EV_P_ ev_io *w, int revents)
     while (1) {
         sa_len = sizeof(struct sockaddr_storage);
         errno = 0;
-
         int fd = accept(w->fd, (struct sockaddr *)&sa_buf, &sa_len);
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
@@ -1461,6 +1484,107 @@ needs_decode:
     SvCUR_set(sv, decoded-ptr);
 }
 
+INLINE_UNLESS_DEBUG void
+feersum_set_remote_info(pTHX_ struct feer_req *r, struct sockaddr *sa)
+{
+    switch (sa->sa_family) {
+        case AF_INET:
+            r->addr = newSV(INET_ADDRSTRLEN);
+            SvCUR_set(r->addr, INET_ADDRSTRLEN);
+            struct sockaddr_in *in = (struct sockaddr_in *)sa;
+            inet_ntop(AF_INET, &in->sin_addr, SvPVX(r->addr), INET_ADDRSTRLEN);
+            SvPOK_on(r->addr);
+            SvCUR_set(r->addr, strlen(SvPVX(r->addr)));
+            r->port = newSViv(ntohs(in->sin_port));
+            break;
+#ifdef AF_INET6
+        case AF_INET6:
+            r->addr = newSV(INET6_ADDRSTRLEN);
+            SvCUR_set(r->addr, INET6_ADDRSTRLEN);
+            struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)sa;
+            inet_ntop(AF_INET6, &in6->sin6_addr, SvPVX(r->addr), INET6_ADDRSTRLEN);
+            SvPOK_on(r->addr);
+            SvCUR_set(r->addr, strlen(SvPVX(r->addr)));
+            r->port = newSViv(ntohs(in6->sin6_port));
+            break;
+#endif
+#ifdef AF_UNIX
+        case AF_UNIX:
+            r->addr = newSVpvs("unix");
+            r->port = newSViv(0);
+            break;
+#endif
+        default:
+            r->addr = newSVpvs("unspec");
+            r->port = newSViv(0);
+            break;
+    }
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_method(pTHX_ struct feer_req *r)
+{
+    return newSVpvn(r->method, r->method_len);
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_uri(pTHX_ struct feer_req *r)
+{
+    return newSVpvn(r->uri, r->uri_len);
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_protocol(pTHX_ struct feer_req *r)
+{
+    return (r->minor_version == 1) ? psgi_serv11 : psgi_serv10;
+}
+
+INLINE_UNLESS_DEBUG static void
+feersum_set_path_and_query(pTHX_ struct feer_req *r)
+{
+    const char *qpos = r->uri;
+    while (*qpos != '?' && qpos < r->uri + r->uri_len) qpos++;
+    if (*qpos == '?') {
+        r->path = newSVpvn(r->uri, (qpos - r->uri));
+        qpos++;
+        r->query = newSVpvn(qpos, r->uri_len - (qpos - r->uri));
+    } else {
+        r->path = feersum_env_uri(r);
+        r->query = newSVpvs("");
+    }
+    uri_decode_sv(r->path);
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_path(pTHX_ struct feer_req *r)
+{
+    if (unlikely(!r->path)) feersum_set_path_and_query(aTHX_ r);
+    return r->path;
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_query(pTHX_ struct feer_req *r)
+{
+    if (unlikely(!r->query)) feersum_set_path_and_query(aTHX_ r);
+    return r->query;
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_addr(pTHX_ struct feer_conn *c)
+{
+    struct feer_req *r = c->req;
+    if (unlikely(!r->addr)) feersum_set_remote_info(aTHX_ r, c->sa);
+    return r->addr;
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_port(pTHX_ struct feer_conn *c)
+{
+    struct feer_req *r = c->req;
+    if (unlikely(!r->port)) feersum_set_remote_info(aTHX_ r, c->sa);
+    return r->port;
+}
+
 static void
 feersum_init_tmpl_env(pTHX)
 {
@@ -1530,51 +1654,17 @@ feersum_env(pTHX_ struct feer_conn *c)
     e = newHVhv(feersum_tmpl_env);
 
     trace("generating header (fd %d) %.*s\n",
-        c->fd, (int)r->path_len, r->path);
+        c->fd, (int)r->uri_len, r->uri);
 
-    SV *path = newSVpvn(r->path, r->path_len);
-    hv_stores(e, "SERVER_NAME", newSVsv(feer_server_name));
-    hv_stores(e, "SERVER_PORT", newSVsv(feer_server_port));
-    hv_stores(e, "REQUEST_URI", path);
-    hv_stores(e, "REQUEST_METHOD", newSVpvn(r->method,r->method_len));
-    hv_stores(e, "SERVER_PROTOCOL", (r->minor_version == 1) ?
-        newSVsv(psgi_serv11) : newSVsv(psgi_serv10));
+    hv_stores(e, "SERVER_NAME", SvREFCNT_inc_simple(feer_server_name));
+    hv_stores(e, "SERVER_PORT", SvREFCNT_inc_simple(feer_server_port));
+    hv_stores(e, "REQUEST_URI", feersum_env_uri(aTHX_ r));
+    hv_stores(e, "REQUEST_METHOD", feersum_env_method(aTHX_ r));
+    hv_stores(e, "SERVER_PROTOCOL", SvREFCNT_inc_simple_NN(feersum_env_protocol(aTHX_ r)));
 
-    SV *addr = &PL_sv_undef;
-    SV *port = &PL_sv_undef;
-    const char *str_addr;
-    unsigned short s_port;
-
-    if (c->sa->sa_family == AF_INET) {
-        struct sockaddr_in *in = (struct sockaddr_in *)c->sa;
-        addr = newSV(INET_ADDRSTRLEN);
-        str_addr = inet_ntop(AF_INET,&in->sin_addr,SvPVX(addr),INET_ADDRSTRLEN);
-        s_port = ntohs(in->sin_port);
-    }
-#ifdef AF_INET6
-    else if (c->sa->sa_family == AF_INET6) {
-        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)c->sa;
-        addr = newSV(INET6_ADDRSTRLEN);
-        str_addr = inet_ntop(AF_INET6,&in6->sin6_addr,SvPVX(addr),INET6_ADDRSTRLEN);
-        s_port = ntohs(in6->sin6_port);
-    }
-#endif
-#ifdef AF_UNIX
-    else if (c->sa->sa_family == AF_UNIX) {
-        str_addr = "unix";
-        addr = newSV(sizeof(str_addr));
-        memcpy(SvPVX(addr), str_addr, sizeof(str_addr));
-        s_port = 0;
-    }
-#endif
-
-    if (likely(str_addr)) {
-        SvCUR(addr) = strlen(SvPVX(addr));
-        SvPOK_on(addr);
-        port = newSViv(s_port);
-    }
-    hv_stores(e, "REMOTE_ADDR", addr);
-    hv_stores(e, "REMOTE_PORT", port);
+    if (likely(!r->addr)) feersum_set_remote_info(aTHX_ r, c->sa);
+    hv_stores(e, "REMOTE_ADDR", SvREFCNT_inc_simple_NN(r->addr));
+    hv_stores(e, "REMOTE_PORT", SvREFCNT_inc_simple_NN(r->port));
 
     if (unlikely(c->expected_cl > 0)) {
         hv_stores(e, "CONTENT_LENGTH", newSViv(c->expected_cl));
@@ -1590,29 +1680,9 @@ feersum_env(pTHX_ struct feer_conn *c)
         sv_magicext(fake_fh, selfref, PERL_MAGIC_ext, &psgix_io_vtbl, NULL, 0);
         hv_stores(e, "psgix.io", fake_fh);
     }
-
-    {
-        const char *qpos = r->path;
-        SV *pinfo, *qstr;
-
-        // rather than memchr, for speed:
-        while (*qpos != '?' && qpos < r->path + r->path_len)
-            qpos++;
-
-        if (*qpos == '?') {
-            pinfo = newSVpvn(r->path, (qpos - r->path));
-            qpos++;
-            qstr = newSVpvn(qpos, r->path_len - (qpos - r->path));
-        }
-        else {
-            pinfo = newSVsv(path);
-            qstr = NULL; // use template default
-        }
-        uri_decode_sv(pinfo);
-        hv_stores(e, "PATH_INFO", pinfo);
-        if (qstr != NULL) // hv template defaults QUERY_STRING to empty
-            hv_stores(e, "QUERY_STRING", qstr);
-    }
+    if (likely(!r->path)) feersum_set_path_and_query(aTHX_ r);
+    hv_stores(e, "PATH_INFO", SvREFCNT_inc_simple_NN(r->path));
+    hv_stores(e, "QUERY_STRING", SvREFCNT_inc_simple_NN(r->query));
 
     SV *val = NULL;
     char *kbuf;
@@ -1671,6 +1741,74 @@ feersum_env(pTHX_ struct feer_conn *c)
     Safefree(kbuf);
 
     return e;
+}
+
+#define NORM_HEADER(_str) \
+char *k = kbuf;\
+for (j = 0; j < hdr->name_len; j++) { char n = hdr->name[j]; *k++ = _str; }
+
+#define COPY_HEADER(_norm) \
+for (i = 0; i < r->num_headers; i++) {\
+    struct phr_header *hdr = &(r->headers[i]);\
+    if (unlikely(hdr->name == NULL && val != NULL)) {\
+        sv_catpvn(*val, hdr->value, hdr->value_len);\
+        continue;\
+    }\
+    _norm\
+    if (unlikely(kbuflen < hdr->name_len)) { kbuflen = hdr->name_len; kbuf = Renew(kbuf, kbuflen, char); }\
+    SV** val = hv_fetch(e, kbuf, hdr->name_len, 1);\
+    if (unlikely(SvPOK(*val))) {\
+        sv_catpvn(*val, ", ", 2);\
+        sv_catpvn(*val, hdr->value, hdr->value_len);\
+    } else {\
+        sv_setpvn(*val, hdr->value, hdr->value_len);\
+    }\
+}\
+break;
+
+INLINE_UNLESS_DEBUG static HV*
+feersum_env_headers(pTHX_ struct feer_req *r, int norm)
+{
+    int i; int j; char* n; HV* e;
+    e = newHV();
+    SV** val;
+    char *kbuf;
+    size_t kbuflen = 64;
+    Newx(kbuf, kbuflen, char);
+    switch (norm) {
+        case HEADER_NORM_SKIP:
+            COPY_HEADER(NORM_HEADER(n))
+        case HEADER_NORM_LOCASE:
+            COPY_HEADER(NORM_HEADER(tolower(n)))
+        case HEADER_NORM_UPCASE:
+            COPY_HEADER(NORM_HEADER(toupper(n)))
+        case HEADER_NORM_LOCASE_DASH:
+            COPY_HEADER(NORM_HEADER((n == '-') ? '_' : tolower(n)))
+        case HEADER_NORM_UPCASE_DASH:
+            COPY_HEADER(NORM_HEADER((n == '-') ? '_' : toupper(n)))
+    }
+    Safefree(kbuf);
+    return e;
+}
+
+INLINE_UNLESS_DEBUG static SV*
+feersum_env_header(pTHX_ struct feer_req *r, SV *name)
+{
+    int i;
+    for (i = 0; i < r->num_headers; i++) {
+        struct phr_header *hdr = &(r->headers[i]);
+        if (hdr->name == NULL) continue;
+        if (unlikely(str_case_eq(SvPVX(name), SvCUR(name), hdr->name, hdr->name_len))) {
+            return newSVpvn(hdr->value, hdr->value_len);
+        }
+    }
+    return &PL_sv_undef;
+}
+
+INLINE_UNLESS_DEBUG static ssize_t
+feersum_env_content_length(pTHX_ struct feer_conn *c)
+{
+    return c->expected_cl;
 }
 
 static void
@@ -2684,6 +2822,105 @@ env (struct feer_conn *c)
     OUTPUT:
         RETVAL
 
+SV *
+method (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = feersum_env_method(aTHX_ r);
+    OUTPUT:
+        RETVAL
+
+SV *
+uri (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = feersum_env_uri(aTHX_ r);
+    OUTPUT:
+        RETVAL
+
+SV *
+protocol (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = SvREFCNT_inc_simple_NN(feersum_env_protocol(aTHX_ r));
+    OUTPUT:
+        RETVAL
+
+SV *
+path (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = SvREFCNT_inc_simple_NN(feersum_env_path(aTHX_ r));
+    OUTPUT:
+        RETVAL
+
+SV *
+query (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = SvREFCNT_inc_simple_NN(feersum_env_query(aTHX_ r));
+    OUTPUT:
+        RETVAL
+
+SV *
+remote_address (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        RETVAL = SvREFCNT_inc_simple_NN(feersum_env_addr(aTHX_ c));
+    OUTPUT:
+        RETVAL
+
+SV *
+remote_port (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        RETVAL = SvREFCNT_inc_simple_NN(feersum_env_port(aTHX_ c));
+    OUTPUT:
+        RETVAL
+
+ssize_t
+content_length (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        RETVAL = feersum_env_content_length(aTHX_ c);
+    OUTPUT:
+        RETVAL
+
+SV *
+input (struct feer_conn *c)
+    PROTOTYPE: $
+    CODE:
+        if (likely(c->expected_cl > 0)) {
+            RETVAL = new_feer_conn_handle(aTHX_ c, 0);
+        } else {
+            RETVAL = &PL_sv_undef;
+        }
+    OUTPUT:
+        RETVAL
+
+SV *
+headers (struct feer_conn *c, int norm = 0)
+    PROTOTYPE: $;$
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = newRV_noinc((SV*)feersum_env_headers(aTHX_ r, norm));
+    OUTPUT:
+        RETVAL
+
+SV *
+header (struct feer_conn *c, SV *name)
+    PROTOTYPE: $$
+    CODE:
+        struct feer_req *r = c->req;
+        RETVAL = feersum_env_header(aTHX_ r, name);
+    OUTPUT:
+        RETVAL
+
 int
 fileno (struct feer_conn *c)
     CODE:
@@ -2720,6 +2957,10 @@ DESTROY (struct feer_conn *c)
 
     if (likely(c->req)) {
         if (c->req->buf) SvREFCNT_dec(c->req->buf);
+        if (likely(c->req->path)) SvREFCNT_dec(c->req->path);
+        if (likely(c->req->query)) SvREFCNT_dec(c->req->query);
+        if (likely(c->req->addr)) SvREFCNT_dec(c->req->addr);
+        if (likely(c->req->port)) SvREFCNT_dec(c->req->port);
         Safefree(c->req);
     }
 
@@ -2773,6 +3014,10 @@ BOOT:
 
         Zero(&psgix_io_vtbl, 1, MGVTBL);
         psgix_io_vtbl.svt_get = psgix_io_svt_get;
+        newCONSTSUB(feer_stash, "HEADER_NORM_UPCASE", newSViv(HEADER_NORM_UPCASE));
+        newCONSTSUB(feer_stash, "HEADER_NORM_LOCASE", newSViv(HEADER_NORM_LOCASE));
+        newCONSTSUB(feer_stash, "HEADER_NORM_UPCASE_DASH", newSViv(HEADER_NORM_UPCASE_DASH));
+        newCONSTSUB(feer_stash, "HEADER_NORM_LOCASE_DASH", newSViv(HEADER_NORM_LOCASE_DASH));
 
         trace3("Feersum booted, iomatrix %lu "
                 "(IOV_MAX=%u, FEERSUM_IOMATRIX_SIZE=%u), "
