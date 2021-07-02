@@ -14,3 +14,5 @@ T_feer_conn_handle
 OUTPUT
 T_feer_conn
    $arg = feer_conn_2sv($var);
+
+AV* T_AVREF_REFCOUNT_FIXED

@@ -150,6 +150,60 @@ Register a guard to be triggered when the response is completely sent and the
 socket is closed.  A "guard" in this context is some object that will do
 something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
 
+=item C<< my $env = $req->method >>
+
+req method (GET/POST..) (psgi REQUEST_METHOD)
+
+=item C<< my $env = $req->uri >>
+
+full request uri (psgi REQUEST_URI)
+
+=item C<< my $env = $req->protocol >>
+
+protocol (psgi SERVER_PROTOCOL)
+
+=item C<< my $env = $req->path >>
+
+percent decoded request path (psgi PATH_INFO)
+
+=item C<< my $env = $req->query >>
+
+request query (psgi QUERY_STRING)
+
+=item C<< my $env = $req->content_length >>
+
+body content lenght (psgi CONTENT_LENGTH)
+
+=item C<< my $env = $req->input >>
+
+input body handler (psgi.input), it is advised to close it after read is done
+
+=item C<< my $env = $req->headers([normalization_style]) >>
+
+an array of headers if form of [name, value, name, value, ...]
+
+normalization_style is one of:
+
+0 - skip normalization (default)
+HEADER_NORM_LOCASE - "content-type"
+HEADER_NORM_UPCASE - "CONTENT-TYPE"
+HEADER_NORM_LOCASE_DASH - "content_type"
+HEADER_NORM_UPCASE_DASH - "CONTENT_TYPE" (like PSGI, but without "HTTP_" prefix)
+
+One can export these constants via c<<use Feersum 'HEADER_NORM_LOCASE'>>
+
+=item C<< my $value = $req->header(name) >>
+
+simple lookup for header value, name should be in lowercase, eg. 'content-type'
+
+=item C<< my $env = $req->remote_address >>
+
+remote address (psgi REMOTE_ADDR)
+
+=item C<< my $env = $req->remote_port >>
+
+remote port (psgi REMOTE_PORT)
+
 =back
 
 =begin comment
