@@ -1743,18 +1743,15 @@ feersum_env(pTHX_ struct feer_conn *c)
     return e;
 }
 
-#define NORM_HEADER(_str) \
-char *k = kbuf;\
-for (j = 0; j < hdr->name_len; j++) { char n = hdr->name[j]; *k++ = _str; }
-
-#define COPY_HEADER(_norm) \
+#define COPY_NORM_HEADER(_str) \
 for (i = 0; i < r->num_headers; i++) {\
     struct phr_header *hdr = &(r->headers[i]);\
     if (unlikely(hdr->name == NULL && val != NULL)) {\
         sv_catpvn(*val, hdr->value, hdr->value_len);\
         continue;\
     }\
-    _norm\
+    char *k = kbuf;\
+    for (j = 0; j < hdr->name_len; j++) { char n = hdr->name[j]; *k++ = _str; }\
     if (unlikely(kbuflen < hdr->name_len)) { kbuflen = hdr->name_len; kbuf = Renew(kbuf, kbuflen, char); }\
     SV** val = hv_fetch(e, kbuf, hdr->name_len, 1);\
     if (unlikely(SvPOK(*val))) {\
@@ -1777,15 +1774,15 @@ feersum_env_headers(pTHX_ struct feer_req *r, int norm)
     Newx(kbuf, kbuflen, char);
     switch (norm) {
         case HEADER_NORM_SKIP:
-            COPY_HEADER(NORM_HEADER(n))
+            COPY_NORM_HEADER(n)
         case HEADER_NORM_LOCASE:
-            COPY_HEADER(NORM_HEADER(tolower(n)))
+            COPY_NORM_HEADER(tolower(n))
         case HEADER_NORM_UPCASE:
-            COPY_HEADER(NORM_HEADER(toupper(n)))
+            COPY_NORM_HEADER(toupper(n))
         case HEADER_NORM_LOCASE_DASH:
-            COPY_HEADER(NORM_HEADER((n == '-') ? '_' : tolower(n)))
+            COPY_NORM_HEADER((n == '-') ? '_' : tolower(n))
         case HEADER_NORM_UPCASE_DASH:
-            COPY_HEADER(NORM_HEADER((n == '-') ? '_' : toupper(n)))
+            COPY_NORM_HEADER((n == '-') ? '_' : toupper(n))
     }
     Safefree(kbuf);
     return e;
