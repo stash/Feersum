@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 31;
+use Test::More tests => 32;
 use Test::Fatal;
 use utf8;
 use lib 't'; use Utils;
@@ -83,6 +83,8 @@ my $w2 = simple_client GET => "/?zzzzz",
         like $hdr->{'x-client'}, qr/^\d+$/, 'got a custom x-client header';
         is $hdr->{'content-length'}, 5, 'content-length was overwritten by the engine';
         is $hdr->{'content-type'}, 'text/plain; charset=UTF-8';
+        like $hdr->{'date'}, qr/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/, 'got date header';
+        note($hdr->{'date'});
         is Encode::decode_utf8($body), 'Bāz!', 'unicode body!';
         $cv->end;
     };

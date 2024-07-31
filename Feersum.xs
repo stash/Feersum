@@ -1,3 +1,4 @@
+#define PERL_NO_GET_CONTEXT
 #include "EVAPI.h"
 #include <stdio.h>
 #include <unistd.h>
@@ -8,6 +9,7 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <sys/uio.h>
+#include <time.h>
 
 #include "ppport.h"
 
@@ -22,16 +24,11 @@
 #define READ_BUFSZ 4096
 #define READ_INIT_FACTOR 2
 #define READ_GROW_FACTOR 8
+#define READ_TIMEOUT 5.0
 
 #define AUTOCORK_WRITES 1
-
-#if 0
-# define FLASH_SOCKET_POLICY_SUPPORT
-#endif
-
-#ifndef FLASH_SOCKET_POLICY
-# define FLASH_SOCKET_POLICY "<?xml version=\"1.0\"?>\n<!DOCTYPE cross-domain-policy SYSTEM \"/xml/dtds/cross-domain-policy.dtd\">\n<cross-domain-policy>\n<site-control permitted-cross-domain-policies=\"master-only\"/>\n<allow-access-from domain=\"*\" to-ports=\"*\" secure=\"false\"/>\n</cross-domain-policy>\n"
-#endif
+#define KEEPALIVE_CONNECTION false
+#define DATE_HEADER true
 
 // may be lower for your platform (e.g. Solaris is 16).  See POD.
 #define FEERSUM_IOMATRIX_SIZE 64
@@ -51,6 +48,21 @@
 #else
 # define likely(x)   (x)
 # define unlikely(x) (x)
+#endif
+
+#ifndef HAS_ACCEPT4
+#ifdef __GLIBC_PREREQ
+#if __GLIBC_PREREQ(2, 10)
+    // accept4 is available
+    #define HAS_ACCEPT4 1
+#endif
+#endif
+#endif
+
+#ifndef HAS_ACCEPT4
+    #ifdef __NR_accept4
+        #define HAS_ACCEPT4 1
+    #endif
 #endif
 
 #ifndef CRLF
@@ -166,17 +178,19 @@ enum feer_respond_state {
 } while (0)
 
 enum feer_receive_state {
-    RECEIVE_HEADERS = 0,
-    RECEIVE_BODY = 1,
-    RECEIVE_STREAMING = 2,
-    RECEIVE_SHUTDOWN = 3
+    RECEIVE_WAIT = 0,
+    RECEIVE_HEADERS = 1,
+    RECEIVE_BODY = 2,
+    RECEIVE_STREAMING = 3,
+    RECEIVE_SHUTDOWN = 4
 };
 #define RECEIVE_STR(_n,_s) do { \
     switch(_n) { \
-    case RECEIVE_HEADERS:   _s = "HEADERS(0)"; break; \
-    case RECEIVE_BODY:      _s = "BODY(1)"; break; \
-    case RECEIVE_STREAMING: _s = "STREAMING(2)"; break; \
-    case RECEIVE_SHUTDOWN:  _s = "SHUTDOWN(3)"; break; \
+    case RECEIVE_WAIT:      _s = "WAIT(0)"; break; \
+    case RECEIVE_HEADERS:   _s = "HEADERS(1)"; break; \
+    case RECEIVE_BODY:      _s = "BODY(2)"; break; \
+    case RECEIVE_STREAMING: _s = "STREAMING(3)"; break; \
+    case RECEIVE_SHUTDOWN:  _s = "SHUTDOWN(4)"; break; \
     } \
 } while (0)
 
@@ -201,6 +215,7 @@ struct feer_conn {
 
     enum feer_respond_state responding;
     enum feer_receive_state receiving;
+    bool is_keepalive;
 
     int in_callback;
     int is_http11:1;
@@ -241,6 +256,7 @@ static void feersum_start_response
 static size_t feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
 static void feersum_handle_psgi_response(
     pTHX_ struct feer_conn *c, SV *ret, bool can_recurse);
+static bool feersum_set_keepalive (pTHX_ struct feer_conn *c, bool is_keepalive);
 static int feersum_close_handle(pTHX_ struct feer_conn *c, bool is_writer);
 static SV* feersum_conn_guard(pTHX_ struct feer_conn *c, SV *guard);
 
@@ -289,10 +305,12 @@ static bool request_cb_is_psgi = 0;
 static SV *shutdown_cb_cv = NULL;
 static bool shutting_down = 0;
 static int active_conns = 0;
-static double read_timeout = 5.0;
+static double read_timeout = READ_TIMEOUT;
 
 static SV *feer_server_name = NULL;
 static SV *feer_server_port = NULL;
+static bool is_tcp = 1;
+static bool is_keepalive = KEEPALIVE_CONNECTION;
 
 static ev_io accept_w;
 static ev_prepare ep;
@@ -307,6 +325,53 @@ static SV *psgi_serv10, *psgi_serv11, *crlf_sv;
 // TODO: make this thread-local if and when there are multiple C threads:
 struct ev_loop *feersum_ev_loop = NULL;
 static HV *feersum_tmpl_env = NULL;
+
+#define DATE_HEADER_LENGTH 37  // "Date: Thu, 01 Jan 1970 00:00:00 GMT\015\012"
+
+static const char *const DAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+static const char *const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+static char DATE_BUF[DATE_HEADER_LENGTH+1] = "Date: The, 01 Jan 1970 00:00:00 GMT\015\012";
+static time_t LAST_GENERATED_TIME = 0;
+
+static inline void uint_to_str(unsigned int value, char *str) {
+    str[0] = (value / 10) + '0';
+    str[1] = (value % 10) + '0';
+}
+
+static inline void uint_to_str_4digits(unsigned int value, char *str) {
+    str[0] = (value / 1000) + '0';
+    str[1] = (value / 100) % 10 + '0';
+    str[2] = (value / 10) % 10 + '0';
+    str[3] = value % 10 + '0';
+}
+
+INLINE_UNLESS_DEBUG
+void generate_date_header(void) {
+    time_t now = time(NULL);
+    if (now == LAST_GENERATED_TIME) return;
+
+    LAST_GENERATED_TIME = now;
+    struct tm *tm = gmtime(&now);
+
+    const char *day = DAYS[tm->tm_wday];
+    DATE_BUF[6] = day[0];
+    DATE_BUF[7] = day[1];
+    DATE_BUF[8] = day[2];
+
+    uint_to_str(tm->tm_mday, DATE_BUF + 11);
+
+    const char *month = MONTHS[tm->tm_mon];
+    DATE_BUF[14] = month[0];
+    DATE_BUF[15] = month[1];
+    DATE_BUF[16] = month[2];
+
+    uint_to_str_4digits(tm->tm_year + 1900, DATE_BUF + 18);
+    uint_to_str(tm->tm_hour, DATE_BUF + 23);
+    uint_to_str(tm->tm_min, DATE_BUF + 26);
+    uint_to_str(tm->tm_sec, DATE_BUF + 29);
+}
 
 INLINE_UNLESS_DEBUG
 static SV*
@@ -547,21 +612,25 @@ http_code_to_msg (int code) {
 static int
 prep_socket(int fd, int is_tcp)
 {
+#ifdef HAS_ACCEPT4
+    int flags = 1;
+#else
     int flags;
 
     // make it non-blocking
     flags = O_NONBLOCK;
     if (unlikely(fcntl(fd, F_SETFL, flags) < 0))
         return -1;
+
+    flags = 1;
+#endif
     if (likely(is_tcp)) {
         // flush writes immediately
-        flags = 1;
         if (unlikely(setsockopt(fd, SOL_TCP, TCP_NODELAY, &flags, sizeof(int))))
             return -1;
     }
 
     // handle URG data inline
-    flags = 1;
     if (unlikely(setsockopt(fd, SOL_SOCKET, SO_OOBINLINE, &flags, sizeof(int))))
         return -1;
 
@@ -606,6 +675,7 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->sa = sa;
     c->responding = RESPOND_NOT_STARTED;
     c->receiving = RECEIVE_HEADERS;
+    c->is_keepalive = false;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -952,10 +1022,29 @@ try_write_paused:
     goto try_write_cleanup;
 
 try_write_shutdown:
-    trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
-    change_responding_state(c, RESPOND_SHUTDOWN);
-    stop_write_watcher(c);
-    safe_close_conn(c, "close at write shutdown");
+    if (likely(c->is_keepalive)) {
+        trace3("write SHUTDOWN, but KEEP %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
+        stop_write_watcher(c);
+        change_responding_state(c, RESPOND_NOT_STARTED);
+        change_receiving_state(c, RECEIVE_WAIT);
+        if (likely(c->req)) {
+            if (c->req->buf) SvREFCNT_dec(c->req->buf);
+            if (likely(c->req->path)) SvREFCNT_dec(c->req->path);
+            if (likely(c->req->query)) SvREFCNT_dec(c->req->query);
+            if (likely(c->req->addr)) SvREFCNT_dec(c->req->addr);
+            if (likely(c->req->port)) SvREFCNT_dec(c->req->port);
+            Safefree(c->req);
+        }
+        c->req = NULL;
+        start_read_watcher(c);
+        restart_read_timer(c);
+        trace3("connections active on %d\n", c->fd);
+    } else {
+        trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
+        stop_write_watcher(c);
+        change_responding_state(c, RESPOND_SHUTDOWN);
+        safe_close_conn(c, "close at write shutdown");
+    }
 
 try_write_cleanup:
     SvREFCNT_dec(c->self);
@@ -1032,36 +1121,17 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     trace("read %d %"Ssz_df"\n", w->fd, (Ssz)got_n);
     SvCUR(c->rbuf) += got_n;
     // likely = optimize for small requests
-    if (likely(c->receiving == RECEIVE_HEADERS)) {
-
-#ifdef FLASH_SOCKET_POLICY_SUPPORT
-        if (unlikely(*SvPVX(c->rbuf) == '<')) {
-            if (likely(SvCUR(c->rbuf) >= 22)) { // length of vvv
-                if (str_eq(SvPVX(c->rbuf), 22, "<policy-file-request/>", 22)) {
-                    add_const_to_wbuf(c, STR_WITH_LEN(FLASH_SOCKET_POLICY));
-                    conn_write_ready(c);
-                    stop_read_watcher(c);
-                    stop_read_timer(c);
-                    // TODO: keep-alives: be sure to remove the 22 bytes
-                    // out of the rbuf
-                    change_receiving_state(c, RECEIVE_SHUTDOWN);
-                    change_responding_state(c, RESPOND_SHUTDOWN);
-                    goto dont_read_again;
-                }
-            }
-            // "if prefixed with"
-            else if (likely(str_eq(SvPVX(c->rbuf), SvCUR(c->rbuf),
-                                   "<policy-file-request/>", SvCUR(c->rbuf))))
-            {
-                goto try_read_again;
-            }
-        }
-#endif
-
+    if (likely(c->receiving <= RECEIVE_HEADERS)) {
         int ret = try_parse_http(c, (size_t)got_n);
         if (ret == -1) goto try_read_bad;
-        if (ret == -2) goto try_read_again;
-
+#ifdef TCP_DEFER_ACCEPT
+        if (ret == -2) goto try_read_again_reset_timer;
+#else
+        if (ret == -2) {
+            if (is_tcp) goto try_read_again;
+            else goto try_read_again_reset_timer;
+        }
+#endif
         if (process_request_headers(c, ret))
             goto try_read_again_reset_timer;
         else
@@ -1129,7 +1199,7 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
 
     trace("read timeout %d\n", c->fd);
 
-    if (likely(c->responding == RESPOND_NOT_STARTED)) {
+    if (likely(c->responding == RESPOND_NOT_STARTED) && c->receiving >= RECEIVE_HEADERS) {
         const char *msg;
         if (c->receiving == RECEIVE_HEADERS) {
             msg = "Headers took too long.";
@@ -1138,10 +1208,8 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
             msg = "Timeout reading body.";
         }
         respond_with_server_error(c, msg, 0, 408);
-    }
-    else {
-        // XXX as of 0.984 this appears to be dead code
-        trace("read timeout while writing %d\n",c->fd);
+    } else {
+        trace("read timeout in keepalive conn: %d\n", c->fd);
         stop_write_watcher(c);
         stop_read_watcher(c);
         stop_read_timer(c);
@@ -1179,14 +1247,13 @@ accept_cb (EV_P_ ev_io *w, int revents)
     while (1) {
         sa_len = sizeof(struct sockaddr_storage);
         errno = 0;
+#ifdef HAS_ACCEPT4
+        int fd = accept4(w->fd, (struct sockaddr *)&sa_buf, &sa_len, SOCK_CLOEXEC|SOCK_NONBLOCK);
+#else
         int fd = accept(w->fd, (struct sockaddr *)&sa_buf, &sa_len);
+#endif
         trace("accepted fd=%d, errno=%d\n", fd, errno);
         if (fd == -1) break;
-
-        int is_tcp = 1;
-#ifdef AF_UNIX
-        if (unlikely(sa_buf.ss_family == AF_UNIX)) is_tcp = 0;
-#endif
 
         assert(sa_len <= sizeof(struct sockaddr_storage));
         if (unlikely(prep_socket(fd, is_tcp))) {
@@ -1199,8 +1266,16 @@ accept_cb (EV_P_ ev_io *w, int revents)
         struct sockaddr *sa = (struct sockaddr *)malloc(sa_len);
         memcpy(sa,&sa_buf,(size_t)sa_len);
         struct feer_conn *c = new_feer_conn(EV_A,fd,sa);
-        start_read_watcher(c);
-        restart_read_timer(c);
+#ifdef TCP_DEFER_ACCEPT
+        try_conn_read(EV_A, &c->read_ev_io, EV_READ);
+#else
+        if (is_tcp) {
+            start_read_watcher(c);
+            restart_read_timer(c);
+        } else {
+            try_conn_read(EV_A, &c->read_ev_io, EV_READ);
+        }
+#endif
         assert(SvREFCNT(c->self) == 3);
         SvREFCNT_dec(c->self);
     }
@@ -1229,8 +1304,10 @@ process_request_headers (struct feer_conn *c, int body_offset)
     trace("processing headers %d minor_version=%d\n",c->fd,req->minor_version);
     bool body_is_required;
     bool next_req_follows = 0;
+    bool got_content_length = false;
 
     c->is_http11 = (req->minor_version == 1);
+    c->is_keepalive = is_keepalive && c->is_http11;
 
     change_receiving_state(c, RECEIVE_BODY);
 
@@ -1241,7 +1318,6 @@ process_request_headers (struct feer_conn *c, int body_offset)
         next_req_follows = 1;
     }
     else if (likely(str_eq("OPTIONS", 7, req->method, req->method_len))) {
-        body_is_required = 1;
         next_req_follows = 1;
     }
     else if (likely(str_eq("POST", 4, req->method, req->method_len))) {
@@ -1283,9 +1359,6 @@ process_request_headers (struct feer_conn *c, int body_offset)
     c->rbuf = new_rbuf;
     SvCUR_set(req->buf, body_offset);
 
-    if (likely(next_req_follows)) // optimize for GET
-        goto got_it_all;
-
     // determine how much we need to read
     int i;
     UV expected = 0;
@@ -1304,7 +1377,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
                     goto got_bad_request;
                 }
                 else
-                    goto got_cl;
+                    got_content_length = true;
             }
             else {
                 err_code = 400;
@@ -1312,9 +1385,30 @@ process_request_headers (struct feer_conn *c, int body_offset)
                 goto got_bad_request;
             }
         }
-        // TODO: support "Connection: close" bodies
+        else if (
+            unlikely(str_case_eq("connection", 10, hdr->name, hdr->name_len)))
+        {
+            if (likely(c->is_http11)
+                && likely(str_case_eq("close", 5, hdr->value, hdr->value_len))
+                && c->is_keepalive)
+            {
+                c->is_keepalive = false;
+                trace("setting conn %d to close after response\n", c->fd);
+            }
+            else if (
+                likely(!c->is_http11)
+                && likely(str_case_eq("keep-alive", 10, hdr->value, hdr->value_len))
+                && !c->is_keepalive)
+            {
+                c->is_keepalive = true;
+                trace("setting conn %d to keep after response\n", c->fd);
+            }
+        }
         // TODO: support "Transfer-Encoding: chunked" bodies
     }
+
+    if (likely(next_req_follows)) goto got_it_all; // optimize for GET
+    else if (likely(got_content_length)) goto got_cl;
 
     if (body_is_required) {
         // Go the nginx route...
@@ -1657,7 +1751,7 @@ feersum_env(pTHX_ struct feer_conn *c)
         c->fd, (int)r->uri_len, r->uri);
 
     hv_stores(e, "SERVER_NAME", SvREFCNT_inc_simple(feer_server_name));
-    hv_stores(e, "SERVER_PORT", SvREFCNT_inc_simple(feer_server_port));
+    hv_stores(e, "SERVER_PORT", newSVsv_nomg(feer_server_port));
     hv_stores(e, "REQUEST_URI", feersum_env_uri(aTHX_ r));
     hv_stores(e, "REQUEST_METHOD", feersum_env_method(aTHX_ r));
     hv_stores(e, "SERVER_PROTOCOL", SvREFCNT_inc_simple_NN(feersum_env_protocol(aTHX_ r)));
@@ -1925,6 +2019,17 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
     else {
         body_is_string = 1;
     }
+
+    if (likely(c->is_http11)) {
+        #ifdef DATE_HEADER
+        generate_date_header();
+        #endif
+        add_const_to_wbuf(c, DATE_BUF, DATE_HEADER_LENGTH);
+        if (unlikely(!c->is_keepalive))
+            add_const_to_wbuf(c, "Connection: close" CRLF, 19);
+    }
+    else if (unlikely(c->is_keepalive))
+        add_const_to_wbuf(c, "Connection: keep-alive" CRLF, 24);
 
     SV *cl_sv; // content-length future
     struct iovec *cl_iov;
@@ -2356,6 +2461,27 @@ void
 accept_on_fd(SV *self, int fd)
     PPCODE:
 {
+    struct sockaddr_storage addr;
+    socklen_t addr_len = sizeof(addr);
+
+    if (getsockname(fd, (struct sockaddr*)&addr, &addr_len) == -1) perror("getsockname");
+    switch (addr.ss_family) {
+        case AF_INET:
+        case AF_INET6:
+            is_tcp = 1;
+#ifdef TCP_DEFER_ACCEPT
+            trace("going to defer accept on %d\n",fd);
+            if (setsockopt(fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &(int){1}, sizeof(int)) < 0)
+                perror("setsockopt TCP_DEFER_ACCEPT");
+#endif
+            break;
+#ifdef AF_UNIX
+        case AF_UNIX:
+            is_tcp = 0;
+            break;
+#endif
+    }
+
     trace("going to accept on %d\n",fd);
     feersum_ev_loop = EV_DEFAULT;
 
@@ -2446,11 +2572,20 @@ read_timeout (SV *self, ...)
         if (!(new_read_timeout > 0.0)) {
             croak("must set a positive (non-zero) value for the timeout");
         }
+        trace("set timeout %f\n", (double)new_read_timeout);
         read_timeout = (double) new_read_timeout;
     }
 }
     OUTPUT:
         RETVAL
+
+void
+set_keepalive (SV *self, SV *set)
+    PPCODE:
+{
+    trace("set keepalive %d\n", SvTRUE(set));
+    is_keepalive = SvTRUE(set);
+}
 
 void
 DESTROY (SV *self)
@@ -2759,6 +2894,13 @@ start_streaming (struct feer_conn *c, SV *message, AV *headers)
     OUTPUT:
         RETVAL
 
+int
+is_http11 (struct feer_conn *c)
+    CODE:
+        RETVAL = c->is_http11;
+    OUTPUT:
+        RETVAL
+
 size_t
 send_response (struct feer_conn *c, SV* message, AV *headers, SV *body)
     PROTOTYPE: $$\@$
@@ -2922,6 +3064,13 @@ int
 fileno (struct feer_conn *c)
     CODE:
         RETVAL = c->fd;
+    OUTPUT:
+        RETVAL
+
+bool
+is_keepalive (struct feer_conn *c)
+    CODE:
+        RETVAL = c->is_keepalive;
     OUTPUT:
         RETVAL
 
