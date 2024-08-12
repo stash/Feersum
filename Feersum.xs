@@ -958,7 +958,8 @@ try_write_again_immediately:
         goto try_write_finished;
     }
 
-    for (i = m->offset; i < m->count && wrote > 0; i++) {
+    bool consume = true;
+    for (i = m->offset; i < m->count && consume; i++) {
         struct iovec *v = &m->iov[i];
         if (unlikely(v->iov_len > wrote)) {
             trace3("offset vector %d  base=%p len=%"Sz_uf"\n",
@@ -966,7 +967,7 @@ try_write_again_immediately:
             v->iov_base += wrote;
             v->iov_len  -= wrote;
             // don't consume any more:
-            wrote = 0;
+            consume = false;
         }
         else {
             trace3("consume vector %d base=%p len=%"Sz_uf" sv=%p\n",
