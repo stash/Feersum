@@ -1,0 +1,39 @@
+name: basic
+
+on:
+  push:
+    branches:
+      - '*'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+jobs:
+  perl:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version:
+          - 'latest'
+
+    container:
+      image: perldocker/perl-tester:${{ matrix.perl-version }}
+
+    steps:
+      - uses: actions/checkout@v1
+      - name: perl -V
+        run: perl -V
+      - name: picoparser
+        run: git submodule init && git submodule update
+      - name: Deps 0
+        run: cpanm EV::MakeMaker
+      - name: Makefile.PL
+        run: perl Makefile.PL
+      - name: Deps 1
+        run: cpanm --installdeps .
+      - name: make
+        run: make
+      - name: make test
+        run: make test
