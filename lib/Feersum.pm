@@ -460,6 +460,10 @@ propagated.
 
 Override Feersum's notion of what SERVER_HOST and SERVER_PORT should be.
 
+=item C<< set_keepalive($bool) >>
+
+Override Feersum's default keepalive behavior.
+
 =back
 
 =cut
@@ -517,29 +521,16 @@ is performed immediately.  In either case, non-blocking writes are used.
 Using the event loop is "nicer" but perhaps introduces latency, hence this
 option.
 
-=item FLASH_SOCKET_POLICY_SUPPORT
+=item KEEPALIVE_CONNECTION
 
-=item FLASH_SOCKET_POLICY
+Controls support of keepalive connections. Default is false.
+If enabled or set via Feersum->set_keepalive(1), then
+"Connection: keep-alive" for HTTP/1.0 and "Connection: close" for HTTP/1.1
+are acknowledged.
 
-FLASH_SOCKET_POLICY_SUPPORT defaults to disabled.
+=item READ_TIMEOUT
 
-When it's enabled, Feersum will detect a Flash C<< <policy-file-request/> >>
-packet and respond with the FLASH_SOCKET_POLICY string.
-
-The default FLASH_SOCKET_POLICY string looks like this:
-
-    <?xml version="1.0"?>
-    <!DOCTYPE cross-domain-policy SYSTEM "/xml/dtds/cross-domain-policy.dtd">
-    <cross-domain-policy>
-      <site-control permitted-cross-domain-policies="master-only"/>
-      <allow-access-from domain="*" to-ports="*" secure="false"/>
-    </cross-domain-policy>
-
-Since that's fairly wide-open, you may not wish to enable
-FLASH_SOCKET_POLICY_SUPPORT.
-
-Note that this feature likely won't work if you use a front-end HTTP server
-(e.g. nginx) since the request isn't valid HTTP.
+Controls read timeout. Default is 5.0 sec. It is also an keepalive timeout.
 
 =item FEERSUM_IOMATRIX_SIZE
 
@@ -577,8 +568,6 @@ C<psgix.body.scalar_refs> feature.
 =head1 BUGS
 
 Please report bugs using http://github.com/stash/Feersum/issues/
-
-Keep-alive is ignored completely.
 
 Currently there's no way to limit the request entity length of a B<streaming>
 POST/PUT/etc.  This could lead to a DoS attack on a Feersum server.  Suggested

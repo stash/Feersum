@@ -17,7 +17,7 @@ use Test::SharedFork;
 use IO::Socket::UNIX;
 use File::Temp 'tempfile';
 
-(undef, my $sock_path) = tempfile(qw/XXXX TMPDIR 1 SUFFIX .sock UNLINK 1/);
+(undef, my $sock_path) = tempfile(uc'xxxx',qw/TMPDIR 1 SUFFIX .sock UNLINK 1/);
 
 plan skip_all => "can't create tmp socket path"
     unless $sock_path;

@@ -71,10 +71,11 @@ sub _prepare {
     my $f = Feersum->endjinn;
     $f->use_socket($sock);
 
-    if ($self->{options}) {
-        # Plack::Runner puts these here
-        $self->{pre_fork} = delete $self->{options}{pre_fork};
+    if (my $opts = $self->{options}) {
+        $self->{$_} = delete $opts->{$_} for grep $opts->{$_}, qw/pre_fork keepalive read_timeout/;
     }
+    $f->set_keepalive($_) for grep $_, delete $self->{keepalive};
+    $f->read_timeout($_) for grep $_, delete $self->{read_timeout};
 
     $self->{endjinn} = $f;
     return;
@@ -225,6 +226,14 @@ Fork this many worker processes.
 
 The fork is run immediately at startup and after the app is loaded (i.e. in
 the C<run()> method).
+
+=item keepalive
+
+Enable/disable http keepalive requests.
+
+=item read_timeout
+
+Set read/keepalive timeout in seconds.
 
 =item quiet
 
