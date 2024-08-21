@@ -1,5 +1,6 @@
-#define PERL_NO_GET_CONTEXT
 #include "EVAPI.h"
+#define PERL_NO_GET_CONTEXT
+#include "ppport.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -10,9 +11,7 @@
 #include <netinet/tcp.h>
 #include <sys/uio.h>
 #include <time.h>
-
-#include "ppport.h"
-
+#include "picohttpparser-git/picohttpparser.c"
 
 ///////////////////////////////////////////////////////////////
 // "Compile Time Options" - See Feersum.pm POD for information
@@ -27,8 +26,8 @@
 #define READ_TIMEOUT 5.0
 
 #define AUTOCORK_WRITES 1
-#define KEEPALIVE_CONNECTION false
-#define DATE_HEADER true
+#define KEEPALIVE_CONNECTION 0
+#define DATE_HEADER 1
 
 // may be lower for your platform (e.g. Solaris is 16).  See POD.
 #define FEERSUM_IOMATRIX_SIZE 64
@@ -40,8 +39,6 @@
 #endif
 
 ///////////////////////////////////////////////////////////////
-
-
 #ifdef __GNUC__
 # define likely(x)   __builtin_expect(!!(x), 1)
 # define unlikely(x) __builtin_expect(!!(x), 0)
@@ -127,7 +124,6 @@
 #define trace3(...)
 #endif
 
-#include "picohttpparser-git/picohttpparser.c"
 #include "rinq.c"
 
 // Check FEERSUM_IOMATRIX_SIZE against what's actually usable on this
@@ -217,10 +213,10 @@ struct feer_conn {
     enum feer_receive_state receiving;
     bool is_keepalive;
 
-    int in_callback;
-    int is_http11:1;
-    int poll_write_cb_is_io_handle:1;
-    int auto_cl:1;
+    unsigned int in_callback;
+    unsigned int is_http11:1;
+    unsigned int poll_write_cb_is_io_handle:1;
+    unsigned int auto_cl:1;
 };
 
 enum feer_header_norm_style {
@@ -335,12 +331,12 @@ static const char *const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
 static char DATE_BUF[DATE_HEADER_LENGTH+1] = "Date: The, 01 Jan 1970 00:00:00 GMT\015\012";
 static time_t LAST_GENERATED_TIME = 0;
 
-static inline void uint_to_str(unsigned int value, char *str) {
+static INLINE_UNLESS_DEBUG void uint_to_str(unsigned int value, char *str) {
     str[0] = (value / 10) + '0';
     str[1] = (value % 10) + '0';
 }
 
-static inline void uint_to_str_4digits(unsigned int value, char *str) {
+static INLINE_UNLESS_DEBUG void uint_to_str_4digits(unsigned int value, char *str) {
     str[0] = (value / 1000) + '0';
     str[1] = (value / 100) % 10 + '0';
     str[2] = (value / 10) % 10 + '0';
@@ -348,7 +344,7 @@ static inline void uint_to_str_4digits(unsigned int value, char *str) {
 }
 
 INLINE_UNLESS_DEBUG
-void generate_date_header(void) {
+static void generate_date_header(void) {
     time_t now = time(NULL);
     if (now == LAST_GENERATED_TIME) return;
 
@@ -675,7 +671,7 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->sa = sa;
     c->responding = RESPOND_NOT_STARTED;
     c->receiving = RECEIVE_HEADERS;
-    c->is_keepalive = false;
+    c->is_keepalive = 0;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -958,7 +954,7 @@ try_write_again_immediately:
         goto try_write_finished;
     }
 
-    bool consume = true;
+    bool consume = 1;
     for (i = m->offset; i < m->count && consume; i++) {
         struct iovec *v = &m->iov[i];
         if (unlikely(v->iov_len > wrote)) {
@@ -967,7 +963,7 @@ try_write_again_immediately:
             v->iov_base += wrote;
             v->iov_len  -= wrote;
             // don't consume any more:
-            consume = false;
+            consume = 0;
         }
         else {
             trace3("consume vector %d base=%p len=%"Sz_uf" sv=%p\n",
@@ -1269,15 +1265,17 @@ accept_cb (EV_P_ ev_io *w, int revents)
         struct feer_conn *c = new_feer_conn(EV_A,fd,sa);
 #ifdef TCP_DEFER_ACCEPT
         try_conn_read(EV_A, &c->read_ev_io, EV_READ);
+        assert(SvREFCNT(c->self) <= 3);
 #else
         if (is_tcp) {
             start_read_watcher(c);
             restart_read_timer(c);
+            assert(SvREFCNT(c->self) == 3);
         } else {
             try_conn_read(EV_A, &c->read_ev_io, EV_READ);
+            assert(SvREFCNT(c->self) <= 3);
         }
 #endif
-        assert(SvREFCNT(c->self) == 3);
         SvREFCNT_dec(c->self);
     }
 }
@@ -1305,7 +1303,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
     trace("processing headers %d minor_version=%d\n",c->fd,req->minor_version);
     bool body_is_required;
     bool next_req_follows = 0;
-    bool got_content_length = false;
+    bool got_content_length = 0;
 
     c->is_http11 = (req->minor_version == 1);
     c->is_keepalive = is_keepalive && c->is_http11;
@@ -1378,7 +1376,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
                     goto got_bad_request;
                 }
                 else
-                    got_content_length = true;
+                    got_content_length = 1;
             }
             else {
                 err_code = 400;
@@ -1393,7 +1391,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
                 && likely(str_case_eq("close", 5, hdr->value, hdr->value_len))
                 && c->is_keepalive)
             {
-                c->is_keepalive = false;
+                c->is_keepalive = 0;
                 trace("setting conn %d to close after response\n", c->fd);
             }
             else if (
@@ -1401,7 +1399,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
                 && likely(str_case_eq("keep-alive", 10, hdr->value, hdr->value_len))
                 && !c->is_keepalive)
             {
-                c->is_keepalive = true;
+                c->is_keepalive = 1;
                 trace("setting conn %d to keep after response\n", c->fd);
             }
         }
@@ -1644,7 +1642,7 @@ feersum_set_path_and_query(pTHX_ struct feer_req *r)
         qpos++;
         r->query = newSVpvn(qpos, r->uri_len - (qpos - r->uri));
     } else {
-        r->path = feersum_env_uri(r);
+        r->path = feersum_env_uri(aTHX_ r);
         r->query = newSVpvs("");
     }
     uri_decode_sv(r->path);

@@ -22,7 +22,7 @@ sub simple_get {
         name => "client $n",
         sub {
             my ($body,$headers) = @_;
-            is $headers->{Status}, 200, "client $n: http success";
+            is($headers->{Status}, 200, "client $n: http success") or diag($headers->{Reason});
             like $body, qr/^Hello customer number 0x[0-9a-f]+$/, "client $n: looks good";
             $cv->end;
             undef $cli;
@@ -45,6 +45,8 @@ if (!$pid) {
     };
     POSIX::exit(0);
 }
+
+select undef, undef, undef, 0.25; # sleep a bit to give the server time to start
 
 $cv = AE::cv;
 simple_get($port, $_) for (1..CLIENTS);

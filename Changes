@@ -1,5 +1,14 @@
 Revision history for Perl extension Feersum
 
+1.500 Tue Aug 20 18:10:55 2024 -0200
+        Features:
+        - native interface: access specific parts of request
+        - http/1.1 keepalive support
+        - http/1.1 date header
+        - defer accept, accept4
+        Backward incompatibly:
+        - remove adobe flash policy support
+
 1.410 Sat Dec  5 14:32:22 2020 +0800
         Features
         - Add unix domain socket support (vividsnow++)

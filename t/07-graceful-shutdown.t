@@ -70,7 +70,7 @@ sub client {
         },
     sub {
         my ($body, $headers) = @_;
-        is $headers->{Status}, 200, "$cnum got 200";
+        is($headers->{Status}, 200, "$cnum got 200") or diag($headers->{Reason});
         is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
         is $body, "So graceful!\n", "$cnum got body";
         $cv->end;

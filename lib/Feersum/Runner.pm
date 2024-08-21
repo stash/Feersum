@@ -143,7 +143,7 @@ sub _fork_another {
             EV::break(EV::BREAK_ALL()) unless $self->{_n_kids};
             return;
         }
-        $self->_fork_another();
+        $self->_fork_another($slot);
     };
     return;
 }
