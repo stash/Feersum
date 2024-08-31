@@ -4,6 +4,7 @@ use strict;
 use Test::More;
 use utf8;
 use lib 't'; use Utils;
+use File::Spec::Functions 'rel2abs';
 
 BEGIN { 
     plan skip_all => "Need Test::TCP 1.06 to run this test"
@@ -28,6 +29,8 @@ plan tests => 15;
 ok -f 'eg/app.feersum' && -r _, "found eg/app.feersum";
 ok -f 'eg/chat.feersum' && -r _, "found eg/chat.feersum";
 
+note(my $app_path = rel2abs('eg/app.feersum'));
+
 test_tcp(
     client => sub {
         my $port = shift;
@@ -50,7 +53,7 @@ test_tcp(
 
         my $runner;
         eval {
-            my $app = do 'eg/app.feersum';
+            my $app = do $app_path;
             ok $app, "did the app";
             $runner = Feersum::Runner->new(
                 listen => ["localhost:$port"],

@@ -24,7 +24,7 @@ plan skip_all => "can't create tmp socket path"
 
 unlink $sock_path;
 
-plan tests => 23;
+plan tests => 34;
 
 pass 'using sock path '.$sock_path;
 
@@ -35,6 +35,7 @@ if ($pid == 0) { # child
             listen => [$sock_path],
             keepalive => 1,
             read_timeout => 1,
+            max_connection_reqs => 4,
             app => sub {
                 my $r = shift;
                 pass 'got request http/1.'.($r->is_http11 ? 1 : 0);
@@ -157,6 +158,50 @@ if ($pid == 0) { # child
     $cv->recv;
     undef $hdl;
 
+    # max_connection_reqs
+    $socket = IO::Socket::UNIX->new(
+        Peer => $sock_path,
+        Type => SOCK_STREAM,
+    ) or warn $!;
+    ok $socket, 'client ok';
+    ok $socket->blocking(0), 'unblock socket';
+
+    $cv = AE::cv;
+    $cv->begin;
+
+    my ($request_count, $send_request) = (0);
+    $hdl = AnyEvent::Handle->new(
+        fh => $socket,
+        on_error => sub {
+            fail 'error in connection for max_connection_reqs test';
+            $hdl->destroy;
+            $cv->send;
+        },
+        on_eof => sub {
+            pass 'server closed connection after max requests';
+            $hdl->destroy;
+            $cv->send;
+        },
+        timeout => 2
+    );
+
+    $send_request = sub {
+        $request_count++;
+        $hdl->push_write("GET / HTTP/1.1\015\012\015\012");
+        $hdl->push_read(line => "\015\012\015\012" => sub {
+            if ($request_count < 4) {
+                unlike $_[1], qr(Connection: close), "request $request_count: no close header";
+                $send_request->();
+            } elsif ($request_count == 4) {
+                like $_[1], qr(Connection: close), 'request 4: connection close header';
+                $hdl->on_read(sub {});
+            }
+        });
+    };
+    $send_request->();
+    $cv->recv;
+    undef $hdl;
+
     pass 'server killing';
     kill 3, $pid; # QUIT
     waitpid $pid, 0;
@@ -164,3 +209,5 @@ if ($pid == 0) { # child
 } else {
     die $!;
 };
+
+# max_connection_reqs

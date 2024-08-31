@@ -1,7 +1,7 @@
 #!perl
 use warnings;
 use strict;
-use Test::More tests => 36;
+use Test::More tests => 48;
 use lib 't'; use Utils;
 
 BEGIN { use_ok('Feersum') };
@@ -116,6 +116,7 @@ using_writer: {
         is $headers->{'Status'}, 200, "Response OK";
         is $headers->{'content-type'}, 'application/json', "... is JSON";
         is $headers->{'transfer-encoding'}, 'chunked', '... was chunked';
+        is $headers->{'connection'}, 'close', '... close';
         is $body, q({"message":"O hai 2"}), "... correct de-chunked body";
         $cv->end;
         undef $h;
@@ -131,12 +132,31 @@ using_writer_and_1_0: {
         is $headers->{'Status'}, 200, "Response OK";
         is $headers->{'content-type'}, 'application/json', "... is JSON";
         ok !$headers->{'transfer-encoding'}, '... was not chunked';
-        is $headers->{'connection'}, 'close', '... got close';
+        isnt $headers->{'connection'}, 'keep-alive', '... got close';
         is $body, q({"message":"O hai 3"}), "... correct body";
         $cv->end;
         undef $h2;
     };
     $cv->recv;
 }
+
+$evh->set_keepalive(1);
+
+using_writer_and_1_1: {
+    my $cv = AE::cv;
+    $cv->begin;
+    my $h2; $h2 = simple_client GET => '/', proto => '1.1', keepalive => 1, sub {
+        my ($body, $headers) = @_;
+        is $headers->{'Status'}, 200, "Response OK";
+        is $headers->{'content-type'}, 'application/json', "... is JSON";
+        ok $headers->{'transfer-encoding'}, '... not chunked';
+        isnt $headers->{'connection'}, 'close', '... keep';
+        is $body, q({"message":"O hai 4"}), "... correct de-chunked body";
+        $cv->end;
+        undef $h2;
+    };
+    $cv->recv;
+}
+
 
 pass "all done app 2";

@@ -1,11 +1,17 @@
 Revision history for Perl extension Feersum
 
+1.501 Sat Aug 31 09:10:55 2024 -0200
+        - http/1.1 keepalive support for chunked(streaming) responses
+        - max_connection_reqs to control requests per keepalive connection
+        - tweak some tests for better cpantesters matrix
+
 1.500 Tue Aug 20 18:10:55 2024 -0200
         Features:
         - native interface: access specific parts of request
         - http/1.1 keepalive support
         - http/1.1 date header
         - defer accept, accept4
+
         Backward incompatibly:
         - remove adobe flash policy support
 

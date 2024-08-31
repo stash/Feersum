@@ -4,8 +4,8 @@ use strict;
 use constant HARDER => $ENV{RELEASE_TESTING} ? 10 : 1;
 use constant CLIENTS_11 => HARDER * 2;
 use constant CLIENTS_10 => HARDER * 2;
-use constant CLIENTS => CLIENTS_11 + CLIENTS_10;
-use Test::More tests => 7 + 21 * CLIENTS_11 + 22 * CLIENTS_10;
+use constant CLIENTS => CLIENTS_11 * 2 + CLIENTS_10;
+use Test::More tests => 7 + 44 * CLIENTS_11 + 22 * CLIENTS_10;
 use Test::Fatal;
 use lib 't'; use Utils;
 
@@ -101,6 +101,7 @@ is exception {
 sub client {
     my $cnum = sprintf("%04d",shift);
     my $is_chunked = shift || 0;
+    my $is_keepalive = shift || 0;
     $cv->begin;
     my $h; $h = simple_client GET => '/foo',
         name => $cnum,
@@ -110,6 +111,7 @@ sub client {
             "Accept" => "*/*",
             'X-Client' => $cnum,
         },
+        $is_chunked && $is_keepalive ? (keepalive => 1) : (),
     sub {
         my ($body, $headers) = @_;
         is $headers->{Status}, 200, "$cnum got 200"
@@ -117,11 +119,20 @@ sub client {
         if ($is_chunked) {
             is $headers->{HTTPVersion}, '1.1';
             is $headers->{'transfer-encoding'}, "chunked", "$cnum got chunked!";
+            if (!$is_keepalive) {
+                is $headers->{'connection'}, 'close', "$cnum conn close";
+            } else {
+                ok !exists($headers->{'connection'}), 'conn keep';
+            }
         }
         else {
             is $headers->{HTTPVersion}, '1.0';
             ok !exists $headers->{'transfer-encoding'}, "$cnum not chunked!";
-            is $headers->{'connection'}, 'close', "$cnum conn closed";
+            if ($is_keepalive) {
+                is $headers->{'connection'}, 'keep-alive', "$cnum conn keep";
+            } else {
+                ok !exists($headers->{'connection'}), 'conn close';
+            }
         }
         is_deeply [split /\n/,$body], [
             "$cnum Hello streaming world! chunk one",
@@ -140,6 +151,9 @@ sub client {
 
 client(1000+$_,1) for (1..CLIENTS_11);
 client(2000+$_,0) for (1..CLIENTS_10); # HTTP/1.0 style
+
+$evh->set_keepalive(1);
+client(1000+$_,1,1) for (1..CLIENTS_11);
 
 $cv->recv;
 is $started, CLIENTS, 'handlers started';

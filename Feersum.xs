@@ -212,6 +212,7 @@ struct feer_conn {
     enum feer_respond_state responding;
     enum feer_receive_state receiving;
     bool is_keepalive;
+    int reqs;
 
     unsigned int in_callback;
     unsigned int is_http11:1;
@@ -302,6 +303,7 @@ static SV *shutdown_cb_cv = NULL;
 static bool shutting_down = 0;
 static int active_conns = 0;
 static double read_timeout = READ_TIMEOUT;
+static unsigned int max_connection_reqs = 0;
 
 static SV *feer_server_name = NULL;
 static SV *feer_server_port = NULL;
@@ -672,6 +674,7 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->responding = RESPOND_NOT_STARTED;
     c->receiving = RECEIVE_HEADERS;
     c->is_keepalive = 0;
+    c->reqs = 0;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -1129,6 +1132,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
             else goto try_read_again_reset_timer;
         }
 #endif
+
         if (process_request_headers(c, ret))
             goto try_read_again_reset_timer;
         else
@@ -1307,6 +1311,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
 
     c->is_http11 = (req->minor_version == 1);
     c->is_keepalive = is_keepalive && c->is_http11;
+    c->reqs++;
 
     change_receiving_state(c, RECEIVE_BODY);
 
@@ -1388,22 +1393,27 @@ process_request_headers (struct feer_conn *c, int body_offset)
             unlikely(str_case_eq("connection", 10, hdr->name, hdr->name_len)))
         {
             if (likely(c->is_http11)
-                && likely(str_case_eq("close", 5, hdr->value, hdr->value_len))
-                && c->is_keepalive)
+                && likely(c->is_keepalive)
+                && likely(str_case_eq("close", 5, hdr->value, hdr->value_len)))
             {
                 c->is_keepalive = 0;
                 trace("setting conn %d to close after response\n", c->fd);
             }
             else if (
                 likely(!c->is_http11)
-                && likely(str_case_eq("keep-alive", 10, hdr->value, hdr->value_len))
-                && !c->is_keepalive)
+                && likely(is_keepalive)
+                && str_case_eq("keep-alive", 10, hdr->value, hdr->value_len))
             {
                 c->is_keepalive = 1;
                 trace("setting conn %d to keep after response\n", c->fd);
             }
         }
         // TODO: support "Transfer-Encoding: chunked" bodies
+    }
+
+    if (max_connection_reqs > 0 && c->reqs >= max_connection_reqs) {
+        c->is_keepalive = 0;
+        trace("reached max requests per connection (%d), will close after response\n", max_connection_reqs);
     }
 
     if (likely(next_req_follows)) goto got_it_all; // optimize for GET
@@ -1494,6 +1504,7 @@ respond_with_server_error (struct feer_conn *c, const char *msg, STRLEN msg_len,
     stop_read_timer(c);
     change_responding_state(c, RESPOND_SHUTDOWN);
     change_receiving_state(c, RECEIVE_SHUTDOWN);
+    if (c->is_keepalive) c->is_keepalive = 0;
     conn_write_ready(c);
 }
 
@@ -1980,11 +1991,24 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
         add_crlf_to_wbuf(c);
     }
 
+    if (likely(c->is_http11)) {
+        #ifdef DATE_HEADER
+        generate_date_header();
+        add_const_to_wbuf(c, DATE_BUF, DATE_HEADER_LENGTH);
+        #endif
+        if (unlikely(!c->is_keepalive))
+            add_const_to_wbuf(c, "Connection: close" CRLF, 19);
+    } else if (unlikely(c->is_keepalive) && !streaming)
+        add_const_to_wbuf(c, "Connection: keep-alive" CRLF, 24);
+
     if (streaming) {
         if (c->is_http11)
             add_const_to_wbuf(c, "Transfer-Encoding: chunked" CRLFx2, 30);
-        else
-            add_const_to_wbuf(c, "Connection: close" CRLFx2, 21);
+        else {
+            add_crlf_to_wbuf(c);
+            // cant do keep-alive for streaming http/1.0 since client completes read on close
+            if (unlikely(c->is_keepalive)) c->is_keepalive = 0;
+        }
     }
 
     conn_write_ready(c);
@@ -2018,17 +2042,6 @@ feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body)
     else {
         body_is_string = 1;
     }
-
-    if (likely(c->is_http11)) {
-        #ifdef DATE_HEADER
-        generate_date_header();
-        #endif
-        add_const_to_wbuf(c, DATE_BUF, DATE_HEADER_LENGTH);
-        if (unlikely(!c->is_keepalive))
-            add_const_to_wbuf(c, "Connection: close" CRLF, 19);
-    }
-    else if (unlikely(c->is_keepalive))
-        add_const_to_wbuf(c, "Connection: keep-alive" CRLF, 24);
 
     SV *cl_sv; // content-length future
     struct iovec *cl_iov;
@@ -2585,6 +2598,27 @@ set_keepalive (SV *self, SV *set)
     trace("set keepalive %d\n", SvTRUE(set));
     is_keepalive = SvTRUE(set);
 }
+
+unsigned int
+max_connection_reqs (SV *self, ...)
+    PROTOTYPE: $;$
+    CODE:
+{
+    if (items <= 1) {
+        RETVAL = max_connection_reqs;
+    }
+    else if (items == 2) {
+        SV *num = ST(1);
+        NV new_max_connection_reqs = SvIV(num);
+        if (!(new_max_connection_reqs >= 0)) {
+            croak("must set a positive value");
+        }
+        trace("set max requests per connection %d\n", (unsigned int)new_max_connection_reqs);
+        max_connection_reqs = (unsigned int) new_max_connection_reqs;
+    }
+}
+    OUTPUT:
+        RETVAL
 
 void
 DESTROY (SV *self)

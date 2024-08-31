@@ -200,7 +200,7 @@ sub simple_client ($$;@) {
     }
 
     # HTTP/1.1 default is 'keep-alive'
-    $headers->{'Connection'} ||= 'close';
+    $headers->{'Connection'} ||= 'close' if $proto eq '1.1' && !$opts{keepalive};
 
     my $head = join($CRLF, map {$_.': '.$headers->{$_}} sort keys %$headers);
 

@@ -7,6 +7,7 @@ use constant CLIENTS => HARDER ? 30 : 4;
 use Test::More tests => 4 + CLIENTS*3;
 use utf8;
 use lib 't'; use Utils;
+use File::Spec::Functions 'rel2abs';
 
 use_ok 'Feersum::Runner';
 
@@ -29,6 +30,7 @@ sub simple_get {
         };
 }
 
+note(my $app_path = rel2abs('eg/app.feersum'));
 my $pid = fork;
 die "can't fork: $!" unless defined $pid;
 if (!$pid) {
@@ -37,7 +39,7 @@ if (!$pid) {
         my $runner = Feersum::Runner->new(
             listen => ["localhost:$port"],
             server_starter => 1,
-            app_file => 'eg/app.feersum',
+            app_file => $app_path,
             pre_fork => NUM_FORK,
             quiet => 1,
         );

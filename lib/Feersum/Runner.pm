@@ -72,10 +72,12 @@ sub _prepare {
     $f->use_socket($sock);
 
     if (my $opts = $self->{options}) {
-        $self->{$_} = delete $opts->{$_} for grep $opts->{$_}, qw/pre_fork keepalive read_timeout/;
+        $self->{$_} = delete $opts->{$_} for grep defined($opts->{$_}),
+            qw/pre_fork keepalive read_timeout max_connection_reqs/;
     }
-    $f->set_keepalive($_) for grep $_, delete $self->{keepalive};
+    $f->set_keepalive($_) for grep defined, delete $self->{keepalive};
     $f->read_timeout($_) for grep $_, delete $self->{read_timeout};
+    $f->max_connection_reqs($_) for grep $_, delete $self->{max_connection_reqs};
 
     $self->{endjinn} = $f;
     return;
@@ -234,6 +236,10 @@ Enable/disable http keepalive requests.
 =item read_timeout
 
 Set read/keepalive timeout in seconds.
+
+=item max_connection_reqs
+
+Set max requests per connection in case of keepalive - 0(default) for unlimited.
 
 =item quiet
 
