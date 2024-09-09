@@ -8,6 +8,7 @@ use Socket qw/SOMAXCONN/;
 use POSIX ();
 use Scalar::Util qw/weaken/;
 use Carp qw/carp croak/;
+use File::Spec::Functions 'rel2abs';
 
 use constant DEATH_TIMER => 5.0; # seconds
 use constant DEATH_TIMER_INCR => 2.0; # seconds
@@ -44,12 +45,12 @@ sub _prepare {
     my $listen = shift @{$self->{listen}};
 
     my $sock;
-    if ($listen =~ m#^/\w#) {
+    if ($listen =~ m#^[/\.]+\w#) {
         require IO::Socket::UNIX;
         unlink $listen if -S $listen;
         my $saved = umask(0);
         $sock = IO::Socket::UNIX->new(
-           Local => $listen,
+           Local => rel2abs($listen),
            Listen => SOMAXCONN,
         );
         umask($saved);
@@ -99,7 +100,7 @@ sub run {
 
     if (!$app && $self->{app_file}) {
         local ($@, $!);
-        $app = do $self->{app_file};
+        $app = do(rel2abs($self->{app_file}));
         warn "couldn't parse $self->{app_file}: $@" if $@;
         warn "couldn't do $self->{app_file}: $!" if ($! && !defined $app);
         warn "couldn't run $self->{app_file}: didn't return anything"

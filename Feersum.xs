@@ -1957,7 +1957,7 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
     }
 
     // don't generate or strip Content-Length headers for 304 or 1xx
-    c->auto_cl = (code == 304 || (100 <= code && code <= 199)) ? 0 : 1;
+    c->auto_cl = (code == 304 || code == 204 || (100 <= code && code <= 199)) ? 0 : 1;
 
     add_const_to_wbuf(c, c->is_http11 ? "HTTP/1.1 " : "HTTP/1.0 ", 9);
     add_sv_to_wbuf(c, message);

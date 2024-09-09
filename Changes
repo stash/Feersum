@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.502 Wed Sep 03 19:10:55 2024 -0200
+        - don't generate Content-Length header for 204 responses
+        - acknowledge PERL_USE_UNSAFE_INC=0
+
 1.501 Sat Aug 31 09:10:55 2024 -0200
         - http/1.1 keepalive support for chunked(streaming) responses
         - max_connection_reqs to control requests per keepalive connection
