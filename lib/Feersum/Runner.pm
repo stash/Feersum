@@ -146,7 +146,10 @@ sub _fork_another {
             EV::break(EV::BREAK_ALL()) unless $self->{_n_kids};
             return;
         }
+        my $feersum = $self->{endjinn};
+        $feersum->accept_on_fd(fileno $self->{sock});
         $self->_fork_another($slot);
+        $feersum->unlisten;
     };
     return;
 }

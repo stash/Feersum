@@ -2573,20 +2573,19 @@ graceful_shutdown (SV *self, SV *cb)
 double
 read_timeout (SV *self, ...)
     PROTOTYPE: $;$
+    PREINIT:
+        double new_read_timeout = 0.0;
     CODE:
 {
-    if (items <= 1) {
-        RETVAL = read_timeout;
-    }
-    else if (items == 2) {
-        SV *duration = ST(1);
-        NV new_read_timeout = SvNV(duration);
+    if (items > 1) {
+        new_read_timeout = SvNV(ST(1));
         if (!(new_read_timeout > 0.0)) {
             croak("must set a positive (non-zero) value for the timeout");
         }
-        trace("set timeout %f\n", (double)new_read_timeout);
-        read_timeout = (double) new_read_timeout;
+        trace("set timeout %f\n", new_read_timeout);
+        read_timeout = new_read_timeout;
     }
+    RETVAL = read_timeout;
 }
     OUTPUT:
         RETVAL
@@ -2602,20 +2601,19 @@ set_keepalive (SV *self, SV *set)
 unsigned int
 max_connection_reqs (SV *self, ...)
     PROTOTYPE: $;$
+    PREINIT:
+        unsigned int new_max_connection_reqs = 0;
     CODE:
 {
-    if (items <= 1) {
-        RETVAL = max_connection_reqs;
-    }
-    else if (items == 2) {
-        SV *num = ST(1);
-        NV new_max_connection_reqs = SvIV(num);
+    if (items > 1) {
+        new_max_connection_reqs = SvIV(ST(1));
         if (!(new_max_connection_reqs >= 0)) {
             croak("must set a positive value");
         }
-        trace("set max requests per connection %d\n", (unsigned int)new_max_connection_reqs);
-        max_connection_reqs = (unsigned int) new_max_connection_reqs;
+        trace("set max requests per connection %d\n", new_max_connection_reqs);
+        max_connection_reqs = new_max_connection_reqs;
     }
+    RETVAL = max_connection_reqs;
 }
     OUTPUT:
         RETVAL

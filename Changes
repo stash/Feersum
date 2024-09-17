@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.503 Tue Sep 17 12:14:15 2024 -0200
+        - start listening on re-forked child
+        - try fix test for some older perls on freebsd
+
 1.502 Wed Sep 03 19:10:55 2024 -0200
         - don't generate Content-Length header for 204 responses
         - acknowledge PERL_USE_UNSAFE_INC=0
