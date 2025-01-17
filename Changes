@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+1.504 Sat Jan 18 19:14:15 2024 -0200
+        - http/1.1 pipelining support
+
 1.503 Tue Sep 17 12:14:15 2024 -0200
         - start listening on re-forked child
         - try fix test for some older perls on freebsd

@@ -218,6 +218,8 @@ struct feer_conn {
     unsigned int is_http11:1;
     unsigned int poll_write_cb_is_io_handle:1;
     unsigned int auto_cl:1;
+
+    ssize_t pipelined;
 };
 
 enum feer_header_norm_style {
@@ -675,6 +677,7 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa)
     c->receiving = RECEIVE_HEADERS;
     c->is_keepalive = 0;
     c->reqs = 0;
+    c->pipelined = 0;
 
     ev_io_init(&c->read_ev_io, try_conn_read, conn_fd, EV_READ);
     c->read_ev_io.data = (void *)c;
@@ -1036,8 +1039,16 @@ try_write_shutdown:
             Safefree(c->req);
         }
         c->req = NULL;
-        start_read_watcher(c);
-        restart_read_timer(c);
+        ssize_t pipelined = SvCUR(c->rbuf);
+        if (unlikely(pipelined > 0 && c->is_http11)) {
+            trace3("connections has pipelined data on %d\n", c->fd);
+            c->pipelined = pipelined;
+            try_conn_read(EV_A, &c->read_ev_io, 0);
+        } else {
+            c->pipelined = 0;
+            start_read_watcher(c);
+            restart_read_timer(c);
+        }
         trace3("connections active on %d\n", c->fd);
     } else {
         trace3("write SHUTDOWN %d, refcnt=%d, state=%d\n", c->fd, SvREFCNT(c->self), c->responding);
@@ -1076,6 +1087,9 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 {
     dCONN;
     SvREFCNT_inc_void_NN(c->self);
+    ssize_t got_n = 0;
+
+    if (unlikely(c->pipelined)) goto pipelined;
 
     // if it's marked readable EV suggests we simply try read it. Otherwise it
     // is stopped and we should ditch this connection.
@@ -1089,7 +1103,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
     trace("try read %d\n",w->fd);
 
-    if (likely(!c->rbuf)) { // likely = optimize for small requests
+    if (unlikely(!c->rbuf)) { // likely = optimize for keepalive requests
         trace("init rbuf for %d\n",w->fd);
         c->rbuf = newSV(READ_INIT_FACTOR*READ_BUFSZ + 1);
         SvPOK_on(c->rbuf);
@@ -1105,7 +1119,7 @@ try_conn_read(EV_P_ ev_io *w, int revents)
     }
 
     char *cur = SvPVX(c->rbuf) + SvCUR(c->rbuf);
-    ssize_t got_n = read(w->fd, cur, space_free);
+    got_n = read(w->fd, cur, space_free);
 
     if (unlikely(got_n <= 0)) {
         if (unlikely(got_n == 0)) {
@@ -1120,6 +1134,13 @@ try_conn_read(EV_P_ ev_io *w, int revents)
 
     trace("read %d %"Ssz_df"\n", w->fd, (Ssz)got_n);
     SvCUR(c->rbuf) += got_n;
+    goto try_parse;
+
+pipelined:
+    got_n = c->pipelined;
+    c->pipelined = 0;
+
+try_parse:
     // likely = optimize for small requests
     if (likely(c->receiving <= RECEIVE_HEADERS)) {
         int ret = try_parse_http(c, (size_t)got_n);
