@@ -1,5 +1,8 @@
 Revision history for Perl extension Feersum
 
+1.505 Sat Jan 22 16:20:00 2024 -0200
+        - minor: manifest fix and test tweaks
+
 1.504 Sat Jan 18 19:14:15 2024 -0200
         - http/1.1 pipelining support
 

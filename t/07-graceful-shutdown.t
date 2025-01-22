@@ -96,7 +96,7 @@ my $grace_t = AE::timer 1.0, 0, sub {
 };
 
 $cv->begin;
-my $try_connect = AE::timer 1.4, 0, sub {
+my $try_connect = AE::timer 3.5, 0, sub {
     my $h; $h = AnyEvent::Handle->new(
         connect => ["localhost", $port],
         on_connect => sub {

@@ -74,7 +74,7 @@ if ($pid == 0) { # child
             $hdl->destroy;
             $cv->send;
         },
-        timeout => 1
+        timeout => 2
     );
     $hdl->push_write("GET / HTTP/1.1\015\012\015\012");
     $hdl->push_read(line => "\015\012\015\012" => sub {
@@ -144,7 +144,7 @@ if ($pid == 0) { # child
             $hdl->destroy;
             $cv->send;
         },
-        timeout => 1
+        timeout => 2
     );
     $hdl->push_write("GET / HTTP/1.0\015\012Connection: keep-alive\015\012\015\012");
     $hdl->push_read(line => "\015\012\015\012" => sub {

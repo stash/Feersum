@@ -50,6 +50,7 @@ t/62-plack-runner.t
 t/63-plack-apps.t
 t/64-unixsock.t
 t/65-keepalive.t
+t/66-pipelining.t
 t/99-critic.t
 t/99-fixme.t
 t/99-manifest.t
