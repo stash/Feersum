@@ -1039,7 +1039,8 @@ try_write_shutdown:
             Safefree(c->req);
         }
         c->req = NULL;
-        ssize_t pipelined = SvCUR(c->rbuf);
+        ssize_t pipelined = 0;
+        if (c->rbuf) { pipelined = SvCUR(c->rbuf); }
         if (unlikely(pipelined > 0 && c->is_http11)) {
             trace3("connections has pipelined data on %d\n", c->fd);
             c->pipelined = pipelined;
