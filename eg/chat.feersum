@@ -2,11 +2,26 @@
 use warnings;
 use strict;
 
-use JSON::XS;
 use EV;
 use Scalar::Util qw/weaken/;
-use HTML::Entities qw/encode_entities/;
-use URI::Escape qw/uri_unescape/;
+
+sub encode_entities {
+    my $s = shift;
+    return '' unless defined $s;
+    $s =~ s/&/&amp;/g;
+    $s =~ s/</&lt;/g;
+    $s =~ s/>/&gt;/g;
+    $s =~ s/"/&quot;/g;
+    $s =~ s/'/&#39;/g;
+    $s;
+}
+
+sub uri_unescape {
+    my $s = shift;
+    return '' unless defined $s;
+    $s =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+    $s;
+}
 
 my $clients = 0;
 my @handles;

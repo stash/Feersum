@@ -1,0 +1,114 @@
+# Caddy Layer 4 TCP proxy for SSL termination with PROXY Protocol v2
+# Usage: caddy run --config /path/to/Caddyfile-stream
+#
+# NOTE: Requires caddy-l4 plugin for TCP/TLS proxying:
+#   xcaddy build --with github.com/mholt/caddy-l4
+#
+# This is Layer 4 (TCP) proxying - no HTTP inspection, just SSL termination.
+#
+# PROXY Protocol v2 preserves:
+#   - Real client IP address (REMOTE_ADDR)
+#   - Destination port (for https scheme inference when dst_port=443)
+#
+# Backend options:
+#   plackup -s Feersum -p 5000 --keepalive=1 --proxy-protocol=1 app.psgi
+#
+# Or native:
+#   perl -MFeersum -e '
+#     my $f = Feersum->endjinn;
+#     my $sock = IO::Socket::INET->new(
+#         LocalAddr => "127.0.0.1:5000",
+#         ReuseAddr => 1, Blocking => 0, Listen => 1024
+#     ) or die $!;
+#     $f->use_socket($sock);
+#     $f->set_keepalive(1);
+#     $f->set_proxy_protocol(1);
+#     $f->request_handler(sub {
+#         my $r = shift;
+#         $r->send_response(200, ["Content-Type" => "text/plain"], "OK");
+#     });
+#     EV::run;'
+
+{
+    # Layer 4 app configuration
+    layer4 {
+        #=====================================================================
+        # SSL termination -> TCP backend with PROXY Protocol v2
+        #=====================================================================
+        :443 {
+            # Match TLS connections
+            @tls tls
+
+            route @tls {
+                # Terminate TLS
+                tls {
+                    connection_policy {
+                        # Use default/auto certificates or specify:
+                        # cert_file /etc/ssl/certs/server.crt
+                        # key_file /etc/ssl/private/server.key
+                    }
+                }
+
+                # Proxy to Feersum with PROXY Protocol v2
+                # Sends client IP and destination port (443)
+                # Feersum will set psgi.url_scheme to "https" (dst_port=443)
+                proxy {
+                    upstream 127.0.0.1:5000
+                    # Or multiple backends:
+                    # upstream 127.0.0.1:5000
+                    # upstream 127.0.0.1:5001
+
+                    # PROXY Protocol v2
+                    proxy_protocol v2
+
+                    # Health checks
+                    health_interval 10s
+                    health_timeout 5s
+                }
+            }
+        }
+
+        #=====================================================================
+        # SSL termination -> Unix socket backend with PROXY Protocol v2
+        #=====================================================================
+        :8443 {
+            @tls tls
+
+            route @tls {
+                tls
+                proxy {
+                    upstream unix//tmp/feersum.sock
+                    proxy_protocol v2
+                }
+            }
+        }
+
+        #=====================================================================
+        # Plain TCP passthrough (no SSL, for testing)
+        #=====================================================================
+        :8080 {
+            route {
+                proxy {
+                    upstream 127.0.0.1:5000
+                }
+            }
+        }
+    }
+}
+
+# =============================================================================
+# ALTERNATIVE: Simple TLS termination using standard Caddy reverse_proxy
+# =============================================================================
+# If you don't need pure TCP streaming, standard Caddy works fine:
+#
+# :443 {
+#     reverse_proxy 127.0.0.1:5000 {
+#         transport http {
+#             keepalive 60s
+#             keepalive_idle_conns 64
+#         }
+#     }
+#     tls {
+#         protocols tls1.2 tls1.3
+#     }
+# }

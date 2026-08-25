@@ -1,5 +1,6 @@
 struct feer_conn * T_feer_conn
 feer_conn_handle * T_feer_conn_handle
+struct feer_server * T_feer_server
 
 INPUT
 T_feer_conn
@@ -11,8 +12,12 @@ T_feer_conn_handle
     /* handle is really just a feer_conn struct: */
     struct feer_conn *c = (struct feer_conn *)$var;
 
+T_feer_server
+    $var = sv_2feer_server($arg);
+
 OUTPUT
 T_feer_conn
    $arg = feer_conn_2sv($var);
 
-AV* T_AVREF_REFCOUNT_FIXED
+T_feer_server
+   $arg = feer_server_2sv($var);

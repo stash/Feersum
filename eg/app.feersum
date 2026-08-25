@@ -9,8 +9,9 @@ sub {
     # loading the env is optional under Feersum.  For a "fair" speed
     # comparison to app.psgi, uncomment this line:
 #    my $env = $r->env();
+    my $body = "Hello customer number 0x" . sprintf('%08x',$n) . "\n";
     $r->send_response(200, [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
-    ], [\"Hello customer number 0x",sprintf('%08x',$n),\"\n"]);
+    ], \$body);
 };

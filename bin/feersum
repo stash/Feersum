@@ -1,10 +1,14 @@
-#!/usr/bin/env perl
+#!perl
 use warnings;
 use strict;
 use EV ();
 use Feersum ();
 
 require Getopt::Long;
+
+# libev priority bounds, mirrored from Feersum::Runner.
+use constant PRIORITY_MIN => -2;
+use constant PRIORITY_MAX => 2;
 
 my $native = 0;
 Getopt::Long::Configure("no_ignore_case", "no_auto_abbrev", "pass_through");
@@ -15,21 +19,174 @@ Getopt::Long::GetOptions(
 my $runner;
 
 if ($native) {
-    my $listen = 'localhost:5000';
+    my @listen;
     my $pre_fork = 0;
     my $verbose = 0;
+    my $reuseport = 0;
+    my ($read_priority, $write_priority, $accept_priority);
+    my ($keepalive, $read_timeout, $header_timeout, $write_timeout, $max_connection_reqs, $max_accept_per_loop, $max_connections);
+    my ($max_read_buf, $max_body_len, $max_uri_len, $wbuf_low_water);
+    my ($reverse_proxy, $proxy_protocol, $tls_cert_file, $tls_key_file, $h2);
+    my ($backlog, $max_requests_per_worker, $max_h2_concurrent_streams, $max_h2_conn_body);
+    my ($hot_restart, $preload_app, $psgix_io, $graceful_timeout, $startup_timeout);
+    my ($pid_file, $daemonize, $user, $group);
+    # a misspelt option would otherwise be taken as the app filename
+    Getopt::Long::Configure("no_pass_through");
+    my ($want_help, $want_version);
     Getopt::Long::GetOptions(
-        "listen=s" => \$listen,
+        "help|h" => \$want_help,
+        "version" => \$want_version,
+        "listen=s" => \@listen,
         "pre-fork=i" => \$pre_fork,
         "verbose!" => \$verbose,
-    );
+        "reuseport!" => \$reuseport,
+        "reverse-proxy!" => \$reverse_proxy,
+        "proxy-protocol!" => \$proxy_protocol,
+        "tls-cert-file=s" => \$tls_cert_file,
+        "tls-key-file=s"  => \$tls_key_file,
+        "h2!" => \$h2,
+        "read-priority=i" => \$read_priority,
+        "write-priority=i" => \$write_priority,
+        "accept-priority=i" => \$accept_priority,
+        "keepalive!" => \$keepalive,
+        "read-timeout=f" => \$read_timeout,
+        "header-timeout=f" => \$header_timeout,
+        "write-timeout=f" => \$write_timeout,
+        "max-connection-reqs=i" => \$max_connection_reqs,
+        "max-accept-per-loop=i" => \$max_accept_per_loop,
+        "max-connections=i" => \$max_connections,
+        "max-read-buf=i" => \$max_read_buf,
+        "max-body-len=i" => \$max_body_len,
+        "max-uri-len=i" => \$max_uri_len,
+        "wbuf-low-water=i" => \$wbuf_low_water,
+        "backlog=i" => \$backlog,
+        "max-requests-per-worker=i" => \$max_requests_per_worker,
+        "max-h2-concurrent-streams=i" => \$max_h2_concurrent_streams,
+        "max-h2-conn-body=i" => \$max_h2_conn_body,
+        "hot-restart!" => \$hot_restart,
+        "preload-app!" => \$preload_app,
+        "psgix-io!" => \$psgix_io,
+        "graceful-timeout=f" => \$graceful_timeout,
+        "startup-timeout=f" => \$startup_timeout,
+        "pid-file=s" => \$pid_file,
+        "daemonize!" => \$daemonize,
+        "user=s" => \$user,
+        "group=s" => \$group,
+    ) or die "Error: unknown or malformed option (try --help)\n";
+
+    # before the validations: --help must still work next to a bad value
+    if ($want_version) {
+        print "Feersum $Feersum::VERSION_STRING on EV $EV::VERSION\n";
+        exit 0;
+    }
+    if ($want_help) {
+        require Pod::Usage;
+        Pod::Usage::pod2usage(-verbose => 1, -exitval => 0);
+    }
+
+    @listen = ('localhost:5000') unless @listen;
+    for my $prio ([$read_priority, 'read'], [$write_priority, 'write'], [$accept_priority, 'accept']) {
+        if (defined $prio->[0] && ($prio->[0] < PRIORITY_MIN || $prio->[0] > PRIORITY_MAX)) {
+            die "Error: --$prio->[1]-priority must be between -2 and 2\n";
+        }
+    }
+    if (defined $read_timeout && $read_timeout <= 0) {
+        die "Error: --read-timeout must be positive (non-zero)\n";
+    }
+    if (defined $header_timeout && $header_timeout < 0) {
+        die "Error: --header-timeout must be non-negative\n";
+    }
+    if (defined $write_timeout && $write_timeout < 0) {
+        die "Error: --write-timeout must be non-negative\n";
+    }
+    if (defined $max_connection_reqs && $max_connection_reqs < 0) {
+        die "Error: --max-connection-reqs must be non-negative\n";
+    }
+    if (defined $max_accept_per_loop && $max_accept_per_loop < 1) {
+        die "Error: --max-accept-per-loop must be positive\n";
+    }
+    if (defined $max_connections && $max_connections < 0) {
+        die "Error: --max-connections must be non-negative\n";
+    }
+    if (defined $backlog && $backlog < 1) {
+        die "Error: --backlog must be positive\n";
+    }
+    if (defined $max_requests_per_worker && $max_requests_per_worker < 0) {
+        die "Error: --max-requests-per-worker must be non-negative\n";
+    }
+    if (defined $max_h2_concurrent_streams && $max_h2_concurrent_streams < 1) {
+        die "Error: --max-h2-concurrent-streams must be positive\n";
+    }
+    if (defined $graceful_timeout && $graceful_timeout < 0) {
+        die "Error: --graceful-timeout must be non-negative\n";
+    }
+    if (defined $startup_timeout && $startup_timeout < 0) {
+        die "Error: --startup-timeout must be non-negative\n";
+    }
+    if (defined $max_read_buf && $max_read_buf < 0) {
+        die "Error: --max-read-buf must be non-negative\n";
+    }
+    if (defined $max_body_len && $max_body_len < 0) {
+        die "Error: --max-body-len must be non-negative\n";
+    }
+    if (defined $max_h2_conn_body && $max_h2_conn_body < 0) {
+        die "Error: --max-h2-conn-body must be non-negative\n";
+    }
+    if (defined $max_uri_len && $max_uri_len < 0) {
+        die "Error: --max-uri-len must be non-negative\n";
+    }
+    if (defined $wbuf_low_water && $wbuf_low_water < 0) {
+        die "Error: --wbuf-low-water must be non-negative\n";
+    }
+    if ($tls_cert_file && !$tls_key_file) {
+        die "Error: --tls-cert-file requires --tls-key-file\n";
+    }
+    if ($tls_key_file && !$tls_cert_file) {
+        die "Error: --tls-key-file requires --tls-cert-file\n";
+    }
+    if ($h2 && !$tls_cert_file) {
+        die "Error: --h2 requires TLS (--tls-cert-file and --tls-key-file)\n";
+    }
     require Feersum::Runner;
-    my $app_file = pop @ARGV || 'app.feersum';
+    die "Error: expected at most one app file, got: @ARGV\n" if @ARGV > 1;
+    my $app_file = shift(@ARGV) || 'app.feersum';
     $runner = Feersum::Runner->new(
-        'listen' => [$listen],
+        'listen' => [@listen],
         app_file => $app_file,
         pre_fork => $pre_fork,
         quiet => !$verbose,
+        reuseport => $reuseport,
+        (defined $read_priority ? (read_priority => $read_priority) : ()),
+        (defined $write_priority ? (write_priority => $write_priority) : ()),
+        (defined $accept_priority ? (accept_priority => $accept_priority) : ()),
+        (defined $keepalive ? (keepalive => $keepalive) : ()),
+        (defined $read_timeout ? (read_timeout => $read_timeout) : ()),
+        (defined $max_connection_reqs ? (max_connection_reqs => $max_connection_reqs) : ()),
+        (defined $max_accept_per_loop ? (max_accept_per_loop => $max_accept_per_loop) : ()),
+        (defined $max_connections ? (max_connections => $max_connections) : ()),
+        (defined $max_read_buf ? (max_read_buf => $max_read_buf) : ()),
+        (defined $max_body_len ? (max_body_len => $max_body_len) : ()),
+        (defined $max_uri_len ? (max_uri_len => $max_uri_len) : ()),
+        (defined $wbuf_low_water ? (wbuf_low_water => $wbuf_low_water) : ()),
+        (defined $header_timeout ? (header_timeout => $header_timeout) : ()),
+        (defined $write_timeout ? (write_timeout => $write_timeout) : ()),
+        (defined $backlog ? (backlog => $backlog) : ()),
+        (defined $max_requests_per_worker ? (max_requests_per_worker => $max_requests_per_worker) : ()),
+        (defined $max_h2_concurrent_streams ? (max_h2_concurrent_streams => $max_h2_concurrent_streams) : ()),
+        (defined $max_h2_conn_body ? (max_h2_conn_body => $max_h2_conn_body) : ()),
+        ($hot_restart ? (hot_restart => 1) : ()),
+        (defined $preload_app ? (preload_app => $preload_app) : ()),
+        (defined $psgix_io ? (psgix_io => $psgix_io) : ()),
+        (defined $graceful_timeout ? (graceful_timeout => $graceful_timeout) : ()),
+        (defined $startup_timeout ? (startup_timeout => $startup_timeout) : ()),
+        (defined $pid_file ? (pid_file => $pid_file) : ()),
+        ($daemonize ? (daemonize => 1) : ()),
+        (defined $user ? (user => $user) : ()),
+        (defined $group ? (group => $group) : ()),
+        (defined $reverse_proxy ? (reverse_proxy => $reverse_proxy) : ()),
+        (defined $proxy_protocol ? (proxy_protocol => $proxy_protocol) : ()),
+        ($tls_cert_file ? (tls => { cert_file => $tls_cert_file, key_file => $tls_key_file }) : ()),
+        ($h2 ? (h2 => 1) : ()),
     );
 }
 else {
@@ -37,7 +194,7 @@ else {
         server => 'Feersum',
         env => 'deployment',
         version_cb => sub {
-            print "Feersum $Feersum::VERSION on EV $EV::VERSION\n";
+            print "Feersum $Feersum::VERSION_STRING on EV $EV::VERSION\n";
         }
     );
     require Plack::Runner;
@@ -65,9 +222,196 @@ Loads the specified app file into a Feersum server.
 In both cases, if C<--pre-fork=N> is specified, that many worker processes are
 used to serve requests. See L<Feersum::Runner> for details.
 
-If in native mode (when running C<feersum --native>), currently only a
-C<--listen> parameter is accepted.  By default, the server will listen on
-localhost port 5000.
+C<--help> (or C<-h>) prints this documentation; C<--version> prints the
+Feersum and EV versions.
+
+=head1 OPTIONS
+
+The following options are available in native mode (when running
+C<feersum --native>):
+
+=over 4
+
+=item C<--listen host:port>
+
+Address to listen on. Default is localhost:5000. May be given multiple times
+to listen on several addresses at once. IPv6 addresses should use bracket
+notation: C<--listen [::1]:5000>.  A path (anything
+starting with C</> or C<.>) is bound as a UNIX socket instead of TCP.
+
+=item C<--pre-fork=N>
+
+Fork N worker processes to handle requests.
+
+=item C<--preload-app> / C<--no-preload-app>
+
+Controls whether the app is loaded before forking workers (the default) or
+independently in each worker (C<--no-preload-app>).  Only meaningful with
+C<--pre-fork>, and ignored entirely under C<--hot-restart> (each generation
+always loads the app fresh).
+
+=item C<--hot-restart>
+
+Enable generation-based hot restart: the entry process becomes a supervisor
+and C<SIGHUP> forks a fresh generation (clean module reload) before retiring
+the old one.  See L<Feersum::Runner/hot_restart>.
+
+=item C<--max-requests-per-worker=N>
+
+Recycle a worker after it has served N requests (0, the default, means
+unlimited).  Only effective with C<--pre-fork> or C<--hot-restart>.
+
+=item C<--graceful-timeout=N>
+
+Seconds to wait for in-flight requests during graceful shutdown before
+force-exiting (default: 5; 0 force-exits immediately).
+
+=item C<--startup-timeout=N>
+
+Seconds to wait for a hot-restart generation to become ready before rolling
+back to the previous generation (default: 10; 0 rolls back immediately).
+
+=item C<--backlog=N>
+
+Listen socket backlog size (default: SOMAXCONN).
+
+=item C<--daemonize>
+
+Fork into the background, detach from the terminal, and redirect standard
+streams to /dev/null.
+
+=item C<--pid-file=FILE>
+
+Write the server PID to FILE (removed on clean shutdown).  With
+C<--daemonize>, contains the daemon's PID.
+
+=item C<--user=USER> / C<--group=GROUP>
+
+Drop privileges to this user/group after binding listen sockets.  Allows
+binding privileged ports as root.
+
+=item C<--verbose>
+
+Enable verbose output.
+
+=item C<--reuseport>
+
+Enable SO_REUSEPORT to distribute connections across workers.  No effect
+without C<--pre-fork=N>.
+
+=item C<--read-priority=N>
+
+Set EV priority for read events (-2 to 2).
+
+=item C<--write-priority=N>
+
+Set EV priority for write events (-2 to 2).
+
+=item C<--accept-priority=N>
+
+Set EV priority for accept events (-2 to 2).
+
+=item C<--keepalive> / C<--no-keepalive>
+
+Enable or disable HTTP keep-alive connections.
+
+=item C<--read-timeout=N>
+
+Set read/keep-alive timeout in seconds (can be fractional).  Must be positive
+(non-zero); the default is 5 seconds.
+
+=item C<--max-connection-reqs=N>
+
+Maximum requests per keep-alive connection (0 for unlimited).
+
+=item C<--max-accept-per-loop=N>
+
+Maximum connections to accept per event loop iteration (default: 64).
+
+=item C<--max-connections=N>
+
+Maximum concurrent connections (default: 10000; 0 for unlimited).
+
+=item C<--max-read-buf=N>
+
+Maximum read buffer size per connection (default: 64 MiB, 67108864 bytes).  This limits how
+large the read buffer can grow during header parsing and chunked body
+reception.
+
+=item C<--max-body-len=N>
+
+Maximum request body size (default: 64 MiB, 67108864 bytes).  This limits Content-Length
+values and cumulative chunked body sizes.
+
+=item C<--max-uri-len=N>
+
+Maximum request URI length (default: 8192).
+
+=item C<--wbuf-low-water=N>
+
+Write-buffer low-water mark in bytes (default: 0).  Used with C<poll_cb()> on
+streaming responses: the callback fires when the buffer drains to or below
+this threshold.
+
+=item C<--psgix-io> / C<--no-psgix-io>
+
+Enable or disable the C<psgix.io> PSGI extension (default: enabled).
+Disabling skips per-request raw-handle setup if the app never uses
+WebSocket upgrades or raw I/O.
+
+=item C<--max-h2-concurrent-streams=N>
+
+Maximum concurrent HTTP/2 streams per connection (default: 100, which is
+also the compile-time ceiling).  Requires H2 support compiled in.
+
+=item C<--max-h2-conn-body=BYTES>
+
+Aggregate cap on request-body bytes buffered across a connection's HTTP/2
+streams (default: 0, off).  Requires H2 support compiled in.
+
+=item C<--header-timeout=N>
+
+Timeout in seconds for receiving complete HTTP headers (can be fractional).
+This is separate from the general read timeout.  Default is 10 seconds;
+C<0> disables it.
+
+=item C<--write-timeout=N>
+
+Timeout in seconds for writing a response to a slow client (can be
+fractional).  C<0> (the default) disables the write timeout.
+
+=item C<--reverse-proxy> / C<--no-reverse-proxy>
+
+Enable or disable reverse proxy mode. When enabled, Feersum trusts
+X-Forwarded-For and X-Forwarded-Proto headers to determine the client
+IP address and URL scheme respectively.
+
+=item C<--proxy-protocol> / C<--no-proxy-protocol>
+
+Enable or disable PROXY protocol support (HAProxy protocol). When enabled,
+each new connection must begin with a PROXY protocol v1 or v2 header before
+any HTTP or TLS data. Works with both plain HTTP and TLS listeners.
+
+=item C<--tls-cert-file=FILE>
+
+Path to the TLS certificate file (PEM format). Must be used together with
+C<--tls-key-file>. Enables TLS 1.3 on all listeners.
+
+SNI virtual hosting (multiple certificates per listener) is not available
+from the command line; use L<Feersum::Runner> directly with its C<sni>
+option.
+
+=item C<--tls-key-file=FILE>
+
+Path to the TLS private key file (PEM format). Must be used together with
+C<--tls-cert-file>.
+
+=item C<--h2>
+
+Enable HTTP/2 negotiation via ALPN on TLS listeners. Requires TLS to be
+enabled (C<--tls-cert-file> and C<--tls-key-file>). H2 is off by default.
+
+=back
 
 When running in PSGI mode (non-native), L<Plack::Runner> is used.  See that
 module for documentation and defaults.

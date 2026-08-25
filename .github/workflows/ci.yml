@@ -1,0 +1,605 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'   # '*' does not match branch names containing '/'
+    tags-ignore:
+      - '*'
+  pull_request:
+
+# One run per branch.  Pushing a few commits in a row otherwise queued a full
+# 30-job matrix for each of them on a shared runner pool, so results for the
+# commit that matters arrived last.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI runners are shared and loaded, and the suite scales every timing bound off
+# TIMEOUT_MULT.  Set the factor explicitly rather than AUTOMATED_TESTING: that
+# would select each file own 3-5x and, because several tests SLEEP in
+# proportion, took alpine from 9 minutes to over an hour.
+env:
+  PERL_TEST_TIME_OUT_FACTOR: 2
+
+jobs:
+  linux:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version:
+          - '5.16'
+          - '5.18'
+          - '5.20'
+          - '5.22'
+          - '5.24'
+          - '5.26'
+          - '5.28'
+          - '5.30'
+          - '5.32'
+          - '5.34'
+          - '5.36'
+          - '5.38'
+          - '5.40'
+          - '5.42'
+
+    container:
+      image: perldocker/perl-tester:${{ matrix.perl-version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: perl -V
+        run: perl -V
+
+      - name: Install TLS and H2 system dependencies
+        run: |
+          apt-get update -q
+          apt-get install -y -q libssl-dev libnghttp2-dev nghttp2-client pkg-config procps
+
+      - name: Install EV::MakeMaker
+        run: cpanm -n EV::MakeMaker
+
+      - name: Install TLS and H2 Perl dependencies
+        # Alien::nghttp2 uses the system library when pkg-config can find it;
+        # otherwise it fetches and builds nghttp2 with cmake, and that build
+        # has failed outright in some of these container images (5.18, 5.28)
+        # while every other perl in the same matrix succeeded.  That is an
+        # environment fact, not a defect, and it was reporting as a red build.
+        # H2 is exercised on 28 other jobs, so a failure here downgrades this
+        # one to a TLS-only build - announced loudly enough that it cannot
+        # pass unnoticed, and still fatal if it takes TLS down with it.
+        run: |
+          cpanm -n IO::Socket::SSL
+          cpanm -n Alien::nghttp2 \
+            || { sleep 15; cpanm -n Alien::nghttp2; } \
+            || echo "::warning::Alien::nghttp2 unavailable here; building without HTTP/2"
+
+      - name: perl Makefile.PL
+        run: perl Makefile.PL
+
+      - name: Install dependencies
+        run: cpanm -n --with-develop --installdeps .
+
+      - name: make
+        run: make
+
+      - name: verify optional features are compiled in
+        run: |
+          perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+            die "TLS not compiled in\n" unless $f->has_tls;
+            print $f->has_h2 ? "TLS and H2 present\n"
+                             : "TLS present, H2 ABSENT (Alien::nghttp2 unavailable)\n"'
+          if perl -Mblib -MFeersum -e 'exit(Feersum->new->has_h2 ? 0 : 1)'; then
+            command -v nghttp >/dev/null || { echo "nghttp binary missing"; exit 1; }
+          fi
+
+      - name: make test
+        run: make test
+
+      # t/meta-* (critic, fixme, manifest, pod, pod-coverage) all skip unless
+      # RELEASE_TESTING is set, and nothing in CI set it - so MANIFEST
+      # completeness, POD coverage and perlcritic were gated entirely on the
+      # author remembering to run them by hand before a release.
+      - name: release gates
+        run: RELEASE_TESTING=1 AUTHOR_TESTING=1 prove -b t/meta-01-critic.t t/meta-04-pod.t
+             t/meta-05-pod-coverage.t t/meta-03-manifest.t t/meta-02-fixme.t
+
+      # xt/ is shipped but was wired into nothing, so the supervisor/worker
+      # lifecycle seam (hot restart, zero downtime, worker death) only ever ran
+      # when someone typed `prove -b xt/` by hand.  xt/browser-* need
+      # Firefox::Marionette and xt/evws-* need EV::Websockets (not on CPAN);
+      # xt/stress-* are memory/stress tests left out deliberately.
+      - name: author tests (process lifecycle)
+        run: |
+          prove -b xt/runner-02-hot-restart-edge.t xt/runner-03-worker-lifecycle.t \
+                   xt/runner-04-combos.t xt/runner-06-zero-downtime.t \
+                   xt/runner-07-pid-file-hot-restart.t xt/runner-08-sequential-hups.t \
+                   xt/runner-09-worker-death-under-load.t \
+                   xt/runner-10-signal-and-startup-guards.t \
+                   xt/runner-11-reuseport-unix.t \
+                   xt/runner-12-respawn-fork-cascade.t \
+                   xt/core-05-retire-drain-deadline.t \
+                   xt/runner-05-hot-restart-tls.t \
+                   xt/runner-01-hot-restart-failure.t
+
+      # Regression tests for bugs that were found and fixed one at a time.
+      # They guard nothing unless something runs them, and each one skips
+      # itself unless AUTHOR_TESTING is set.
+      - name: author tests (fixed-bug regressions)
+        env:
+          AUTHOR_TESTING: 1
+        run: |
+          prove -b xt/runner-18-features.t xt/runner-19-worker-readiness-gate.t \
+                   xt/tls-02-write-deadline.t xt/tls-03-write-timeout-drain.t \
+                   xt/time-02-write-timeout-drain.t
+          prove -b xt/core-06-sendfile-shrink-desync.t xt/core-07-continue-partial-write.t \
+                   xt/core-02-error-path-leak.t xt/runner-13-graceful-drain-takeover.t \
+                   xt/core-03-drain-sendfile-integrity.t \
+                   xt/runner-14-respawn-fork-failure.t \
+                   xt/runner-15-master-shutdown-backstop.t \
+                   xt/core-04-lingering-close.t \
+                   xt/h2-02-tunnel-eof-spin.t \
+                   xt/runner-16-reuseport-tls-croak.t \
+                   xt/runner-17-generation-restart-backoff.t
+
+      # Drain/timing tests moved out of t/: they need many seconds of steady
+      # draining, which an overloaded CPAN Testers box cannot provide.
+      - name: author tests (write-deadline drain)
+        run: |
+          prove -b xt/time-01-write-deadline-drain.t \
+                   xt/tls-01-sendfile-timeout.t
+
+      # The plain/TLS x H1/H2 x proxy transport matrix, driven by raw frames
+      # rather than the nghttp binary.
+      - name: author tests (transport matrix)
+        run: |
+          prove -b xt/transport-01-http.t xt/transport-02-sse.t \
+                   xt/transport-03-io.t xt/stress-03-tunnel-throughput.t \
+                   xt/core-01-access-log-streaming.t
+
+  linux-arm:
+    # ARM64 Ubuntu runner - catches arch-specific issues (pointer size,
+    # alignment, memory order) that x86_64 smokers miss.
+    # perldocker/perl-tester is amd64-only, so use actions-setup-perl directly.
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version:
+          - '5.40'
+          - '5.42'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Setup Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl-version }}
+      - name: perl -V
+        run: perl -V
+      - name: Install TLS and H2 system dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q libssl-dev libnghttp2-dev nghttp2-client pkg-config
+      - name: Install EV::MakeMaker
+        run: cpanm -n EV::MakeMaker
+      - name: Install TLS and H2 Perl dependencies
+        # Alien::nghttp2 uses the system library when pkg-config can find it,
+        # and only then; without pkg-config it falls back to fetching and
+        # building nghttp2 with cmake, which has failed outright on several
+        # runs and reads as a code failure.  The retry is for the fetch.
+        run: |
+          cpanm -n IO::Socket::SSL
+          cpanm -n Alien::nghttp2 || { sleep 15; cpanm -n Alien::nghttp2; }
+      - name: perl Makefile.PL
+        run: perl Makefile.PL
+      - name: Install dependencies
+        run: cpanm -n --installdeps .
+      - name: make
+        run: make
+      - name: verify optional features are compiled in
+        run: |
+          perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+            die "TLS not compiled in\n" unless $f->has_tls;
+            die "H2 not compiled in\n"  unless $f->has_h2;
+            print "TLS and H2 present\n"'
+          command -v nghttp >/dev/null || { echo "nghttp binary missing"; exit 1; }
+      - name: make test
+        run: make test
+
+  linux-threaded:
+    # Makefile.PL only sets -DFEERSUM_STEAL on a NON-threaded perl, so without
+    # this job the entire non-steal branch is never compiled anywhere in CI.
+    # It also catches a missing aTHX_/pTHX_ under PERL_NO_GET_CONTEXT, which
+    # builds clean on a non-threaded perl and fails to link on a threaded one.
+    # Debian/Ubuntu system perl and much of CPAN Testers are threaded.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version:
+          - '5.36'
+          - '5.42'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Setup threaded Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl-version }}
+          multi-thread: true
+      - name: perl -V
+        run: perl -V
+      - name: confirm this perl really is threaded
+        run: perl -MConfig -e 'die "not a threaded perl\n" unless $Config{useithreads}'
+      - name: Install TLS and H2 system dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q libssl-dev libnghttp2-dev nghttp2-client pkg-config
+      - name: Install EV::MakeMaker
+        run: cpanm -n EV::MakeMaker
+      - name: Install TLS and H2 Perl dependencies
+        # Alien::nghttp2 uses the system library when pkg-config can find it,
+        # and only then; without pkg-config it falls back to fetching and
+        # building nghttp2 with cmake, which has failed outright on several
+        # runs and reads as a code failure.  The retry is for the fetch.
+        run: |
+          cpanm -n IO::Socket::SSL
+          cpanm -n Alien::nghttp2 || { sleep 15; cpanm -n Alien::nghttp2; }
+      - name: perl Makefile.PL
+        run: perl Makefile.PL
+      - name: Install dependencies
+        run: cpanm -n --installdeps .
+      - name: make
+        run: make
+      - name: confirm the non-steal branch was compiled
+        run: grep -q FEERSUM_STEAL Makefile && { echo "STEAL unexpectedly enabled on a threaded perl"; exit 1; } || echo "non-steal branch compiled"
+      - name: make test
+        run: make test
+
+  linux-no-tls:
+    # Build without TLS via the explicit -NOTLS flag (deterministic: the
+    # perl-tester base image ships libssl-dev, so relying on its absence
+    # would let Makefile.PL's system-header fallback silently re-enable TLS
+    # and never actually exercise the no-TLS build).
+    # Catches tests that forget to skip when TLS is unavailable.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    container:
+      image: perldocker/perl-tester:5.40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: perl -V
+        run: perl -V
+      - name: Install EV::MakeMaker
+        run: cpanm -n EV::MakeMaker
+      - name: Install dependencies
+        run: cpanm -n --installdeps .
+      # -NOTLS must run AFTER installdeps: `cpanm --installdeps .` internally
+      # re-runs `perl Makefile.PL` (no flag) to resolve prereqs, which would
+      # regenerate a TLS-enabled Makefile and clobber the no-TLS one. Running
+      # it last makes the build Makefile authoritative for `make`.
+      - name: perl Makefile.PL (no TLS)
+        run: perl Makefile.PL -NOTLS
+      - name: make
+        run: make
+      - name: verify TLS is actually disabled
+        run: perl -Mblib -MFeersum -e 'die "TLS unexpectedly enabled\n" if Feersum->new->has_tls'
+      - name: make test
+        run: make test
+
+  linux-no-h2:
+    # Build with TLS but without H2 (Alien::nghttp2 not installed).
+    # Catches tests that forget to skip when H2 is unavailable.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    container:
+      image: perldocker/perl-tester:5.40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: perl -V
+        run: perl -V
+      - name: Install TLS system dependencies
+        run: |
+          apt-get update -q
+          apt-get install -y -q libssl-dev
+      - name: Install EV::MakeMaker + IO::Socket::SSL (but NOT Alien::nghttp2)
+        run: cpanm -n EV::MakeMaker IO::Socket::SSL
+      - name: perl Makefile.PL (no H2)
+        run: perl Makefile.PL
+      - name: Install dependencies
+        run: cpanm -n --installdeps .
+      - name: make
+        run: make
+      - name: verify H2 is actually disabled (and TLS is not)
+        run: |
+          perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+            die "H2 unexpectedly enabled\n" if $f->has_h2;
+            die "TLS unexpectedly disabled\n" unless $f->has_tls'
+      - name: make test
+        run: make test
+
+  macos:
+    timeout-minutes: 30
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version:
+          - '5.26'
+          - '5.30'
+          - '5.34'
+          - '5.38'
+          - '5.40'
+          - '5.42'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl-version }}
+
+      - name: perl -V
+        run: perl -V
+
+      - name: Install TLS and H2 system dependencies
+        run: brew install openssl@3 nghttp2
+
+      - name: Install EV::MakeMaker
+        run: cpanm -n EV::MakeMaker
+
+      - name: Install TLS and H2 Perl dependencies
+        run: cpanm -n Alien::OpenSSL Alien::nghttp2 IO::Socket::SSL
+
+      - name: perl Makefile.PL
+        run: perl Makefile.PL
+
+      - name: Install dependencies
+        run: cpanm -n --installdeps .
+
+      - name: make
+        run: make
+
+      - name: verify optional features are compiled in
+        run: |
+          perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+            die "TLS not compiled in\n" unless $f->has_tls;
+            die "H2 not compiled in\n"  unless $f->has_h2;
+            print "TLS and H2 present\n"'
+          command -v nghttp >/dev/null || { echo "nghttp binary missing"; exit 1; }
+      - name: make test
+        run: make test
+
+  alpine:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    container:
+      image: alpine:latest
+    steps:
+      - name: Install git (required for checkout with submodules)
+        run: apk add --no-cache git
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: |
+          apk add --no-cache perl perl-dev make gcc musl-dev openssl-dev nghttp2-dev nghttp2 perl-app-cpanminus wget perl-net-ssleay perl-io-socket-ssl
+
+      - name: perl -V
+        run: perl -V
+
+      - name: Install Perl dependencies
+        run: |
+          cpanm -n EV::MakeMaker EV AnyEvent Guard Test::Fatal Test::LeakTrace JSON::XS
+          cpanm -n Plack Test::SharedFork HTTP::Entity::Parser Test::TCP HTML::Parser
+          cpanm -n Alien::nghttp2
+
+      - name: perl Makefile.PL
+        run: perl Makefile.PL
+
+      - name: Install remaining dependencies
+        run: cpanm -n --installdeps .
+
+      - name: make
+        run: make
+
+      - name: verify optional features are compiled in
+        run: |
+          perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+            die "TLS not compiled in\n" unless $f->has_tls;
+            die "H2 not compiled in\n"  unless $f->has_h2;
+            print "TLS and H2 present\n"'
+          command -v nghttp >/dev/null || { echo "nghttp binary missing"; exit 1; }
+      - name: make test
+        run: make test
+
+  # 32-bit: perl there is use64bitint with a 32-bit size_t, so a UV assigned
+  # into a size_t truncates.  Two width bugs shipped through 30 green 64-bit
+  # jobs and were caught only by CPAN Testers: set_tls(listener => 2**32)
+  # selected listener 0, and raising max_read_buf to 2**32+5 gave a 5-byte cap.
+  # 32-bit: perl there is use64bitint with a 32-bit size_t, so a UV assigned
+  # into a size_t truncates.  Two width bugs shipped through 30 green 64-bit
+  # jobs and were caught only by CPAN Testers.
+  # Checkout runs on the host, not in the container: actions/checkout is a JS
+  # action and the runner's x86_64 node cannot exec inside a linux/386 image.
+  linux-i386:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: build and test under a 32-bit perl
+        run: |
+          docker run --rm --platform linux/386 -v "$PWD":/src -w /src -i \
+            i386/debian:stable sh -s <<'EOS'
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq perl gcc make libssl-dev libnghttp2-dev cpanminus \
+            libev-perl libanyevent-perl libguard-perl libtest-fatal-perl \
+            libio-socket-ssl-perl libtest-tcp-perl libjson-xs-perl \
+            libhtml-parser-perl libplack-perl libtest-sharedfork-perl
+          perl -V
+          perl -MConfig -e 'printf "archname=%s ivsize=%s longsize=%s\n", @Config{qw(archname ivsize longsize)}; die "not a 32-bit build\n" if $Config{longsize} != 4'
+          cpanm -n EV::MakeMaker Test::LeakTrace HTTP::Entity::Parser || true
+          perl Makefile.PL
+          make
+          make test
+          EOS
+  linux-arm32:
+    # 32-bit ARM.  The armv6l CPAN Testers smoker is where the read_timeout
+    # drain bug surfaced and is the only reporter of t/146, but CI had aarch64
+    # and nothing 32-bit ARM.  Debian ships no ARMv6 port, so this is armhf/v7:
+    # same 32-bit ABI and integer widths, one ISA level up.  QEMU emulation is
+    # roughly 20x slow, so this builds and runs the width-sensitive tests
+    # rather than the timing-heavy suite, which would only report the load
+    # artifacts the slow smokers already do.
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: build and test under a 32-bit ARM perl
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD":/src -w /src -i \
+            arm32v7/debian:stable sh -s <<'EOS'
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq perl gcc make libssl-dev libnghttp2-dev cpanminus \
+            libev-perl libanyevent-perl libguard-perl libtest-fatal-perl \
+            libio-socket-ssl-perl libtest-tcp-perl libjson-xs-perl \
+            libhtml-parser-perl libplack-perl libtest-sharedfork-perl
+          perl -V
+          perl -MConfig -e 'printf "archname=%s ivsize=%s longsize=%s ptrsize=%s\n", @Config{qw(archname ivsize longsize ptrsize)}; die "not a 32-bit build\n" if $Config{longsize} != 4'
+          cpanm -n EV::MakeMaker Test::LeakTrace HTTP::Entity::Parser || true
+          perl Makefile.PL
+          make
+          PERL_TEST_TIME_OUT_FACTOR=10 prove -b t/core-01-simple.t t/tls-08-errors.t \
+            t/limits-09-max-body-len.t t/limits-10-max-uri-len.t t/limits-11-max-read-buf-dripfeed.t \
+            t/core-20-accessor-roundtrip.t t/core-21-limit-narrowing.t
+          EOS
+
+  freebsd:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # Pinned to the 14.x family: both CPAN Testers FreeBSD failures of
+      # t/103 (write_timeout not reaping a stalled reader) came from
+      # 14.4-stable, and the unpinned default did not reproduce them.
+      - name: Test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14'
+          usesh: true
+          prepare: |
+            pkg install -y perl5 p5-EV p5-AnyEvent p5-Plack p5-Guard p5-Test-Fatal p5-Test-LeakTrace p5-Test-SharedFork p5-JSON-XS p5-HTTP-Entity-Parser p5-Test-TCP p5-HTML-Parser p5-IO-Socket-SSL p5-App-cpanminus nghttp2
+          run: |
+            perl -V
+            cpanm -n Alien::nghttp2
+            perl Makefile.PL
+            make
+            perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+              die "TLS not compiled in\n" unless $f->has_tls;
+              die "H2 not compiled in\n"  unless $f->has_h2;
+              print "TLS and H2 present\n"'
+            command -v nghttp >/dev/null || { echo "nghttp binary missing"; exit 1; }
+            PERL_TEST_TIME_OUT_FACTOR=2 make test
+
+  openbsd:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Test on OpenBSD
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg_add p5-EV p5-AnyEvent p5-Plack p5-Guard p5-Test-Fatal p5-Test-LeakTrace p5-Test-SharedFork p5-JSON-XS p5-HTTP-Entity-Parser p5-Test-TCP p5-HTML-Parser p5-IO-Socket-SSL p5-PkgConfig p5-Capture-Tiny p5-FFI-CheckLib p5-File-chdir nghttp2
+            ftp -o - https://cpanmin.us | perl - --notest App::cpanminus
+          run: |
+            perl -V
+            cpanm -n Alien::nghttp2
+            perl Makefile.PL
+            make
+            perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+              die "TLS not compiled in\n" unless $f->has_tls;
+              die "H2 not compiled in\n"  unless $f->has_h2;
+              print "TLS and H2 present\n"'
+            # This platform's nghttp2 package ships the library without the client
+            # tools; the H2 tests skip themselves when nghttp is absent, so say so
+            # loudly rather than failing the whole platform.
+            command -v nghttp >/dev/null || echo "WARNING: nghttp client absent - H2 tests will skip"
+            PERL_TEST_TIME_OUT_FACTOR=2 make test
+
+  netbsd:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Test on NetBSD
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add p5-EV p5-AnyEvent p5-Plack p5-Guard p5-Test-Fatal p5-Test-LeakTrace p5-Test-SharedFork p5-JSON-XS p5-HTTP-Entity-Parser p5-Test-TCP p5-HTML-Parser p5-IO-Socket-SSL p5-App-cpanminus p5-PkgConfig p5-Capture-Tiny p5-FFI-CheckLib p5-File-chdir nghttp2
+          run: |
+            perl -V
+            cpanm -n Alien::nghttp2
+            perl Makefile.PL
+            make
+            perl -Mblib -MFeersum -e 'my $f = Feersum->new;
+              die "TLS not compiled in\n" unless $f->has_tls;
+              die "H2 not compiled in\n"  unless $f->has_h2;
+              print "TLS and H2 present\n"'
+            # This platform's nghttp2 package ships the library without the client
+            # tools; the H2 tests skip themselves when nghttp is absent, so say so
+            # loudly rather than failing the whole platform.
+            command -v nghttp >/dev/null || echo "WARNING: nghttp client absent - H2 tests will skip"
+            PERL_TEST_TIME_OUT_FACTOR=2 make test

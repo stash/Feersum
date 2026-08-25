@@ -1,0 +1,278 @@
+# Envoy frontend configuration for Feersum
+# Usage: envoy -c /path/to/envoy.yaml
+#
+# =============================================================================
+# BACKEND OPTIONS
+# =============================================================================
+#
+# 1. PSGI with Plack::Handler::Feersum (simple)
+#    TCP:  plackup -s Feersum -p 5000 --keepalive=1 app.psgi
+#    Unix: plackup -s Feersum -l /tmp/feersum.sock --keepalive=1 app.psgi
+#
+# 2. PSGI with hot restart (zero-downtime reload via SIGHUP)
+#    TCP:  plackup -s Feersum -p 5000 --app-file=app.psgi \
+#            --hot-restart=1 --keepalive=1 --header-timeout=30 app.psgi
+#    Unix: plackup -s Feersum -l /tmp/feersum.sock --app-file=app.psgi \
+#            --hot-restart=1 --keepalive=1 --header-timeout=30 app.psgi
+#
+#    Hot restart: kill -HUP <hot-restart master pid>
+#
+# 3. Native interface (maximum performance)
+#    See eg/native.pl for a standalone example (Unix socket):
+#    perl eg/native.pl /tmp/feersum.sock
+#
+#    Inline example:
+#    perl -MFeersum -MIO::Socket::INET -e '
+#        my $sock = IO::Socket::INET->new(
+#            LocalAddr => "127.0.0.1:5000", ReuseAddr => 1, Blocking => 0, Listen => 1024
+#        ) or die $!;
+#        my $f = Feersum->endjinn;
+#        $f->use_socket($sock);
+#        $f->set_keepalive(1);
+#        $f->header_timeout(30);
+#        $f->request_handler(sub {
+#            shift->send_response(200, ["Content-Type","text/plain"], "OK");
+#        });
+#        EV::run;'
+#
+# 4. Native with Server::Starter (hot restart + native performance)
+#    start_server --port 5000 --backlog 4096 -- \
+#      perl -MFeersum -MServer::Starter=server_ports -e '
+#        my ($port, $fd) = each %{server_ports()};
+#        open(my $sock, "<&=", $fd) or die $!;
+#        my $f = Feersum->endjinn;
+#        $f->use_socket($sock);
+#        $f->set_keepalive(1);
+#        $f->header_timeout(30);
+#        $f->request_handler(sub { shift->send_response(200, [], "OK") });
+#        EV::run;'
+#
+# BACKLOG TUNING:
+#   Feersum uses SOMAXCONN (typically 128) as listen backlog.
+#   For high-traffic servers, increase at OS level:
+#     Linux:   sysctl -w net.core.somaxconn=4096
+#     FreeBSD: sysctl kern.ipc.somaxconn=4096
+#   With Server::Starter, use --backlog option as shown above.
+#
+# =============================================================================
+
+static_resources:
+
+  #===========================================================================
+  # Listeners
+  #===========================================================================
+  listeners:
+
+    #-------------------------------------------------------------------------
+    # HTTP listener on port 80
+    #-------------------------------------------------------------------------
+    - name: http
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 80
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                codec_type: AUTO
+
+                # Forward client IP.  use_remote_address APPENDS the peer to
+                # any X-Forwarded-For the client sent, and Feersum reads the
+                # LEFTMOST entry - so without the override below a client can
+                # choose its own REMOTE_ADDR.  x-envoy-external-address holds
+                # the address Envoy actually trusts; see "reverse_proxy" in
+                # the Feersum docs, and the same protection in nginx.conf and
+                # haproxy.cfg.
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+
+                # Request timeouts (Slowloris protection)
+                request_timeout: 30s
+                request_headers_timeout: 30s
+                stream_idle_timeout: 300s
+
+                # Access log
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      request_headers_to_add:
+                        - header:
+                            key: x-forwarded-for
+                            value: "%REQ(x-envoy-external-address)%"
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                      routes:
+                        # WebSocket route (if using psgix.io)
+                        - match:
+                            prefix: "/ws"
+                          route:
+                            cluster: feersum_tcp
+                            timeout: 3600s
+                            upgrade_configs:
+                              - upgrade_type: websocket
+                        # Default route
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: feersum_tcp
+                            timeout: 60s
+
+    #-------------------------------------------------------------------------
+    # HTTPS listener on port 443
+    #-------------------------------------------------------------------------
+    - name: https
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 443
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_params:
+                  tls_minimum_protocol_version: TLSv1_2
+                tls_certificates:
+                  - certificate_chain:
+                      filename: /etc/ssl/certs/server.crt
+                    private_key:
+                      filename: /etc/ssl/private/server.key
+                alpn_protocols: ["h2", "http/1.1"]
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_https
+                codec_type: AUTO
+                use_remote_address: true
+
+                request_timeout: 30s
+                request_headers_timeout: 30s
+                stream_idle_timeout: 300s
+
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+                route_config:
+                  name: local_route_https
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      request_headers_to_add:
+                        - header:
+                            key: x-forwarded-for
+                            value: "%REQ(x-envoy-external-address)%"
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                      routes:
+                        - match:
+                            prefix: "/ws"
+                          route:
+                            cluster: feersum_tcp
+                            timeout: 3600s
+                            upgrade_configs:
+                              - upgrade_type: websocket
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: feersum_tcp
+                            timeout: 60s
+
+  #===========================================================================
+  # Clusters (backends)
+  #===========================================================================
+  clusters:
+
+    #-------------------------------------------------------------------------
+    # TCP backend
+    #-------------------------------------------------------------------------
+    - name: feersum_tcp
+      type: STATIC
+      connect_timeout: 5s
+      lb_policy: ROUND_ROBIN
+
+      # HTTP/1.1 keepalive to backend
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http_protocol_options:
+              header_key_format:
+                proper_case_words: {}
+
+      load_assignment:
+        cluster_name: feersum_tcp
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 5000
+              # Add more for load balancing:
+              # - endpoint:
+              #     address:
+              #       socket_address:
+              #         address: 127.0.0.1
+              #         port_value: 5001
+              # - endpoint:
+              #     address:
+              #       socket_address:
+              #         address: 127.0.0.1
+              #         port_value: 5002
+
+      # Health check (optional)
+      health_checks:
+        - timeout: 5s
+          interval: 10s
+          unhealthy_threshold: 3
+          healthy_threshold: 2
+          http_health_check:
+            path: /health
+
+    #-------------------------------------------------------------------------
+    # Unix socket backend (faster, no TCP overhead)
+    #-------------------------------------------------------------------------
+    - name: feersum_unix
+      type: STATIC
+      connect_timeout: 5s
+      lb_policy: ROUND_ROBIN
+
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http_protocol_options:
+              header_key_format:
+                proper_case_words: {}
+
+      load_assignment:
+        cluster_name: feersum_unix
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe:
+                      path: /tmp/feersum.sock
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901

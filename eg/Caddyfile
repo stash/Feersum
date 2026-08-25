@@ -1,0 +1,197 @@
+# Caddy frontend configuration for Feersum
+# Usage: caddy run --config /path/to/Caddyfile
+#
+# =============================================================================
+# BACKEND OPTIONS
+# =============================================================================
+#
+# 1. PSGI with Plack::Handler::Feersum (simple)
+#    TCP:  plackup -s Feersum -p 5000 --keepalive=1 app.psgi
+#    Unix: plackup -s Feersum -l /tmp/feersum.sock --keepalive=1 app.psgi
+#
+# 2. PSGI with hot restart (zero-downtime reload via SIGHUP)
+#    TCP:  plackup -s Feersum -p 5000 --app-file=app.psgi \
+#            --hot-restart=1 --keepalive=1 --header-timeout=30 app.psgi
+#    Unix: plackup -s Feersum -l /tmp/feersum.sock --app-file=app.psgi \
+#            --hot-restart=1 --keepalive=1 --header-timeout=30 app.psgi
+#
+#    Hot restart without downtime: kill -HUP <hot-restart master pid>
+#
+# 3. Native interface (maximum performance, ~1.5x faster than PSGI)
+#    See eg/native.pl for a standalone example (Unix socket):
+#    perl eg/native.pl /tmp/feersum.sock
+#
+#    Or inline:
+#    perl -MFeersum -MIO::Socket::INET -e '
+#        my $sock = IO::Socket::INET->new(
+#            LocalAddr => "127.0.0.1:5000", ReuseAddr => 1, Blocking => 0, Listen => 1024
+#        ) or die $!;
+#        my $f = Feersum->endjinn;
+#        $f->use_socket($sock);
+#        $f->set_keepalive(1);
+#        $f->header_timeout(30);
+#        $f->request_handler(sub {
+#            my $r = shift;
+#            $r->send_response(200, ["Content-Type","text/plain"], "Hello");
+#        });
+#        EV::run;'
+#
+# 4. Native with Server::Starter (hot restart + native performance)
+#    start_server --port 5000 --backlog 4096 -- \
+#      perl -MFeersum -MServer::Starter=server_ports -e '
+#        my ($port, $fd) = each %{server_ports()};
+#        open(my $sock, "<&=", $fd) or die $!;
+#        my $f = Feersum->endjinn;
+#        $f->use_socket($sock);
+#        $f->set_keepalive(1);
+#        $f->header_timeout(30);
+#        $f->request_handler(sub { shift->send_response(200, [], "OK") });
+#        EV::run;'
+#
+# BACKLOG TUNING:
+#   Feersum uses SOMAXCONN (typically 128) as listen backlog.
+#   For high-traffic servers, increase at OS level:
+#     Linux:   sysctl -w net.core.somaxconn=4096
+#     FreeBSD: sysctl kern.ipc.somaxconn=4096
+#   With Server::Starter, use --backlog option as shown above.
+#
+# =============================================================================
+
+# Global options
+{
+	# Disable automatic HTTPS for local development
+	# Remove this block for production with automatic Let's Encrypt
+	auto_https off
+
+	# Admin API (optional)
+	admin off
+
+	# Logging
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}
+
+#=============================================================================
+# HTTP server with TCP backend
+#=============================================================================
+:80 {
+	# Reverse proxy to Feersum TCP backend
+	reverse_proxy 127.0.0.1:5000 {
+		# Keepalive to backend
+		transport http {
+			keepalive 60s
+			keepalive_idle_conns 64
+		}
+
+		# Health check (optional)
+		health_uri /health
+		health_interval 10s
+		health_timeout 5s
+
+		# Headers (X-Forwarded-For and X-Forwarded-Proto are set automatically)
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	# Request timeouts (Slowloris protection)
+	request_body {
+		max_size 100MB
+	}
+
+	# Compression
+	encode gzip
+
+	# Logging
+	log {
+		output stdout
+	}
+}
+
+#=============================================================================
+# HTTP server with Unix socket backend (faster)
+#=============================================================================
+:8080 {
+	reverse_proxy unix//tmp/feersum.sock {
+		transport http {
+			keepalive 60s
+			keepalive_idle_conns 64
+		}
+
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	encode gzip
+}
+
+#=============================================================================
+# HTTPS server with automatic certificates (production)
+#=============================================================================
+# example.com {
+#     reverse_proxy 127.0.0.1:5000 {
+#         transport http {
+#             keepalive 60s
+#             keepalive_idle_conns 64
+#         }
+#
+#         header_up Host {host}
+#         header_up X-Real-IP {remote_host}
+#     }
+#
+#     encode gzip
+#
+#     # Automatic HTTPS with Let's Encrypt
+#     tls {
+#         protocols tls1.2 tls1.3
+#     }
+# }
+
+#=============================================================================
+# WebSocket support
+#=============================================================================
+:8081 {
+	# WebSocket reverse proxy (auto-detected by Caddy)
+	reverse_proxy /ws* 127.0.0.1:5000 {
+		transport http {
+			keepalive 60s
+		}
+
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	# Regular HTTP for other paths
+	reverse_proxy 127.0.0.1:5000 {
+		transport http {
+			keepalive 60s
+			keepalive_idle_conns 64
+		}
+	}
+}
+
+#=============================================================================
+# Load balancing multiple Feersum workers
+#=============================================================================
+:8082 {
+	reverse_proxy 127.0.0.1:5000 127.0.0.1:5001 127.0.0.1:5002 {
+		# Load balancing policy
+		lb_policy round_robin
+
+		# Keepalive
+		transport http {
+			keepalive 60s
+			keepalive_idle_conns 64
+		}
+
+		# Health checks
+		health_uri /health
+		health_interval 10s
+
+		# Retry failed requests
+		lb_try_duration 5s
+		lb_try_interval 250ms
+	}
+}

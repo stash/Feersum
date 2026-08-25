@@ -1,7 +1,6 @@
 #!/usr/bin/env perl
 use warnings;
 use strict;
-use blib;
 
 $SIG{PIPE} = 'IGNORE';
 
@@ -14,14 +13,14 @@ my $socket = IO::Socket::INET->new(
     Listen => 1024,
     Blocking => 0,
     ReuseAddr => 1,
-);
+) or die "listen: $!";
 
 my $evh = Feersum->new();
 $evh->use_socket($socket);
 $evh->request_handler(sub {
     my $r = shift;
     my $n = "only";
-    my $w = $r->start_streaming("200 OK", [
+    my $w = $r->start_streaming(200, [
         'Content-Type' => 'text/plain',
         'Connection' => 'close',
     ]);

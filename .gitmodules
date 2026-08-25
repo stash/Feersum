@@ -1,3 +1,6 @@
 [submodule "picohttpparser-git"]
 	path = picohttpparser-git
-	url = http://github.com/kazuho/picohttpparser.git
+	url = https://github.com/h2o/picohttpparser.git
+[submodule "picotls-git"]
+	path = picotls-git
+	url = https://github.com/h2o/picotls.git

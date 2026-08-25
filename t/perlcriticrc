@@ -1,2 +1,15 @@
 severity = cruel
-exclude = RcsKeywords PodLinksIncludeText MultiplePackages InterpolationOfLiterals PodSections PostfixControls PunctuationVars UnlessBlocks ProhibitDoubleSigils RequireVersionVar ProhibitUnusedPrivateSubroutines ProhibitNoWarnings ProhibitNoStrict ProhibitEmptyQuotes RequireDotMatchAnything RequireExtendedFormatting RequireLineBoundaryMatching ProhibitConstantPragma
+
+# ProhibitExcessMainComplexity reports at line 1, so no "## no critic"
+# annotation can precede it.  It only fires on script main code, and
+# bin/feersum is the only script here.
+exclude = RcsKeywords PodLinksIncludeText MultiplePackages InterpolationOfLiterals PodSections PostfixControls PunctuationVars UnlessBlocks ProhibitDoubleSigils RequireVersionVar ProhibitUnusedPrivateSubroutines ProhibitNoWarnings ProhibitNoStrict ProhibitEmptyQuotes RequireDotMatchAnything RequireExtendedFormatting RequireLineBoundaryMatching ProhibitConstantPragma ProhibitExcessMainComplexity ProhibitNumberedNames ProhibitCommentedOutCode ProhibitBitwiseOperators WantArray
+
+# WantArray (Freenode; installed on the CI images, not everywhere) fires on the
+# diamond overload and getlines, which are context-sensitive by contract -
+# that is exactly what readline semantics ask for.
+#
+# The three Bangs:: policies above are excluded deliberately.  They are not
+# installed everywhere, so they only fire on some CI images: h2/ipv6/usr2 are
+# meaningful names rather than numbered ones, the "commented out code" hits are
+# prose mentioning $consume=1, and bitwise & is correct for signal/flag masks.

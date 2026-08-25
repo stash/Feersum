@@ -1,0 +1,66 @@
+#!perl
+use warnings;
+use strict;
+# TIMEOUT_MULT allows scaling all timing values for slow machines (default: 1)
+use constant TIMEOUT_MULT => $ENV{PERL_TEST_TIME_OUT_FACTOR} || ($ENV{AUTOMATED_TESTING} ? 2 : 1);
+use Test::More tests => 14;
+use Test::Fatal;
+use lib 't'; use Utils;
+
+BEGIN { use_ok('Feersum') };
+
+my ($socket,$port) = get_listen_socket();
+ok $socket, "made listen socket";
+
+my $evh = Feersum->new();
+
+{
+    no warnings 'redefine';
+    *Feersum::DIED = sub {
+        my $err = shift;
+        fail "Died during request handler: $err";
+    };
+}
+
+$evh->request_handler(sub {
+    my $r = shift;
+    ok $r, 'got request';
+    my $w = $r->start_streaming(200, []);
+    $w->write("hello ");
+    $w->write("world!\n");
+    is exception {
+        undef $w;
+    }, undef, 'no death on undef';
+});
+
+is exception {
+    $evh->use_socket($socket);
+}, undef, 'assigned socket';
+
+my $cv = AE::cv;
+
+sub client {
+    my $cnum = shift;
+    my $is_chunked = shift || 0;
+    $cv->begin;
+    my $h; $h = simple_client GET => '/foo',
+        name => "client $cnum",
+        timeout => 3 * TIMEOUT_MULT,
+        proto => $is_chunked ? '1.1' : '1.0',
+        headers => {"Accept" => "*/*"},
+    sub {
+        my ($body, $headers) = @_;
+        is $headers->{Status}, 200, "client $cnum got 200"
+            or diag $headers->{Reason};
+        is $body, "hello world!\n", "client $cnum body";
+        $cv->end;
+        undef $h;
+    };
+}
+
+
+client(1,'chunked');
+client(2);
+
+$cv->recv;
+pass "all done";
