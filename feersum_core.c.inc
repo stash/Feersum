@@ -487,6 +487,7 @@ new_feer_conn (EV_P_ int conn_fd, struct sockaddr *sa, socklen_t sa_len,
 
     c->cached_read_timeout      = srvr->read_timeout;
     c->cached_write_timeout     = srvr->write_timeout;
+    c->cached_eof_park_timeout  = srvr->eof_park_timeout;
     c->cached_max_conn_reqs     = srvr->max_connection_reqs;
     c->cached_is_tcp            = lsnr->is_tcp;
     c->cached_keepalive_default = srvr->is_keepalive;
@@ -604,6 +605,7 @@ init_feer_server (struct feer_server *s)
     s->header_timeout = HEADER_TIMEOUT;
     s->write_timeout = WRITE_TIMEOUT;
     s->linger_timeout = LINGER_TIMEOUT;
+    s->eof_park_timeout = EOF_PARK_TIMEOUT;
     s->max_accept_per_loop = DEFAULT_MAX_ACCEPT_PER_LOOP;
     s->max_connections = 10000;
     s->max_read_buf = MAX_READ_BUF;
@@ -667,6 +669,11 @@ feer_server_2sv (struct feer_server *s)
 INLINE_UNLESS_DEBUG static void
 start_read_watcher(struct feer_conn *c) {
     ASSERT_EV_LOOP_INITIALIZED();
+#ifdef FEERSUM_HAS_TLS
+    /* No input past close_notify, but linger still drains raw peer bytes */
+    if (unlikely(c->tls_input_eof && !c->closing_linger))
+        return;
+#endif
     if (unlikely(ev_is_active(&c->read_ev_io)))
         return;
     trace("start read watcher %d\n",c->fd);
@@ -704,7 +711,7 @@ INLINE_UNLESS_DEBUG static void
 restart_read_timer(struct feer_conn *c) {
     /* While lingering this timer is the one-shot linger deadline, and
      * ev_timer_again would stop it rather than restart it. */
-    if (unlikely(c->closing_linger))
+    if (unlikely(c->fd < 0 || c->closing_linger))
         return;
     if (likely(!ev_is_active(&c->read_ev_timer))) {
         trace("restart read timer %d\n",c->fd);
@@ -723,7 +730,52 @@ stop_read_timer(struct feer_conn *c) {
     SvREFCNT_dec(c->self);
 }
 
-/* A peek of 0 is EOF; EAGAIN is a quiet live client (normal while streaming). */
+/* Pure C, no on_eof: the peer_is_gone() predicate calls it */
+INLINE_UNLESS_DEBUG static void
+feer_latch_input_eof(struct feer_conn *c)
+{
+    if (c->input_eof_seen) return;
+#ifdef FEERSUM_HAS_TLS
+    /* Tunnels and takeovers own their input; the EOF park does not bound them */
+    if (c->tls_tunnel) return;
+#endif
+    if (c->io_taken) return;
+    c->input_eof_seen = 1;
+    c->eof_quiet_since = ev_now(feersum_ev_loop);
+    c->eof_writes_seen = c->poll_writes_seen;
+}
+
+static void
+feersum_maybe_fire_on_eof(struct feer_conn *c)
+{
+    if (c->on_eof_cb && c->input_eof_seen && !c->on_eof_fired
+        && c->responding == RESPOND_STREAMING) {
+        c->on_eof_fired = 1;
+        call_on_eof_callback(c);
+    }
+}
+
+static void
+feersum_note_input_eof(struct feer_conn *c)
+{
+    feer_latch_input_eof(c);
+    feersum_maybe_fire_on_eof(c);
+}
+
+INLINE_UNLESS_DEBUG static bool
+feer_eof_park_expired(struct feer_conn *c)
+{
+    if (!c->input_eof_seen || c->cached_eof_park_timeout <= 0.0) return 0;
+    if (c->poll_writes_seen != c->eof_writes_seen) {
+        c->eof_writes_seen = c->poll_writes_seen;
+        c->eof_quiet_since = ev_now(feersum_ev_loop);
+        return 0;
+    }
+    return ev_now(feersum_ev_loop) - c->eof_quiet_since
+        >= c->cached_eof_park_timeout;
+}
+
+/* A peek of 0 is a half-close, not a gone peer; only a hard error is */
 INLINE_UNLESS_DEBUG static bool
 peer_is_gone(struct feer_conn *c)
 {
@@ -733,7 +785,24 @@ peer_is_gone(struct feer_conn *c)
     do {
         n = recv(c->fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
     } while (n < 0 && errno == EINTR);
-    return n == 0;
+    if (n == 0) feer_latch_input_eof(c);
+    return n < 0 && errno != EAGAIN && errno != EWOULDBLOCK;
+}
+
+INLINE_UNLESS_DEBUG static bool
+feer_conn_has_pending_input(struct feer_conn *c)
+{
+    char probe;
+    ssize_t n;
+    if (c->rbuf && SvCUR(c->rbuf) > 0) return 1;
+#ifdef FEERSUM_HAS_TLS
+    if (c->tls_rbuf_len > 0) return 1;
+#endif
+    if (c->fd < 0) return 0;
+    do {
+        n = recv(c->fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+    } while (n < 0 && errno == EINTR);
+    return n > 0;
 }
 
 INLINE_UNLESS_DEBUG static void
@@ -755,6 +824,17 @@ stop_write_watcher(struct feer_conn *c) {
     SvREFCNT_dec(c->self);
 }
 
+/* io()/psgix.io over TLS: the app owns the stream until it closes its end */
+INLINE_UNLESS_DEBUG static bool
+write_deadline_exempt(struct feer_conn *c) {
+#ifdef FEERSUM_HAS_TLS
+    return c->tls_tunnel && !c->tls_tunnel_eof;
+#else
+    PERL_UNUSED_VAR(c);
+    return 0;
+#endif
+}
+
 INLINE_UNLESS_DEBUG static void
 restart_write_timer(struct feer_conn *c) {
     /* Backoff resets on any progress, deadline or not; poll_retry_pending may
@@ -763,7 +843,7 @@ restart_write_timer(struct feer_conn *c) {
     /* fresh bytes queued: the old outq sample means nothing now */
     c->prev_outq = 0;
     c->outq_stalls = 0;
-    if (c->cached_write_timeout <= 0.0) return;
+    if (c->cached_write_timeout <= 0.0 || write_deadline_exempt(c)) return;
     if (likely(!ev_is_active(&c->write_ev_timer))) {
         trace("restart write timer %d\n",c->fd);
         SvREFCNT_inc_void_NN(c->self);
@@ -778,7 +858,7 @@ restart_write_timer(struct feer_conn *c) {
  * writability" recurs many times a second and must not push it back. */
 INLINE_UNLESS_DEBUG static void
 ensure_write_timer(struct feer_conn *c) {
-    if (c->cached_write_timeout <= 0.0) return;
+    if (c->cached_write_timeout <= 0.0 || write_deadline_exempt(c)) return;
     /* armed as a poll retry: the deadline takes the timer back */
     if (ev_is_active(&c->write_ev_timer) && likely(!c->poll_retry_pending))
         return;
@@ -811,7 +891,10 @@ feersum_poll_retry_park(struct feer_conn *c)
     double iv;
     stop_write_watcher(c);
     iv = FEER_POLL_RETRY_MIN * (double)(1u << c->poll_retry_backoff);
-    if (iv > FEER_POLL_RETRY_MAX) iv = FEER_POLL_RETRY_MAX;
+    if (c->input_eof_seen) {
+        if (iv > FEER_POLL_RETRY_EOF_MAX) iv = FEER_POLL_RETRY_EOF_MAX;
+    }
+    else if (iv > FEER_POLL_RETRY_MAX) iv = FEER_POLL_RETRY_MAX;
     if (c->poll_retry_backoff < FEER_POLL_RETRY_BACKOFF_CAP)
         c->poll_retry_backoff++;
     c->poll_retry_pending = 1;
@@ -843,6 +926,9 @@ restart_header_timer(struct feer_conn *c) {
 
 INLINE_UNLESS_DEBUG static void
 stop_all_watchers(struct feer_conn *c) {
+    /* Before the watcher refs drop: a guard or io body can hold
+     * env -> psgi.input -> c, a cycle only this cleanup breaks. */
+    feersum_queue_response_cleanup(c);
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_header_timer(c);
@@ -866,6 +952,31 @@ feer_conn_set_busy(struct feer_conn *c)
     }
 }
 
+/* An idle keepalive conn is evictable, so it counts as free capacity */
+static void
+feer_server_resume_capacity(struct feer_server *server)
+{
+    if (server->shutting_down) return;
+
+    int socket_conns = server->active_conns;
+#ifdef FEERSUM_HAS_H2
+    socket_conns -= server->active_h2_streams;
+#endif
+    if (server->max_connections > 0 && socket_conns >= server->max_connections
+        && !server->idle_keepalive_rinq)
+        return;
+
+    int i;
+    for (i = 0; i < server->n_listeners; i++) {
+        struct feer_listen *lsnr = &server->listeners[i];
+        if (lsnr->pause_flags & FEER_PAUSE_CAP) {
+            lsnr->pause_flags &= ~FEER_PAUSE_CAP;
+            if (!lsnr->pause_flags && lsnr->fd >= 0)
+                ev_io_start(feersum_ev_loop, &lsnr->accept_w);
+        }
+    }
+}
+
 static void
 feer_conn_set_idle(struct feer_conn *c)
 {
@@ -873,17 +984,28 @@ feer_conn_set_idle(struct feer_conn *c)
 
     c->idle_rinq_node = rinq_push(&c->server->idle_keepalive_rinq, c);
     trace("conn fd=%d is now idle (added to MRU)\n", c->fd);
+    feer_server_resume_capacity(c->server);
 }
 
 static int
 feer_server_recycle_idle_conn(struct feer_server *srvr)
 {
-    if (!srvr->idle_keepalive_rinq) return 0;
-
-    struct feer_conn *c = (struct feer_conn *)rinq_shift(&srvr->idle_keepalive_rinq);
-    if (unlikely(!c)) return 0;
-
-    c->idle_rinq_node = NULL;
+    struct feer_conn *c = NULL;
+    while (srvr->idle_keepalive_rinq) {
+        struct feer_conn *cand =
+            (struct feer_conn *)rinq_shift(&srvr->idle_keepalive_rinq);
+        if (unlikely(!cand)) break;
+        cand->idle_rinq_node = NULL;
+        /* Closing with unread input would RST the arrived request away; its
+         * read watcher serves it. Lingering conns only drain junk. */
+        if (!cand->closing_linger && feer_conn_has_pending_input(cand)) {
+            trace("idle conn fd=%d has pending input, not recycling it\n", cand->fd);
+            continue;
+        }
+        c = cand;
+        break;
+    }
+    if (!c) return 0;
 
     trace("recycling idle keepalive conn fd=%d to make room for new accept\n", c->fd);
 
@@ -1055,6 +1177,20 @@ process_request_ready_rinq (struct feer_server *server)
             (struct feer_conn *)rinq_shift(&server->request_ready_rinq);
         if (unlikely(!c)) break;
 
+#ifdef FEERSUM_HAS_H2
+        /* A reset or fatal conn error can strand a queued stream, and linger
+         * may keep it allocated after its response path is gone. */
+        if (unlikely(c->is_h2_stream)) {
+            struct feer_h2_stream *stream = H2_STREAM_FROM_PC(c);
+            struct feer_conn *parent = stream ? stream->parent : NULL;
+            if (unlikely(!parent || parent->fd < 0 || parent->closing_linger
+                         || parent->h2_close_pending)) {
+                SvREFCNT_dec(c->self);
+                continue;
+            }
+        }
+#endif
+
         /* a response ended twice once left a queued conn with no request */
         if (unlikely(!c->req)) {
             trouble("dispatch without a request fd=%d\n", c->fd);
@@ -1120,6 +1256,11 @@ check_cb (EV_P_ ev_check *w, int revents)
     if (server->request_ready_rinq)
         process_request_ready_rinq(server);
 
+    if (unlikely(server->response_cleanup_rinq)) {
+        dTHX;
+        feersum_drain_response_cleanup(aTHX_ server);
+    }
+
     /* Acted on at a loop boundary, not mid-dispatch: draining then would drop
      * responses of sibling requests (H2 streams) still queued. */
     if (unlikely(server->retire_pending) && !server->shutting_down) {
@@ -1168,7 +1309,12 @@ idle_cb (EV_P_ ev_idle *w, int revents)
     trace3("idle! head=%p\n", server->request_ready_rinq);
     if (server->request_ready_rinq)
         process_request_ready_rinq(server);
-    ev_idle_stop(EV_A, w);
+    if (server->response_cleanup_rinq) {
+        dTHX;
+        feersum_drain_response_cleanup(aTHX_ server);
+    }
+    if (!server->request_ready_rinq && !server->response_cleanup_rinq)
+        ev_idle_stop(EV_A, w);
 }
 
 /* Leaving RECEIVE_WAIT re-arms the one-shot header deadline: without it the
@@ -1244,6 +1390,12 @@ handle_keepalive_or_close(struct feer_conn *c, conn_read_cb_t read_cb)
             }
         }
     }
+
+#ifdef FEERSUM_HAS_TLS
+    /* TLS input ended: no request can follow the buffered ones */
+    if (c->tls_input_eof && (!c->rbuf || SvCUR(c->rbuf) == 0))
+        c->is_keepalive = 0;
+#endif
 
     /* not back to keepalive-idle during a shutdown: nothing sweeps it again */
     if (c->is_keepalive && !c->server->shutting_down) {
@@ -1346,9 +1498,18 @@ try_conn_write(EV_P_ struct ev_io *w, int revents)
 
         if (unlikely(!c->wbuf_rinq)) {
             /* nothing else notices a gone peer: the read watcher is stopped
-             * and writev never runs on an empty buffer */
-            if (unlikely(peer_is_gone(c))) {
+             * and writev never runs on an empty buffer. on_eof fires before
+             * either exit below. */
+            bool gone = peer_is_gone(c);
+            feersum_maybe_fire_on_eof(c);
+            if (unlikely(gone)) {
                 trace("poll_cb produced nothing and the peer is gone %d\n", w->fd);
+                c->is_keepalive = 0;
+                change_responding_state(c, RESPOND_SHUTDOWN);
+                goto try_write_finished;
+            }
+            if (unlikely(feer_eof_park_expired(c))) {
+                trace("poll_cb produced nothing and the EOF park expired %d\n", w->fd);
                 c->is_keepalive = 0;
                 change_responding_state(c, RESPOND_SHUTDOWN);
                 goto try_write_finished;
@@ -1762,6 +1923,8 @@ parse_proxy_v2(struct feer_conn *c)
     if (family == PROXY_V2_FAM_INET) addr_size = PROXY_V2_ADDR_V4_LEN;
     else if (family == PROXY_V2_FAM_INET6) addr_size = PROXY_V2_ADDR_V6_LEN;
     else if (family == PROXY_V2_FAM_UNIX) addr_size = PROXY_V2_ADDR_UNIX_LEN;
+    /* UNSPEC has no address length: the whole field is opaque, TLVs included */
+    else if (family == PROXY_V2_FAM_UNSPEC) addr_size = addr_len;
 
     if (addr_len > addr_size) {
         dTHX;
@@ -1842,4 +2005,3 @@ try_parse_proxy_header(struct feer_conn *c)
         return -1;
     }
 }
-

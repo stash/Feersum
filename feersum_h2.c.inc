@@ -10,11 +10,23 @@
 # define h2_diag(...)
 #endif
 
+/* A closed stream's reply can still sit in tls_wbuf; going idle then would
+ * let socket-limit eviction truncate it. */
+static void
+h2_update_conn_idle(struct feer_conn *c)
+{
+    if (c->fd >= 0 && !c->closing_linger && !c->h2_close_pending
+        && !c->server->shutting_down && !c->tls_input_eof
+        && c->h2_session && !c->h2_streams && c->tls_wbuf.off == 0
+        && !nghttp2_session_want_write(c->h2_session))
+        feer_conn_set_idle(c);
+    else
+        feer_conn_set_busy(c);
+}
+
 static inline void
 h2_submit_rst(nghttp2_session *session, int32_t stream_id, uint32_t error_code)
 {
-    struct feer_h2_stream *s = nghttp2_session_get_stream_user_data(session, stream_id);
-    if (s) s->rst_by_us = 1;
     int rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE,
                                        stream_id, error_code);
     if (rv != 0)
@@ -32,6 +44,21 @@ static void h2_tunnel_sv0_write_cb(EV_P_ struct ev_io *w, int revents);
 static int  h2_tunnel_write_or_buffer(struct feer_h2_stream *stream, const char *data, size_t len);
 static void h2_tunnel_recv_data(pTHX_ struct feer_h2_stream *stream, const uint8_t *data, size_t len);
 
+/* The app must see EOF only after all client DATA reaches the socketpair. */
+static void
+h2_tunnel_maybe_send_eof(struct feer_h2_stream *stream)
+{
+    if (!stream->tunnel_pending_shutdown || !stream->tunnel_established
+        || stream->tunnel_sv0 < 0 || stream->tunnel_eof_sent)
+        return;
+    if (stream->tunnel_wbuf
+        && SvCUR(stream->tunnel_wbuf) > stream->tunnel_wbuf_pos)
+        return;
+    shutdown(stream->tunnel_sv0, SHUT_WR);
+    stream->tunnel_pending_shutdown = 0;
+    stream->tunnel_eof_sent = 1;
+}
+
 static inline STRLEN
 h2_resp_wbuf_avail(const struct feer_h2_stream *stream)
 {
@@ -47,6 +74,35 @@ h2_stream_send_pending(const struct feer_h2_stream *stream)
         return 1;
     return stream->resp_body
         && stream->resp_body_pos < SvCUR(stream->resp_body);
+}
+
+/* an undeclined poll_cb counts: it can yield its pump budget with an empty buffer */
+static inline int
+h2_stream_output_ready(const struct feer_h2_stream *stream)
+{
+    const struct feer_conn *pc = stream->pseudo_conn;
+    return h2_stream_send_pending(stream)
+        || (pc && pc->responding == RESPOND_STREAMING && pc->poll_write_cb
+            && !stream->poll_declined);
+}
+
+/* Socket progress also counts for DATA stuck behind a full TLS buffer; a
+ * parked source or a peer-blocked window must still time out. */
+static void
+h2_refresh_stream_write_timers(struct feer_conn *c)
+{
+    if (!c->h2_session || c->closing_linger || c->h2_close_pending
+        || nghttp2_session_get_remote_window_size(c->h2_session) <= 0)
+        return;
+
+    for (struct feer_h2_stream *s = c->h2_streams; s; s = s->next) {
+        struct feer_conn *pc = s->pseudo_conn;
+        if (pc && !pc->poll_retry_pending
+            && ev_is_active(&pc->write_ev_timer) && h2_stream_output_ready(s)
+            && nghttp2_session_get_stream_remote_window_size(
+                c->h2_session, s->stream_id) > 0)
+            restart_write_timer(pc);
+    }
 }
 
 static inline UV
@@ -98,6 +154,28 @@ h2_stream_write_timeout(EV_P_ ev_timer *w, int revents)
     }
 
     struct feer_h2_stream *stream = H2_STREAM_FROM_PC(c);
+#ifdef FEERSUM_HAS_OUTQ
+    /* the conn_write_timeout outq deferral, for DATA queued behind ciphertext */
+    if (stream && stream->parent && stream->parent->h2_session
+        && stream->parent->tls_wbuf.off > 0
+        && !stream->parent->closing_linger && !stream->parent->h2_close_pending
+        && h2_stream_output_ready(stream)
+        && nghttp2_session_get_remote_window_size(stream->parent->h2_session) > 0
+        && nghttp2_session_get_stream_remote_window_size(
+            stream->parent->h2_session, stream->stream_id) > 0) {
+        int outq = feer_sock_outq(stream->parent->fd);
+        if (outq > 0) {
+            int stalls = (c->prev_outq > 0 && outq < c->prev_outq)
+                ? 0 : c->outq_stalls + 1;
+            if (stalls < 3) {
+                restart_write_timer(c);
+                c->prev_outq = outq;
+                c->outq_stalls = stalls;
+                goto h2_wt_cleanup;
+            }
+        }
+    }
+#endif
     stop_write_timer(c);
 
     if (stream && stream->parent && stream->parent->h2_session) {
@@ -165,6 +243,8 @@ feer_h2_stream_free(pTHX_ struct feer_h2_stream *stream)
         pc->fd = -1; /* shared with the parent; DESTROY must not close it */
         pc->read_ev_timer.data = NULL;
         SvREFCNT_inc_void_NN(pc->self); /* stop_write_timer may drop the last ref */
+        /* body close() and guards run app code: never inside nghttp2 callbacks */
+        feersum_queue_response_cleanup(pc);
         stop_write_timer(pc);
         SvREFCNT_dec(pc->self); /* guard */
         SvREFCNT_dec(pc->self); /* creation-time ref */
@@ -216,6 +296,7 @@ feer_h2_create_pseudo_conn(pTHX_ struct feer_h2_stream *stream)
     pc->cached_use_reverse_proxy = parent->cached_use_reverse_proxy;
     pc->cached_write_timeout = parent->cached_write_timeout;
     pc->cached_wbuf_low_water = parent->cached_wbuf_low_water;
+    pc->cached_eof_park_timeout = parent->cached_eof_park_timeout;
 
     pc->fd = parent->fd;
     memcpy(&pc->sa, &parent->sa, sizeof(struct sockaddr_storage));
@@ -270,9 +351,15 @@ h2_on_begin_headers_cb(nghttp2_session *session,
 {
     struct feer_conn *c = (struct feer_conn *)user_data;
 
-    /* HCAT_HEADERS (trailers) arrives on an existing stream */
-    if (frame->hd.type != NGHTTP2_HEADERS ||
-        frame->headers.cat != NGHTTP2_HCAT_REQUEST) {
+    if (frame->hd.type != NGHTTP2_HEADERS) return 0;
+    /* trailers get their own header-list budget */
+    if (frame->headers.cat == NGHTTP2_HCAT_HEADERS) {
+        struct feer_h2_stream *stream = nghttp2_session_get_stream_user_data(
+            session, frame->hd.stream_id);
+        if (stream) stream->header_list_size = 0;
+        return 0;
+    }
+    if (frame->headers.cat != NGHTTP2_HCAT_REQUEST) {
         return 0;
     }
 
@@ -307,6 +394,20 @@ h2_on_header_cb(nghttp2_session *session, const nghttp2_frame *frame,
     struct feer_h2_stream *stream = nghttp2_session_get_stream_user_data(
         session, frame->hd.stream_id);
     if (!stream) return 0;
+
+    if (frame->headers.cat == NGHTTP2_HCAT_REQUEST
+        && namelen == 7 && memcmp(name, ":method", 7) == 0
+        && valuelen == 4 && memcmp(value, "HEAD", 4) == 0)
+        stream->request_is_head = 1;
+    if (unlikely(stream->limit_status)) return 0;
+    /* nghttp2 does not enforce the advertised header-list size; check before allocating SVs */
+    size_t room = FEER_H2_MAX_HEADER_LIST_SIZE - stream->header_list_size;
+    if (namelen > room || valuelen > room - namelen
+        || 32 > room - namelen - valuelen) {
+        stream->limit_status = 431;
+        return 0;
+    }
+    stream->header_list_size += namelen + valuelen + 32;
 
     trace("H2 header stream=%d cat=%d: %.*s: %.*s\n",
         frame->hd.stream_id, frame->headers.cat, (int)namelen, name, (int)valuelen, value);
@@ -376,10 +477,9 @@ h2_on_header_cb(nghttp2_session *session, const nghttp2_frame *frame,
 
     if (namelen == 14 && memcmp(name, "content-length", 14) == 0) {
         UV cl;
-        /* Content-Length is 1*DIGIT (RFC 9110 8.6); grok_number alone also
-         * takes a sign and whitespace */
+        /* 1*DIGIT; nghttp2 already rejects surrounding whitespace */
         if (valuelen > 0 && value[0] >= '0' && value[0] <= '9'
-            && grok_number((const char *)value, valuelen, &cl) == IS_NUMBER_IN_UV) {
+            && feer_parse_content_length((const char *)value, valuelen, &cl)) {
             if (cl > (UV)stream->parent->cached_max_body_len) {
                 trace("H2 content-length %"UVuf" exceeds max_body_len\n", cl);
                 stream->limit_status = 413;
@@ -470,11 +570,34 @@ h2_on_frame_recv_cb(nghttp2_session *session,
 {
     struct feer_conn *c = (struct feer_conn *)user_data;
     dTHX;
-    PERL_UNUSED_VAR(c); /* only read by trace() */
 
     switch (frame->hd.type) {
     case NGHTTP2_HEADERS:
     {
+        /* Initial headers and trailers are both bounded before dispatch. */
+        {
+            struct feer_h2_stream *lim_stream =
+                nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+            if (unlikely(lim_stream && lim_stream->limit_status)) {
+                if (lim_stream->limit_response_sent) break;
+                lim_stream->limit_response_sent = 1;
+                /* already dispatched (Extended CONNECT): too late for an error response */
+                if (lim_stream->pseudo_conn) {
+                    h2_submit_rst(session, frame->hd.stream_id,
+                                  NGHTTP2_ENHANCE_YOUR_CALM);
+                    break;
+                }
+                const char *lim_msg =
+                      lim_stream->limit_status == 414 ? "URI Too Long\n"
+                    : lim_stream->limit_status == 431 ? "Request header fields too large\n"
+                    :                                   "Request body too large\n";
+                h2_submit_error_response(aTHX_ session, lim_stream,
+                    frame->hd.stream_id, lim_stream->limit_status,
+                    lim_msg, lim_stream->request_is_head);
+                break;
+            }
+        }
+
         if (frame->headers.cat == NGHTTP2_HCAT_HEADERS) {
             if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
                 goto end_stream_dispatch;
@@ -485,28 +608,7 @@ h2_on_frame_recv_cb(nghttp2_session *session,
         if (frame->headers.cat != NGHTTP2_HCAT_REQUEST)
             break;
 
-        /* A header-block limit is answered here, before the Extended CONNECT
-         * branch can dispatch: a refused request must never reach the app */
-        {
-            struct feer_h2_stream *lim_stream =
-                nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
-            if (unlikely(lim_stream && lim_stream->limit_status)) {
-                lim_stream->rst_by_us = 1;   /* our refusal, not a client flood */
-                bool lim_head = lim_stream->h2_method
-                             && SvCUR(lim_stream->h2_method) == 4
-                             && memcmp(SvPVX(lim_stream->h2_method), "HEAD", 4) == 0;
-                const char *lim_msg =
-                      lim_stream->limit_status == 414 ? "URI Too Long\n"
-                    : lim_stream->limit_status == 431 ? "Request header fields too large\n"
-                    :                                   "Request body too large\n";
-                h2_submit_error_response(aTHX_ session, lim_stream,
-                    frame->hd.stream_id, lim_stream->limit_status,
-                    lim_msg, lim_head);
-                break;
-            }
-        }
-
-        /* Extended CONNECT (RFC 8441) never carries END_STREAM: dispatch on HEADERS */
+        /* Extended CONNECT dispatches on HEADERS, including an input half-close. */
         struct feer_h2_stream *hdr_stream = nghttp2_session_get_stream_user_data(
             session, frame->hd.stream_id);
         if (hdr_stream && hdr_stream->h2_method &&
@@ -517,6 +619,8 @@ h2_on_frame_recv_cb(nghttp2_session *session,
                 if (hdr_stream->req && hdr_stream->h2_path && hdr_stream->h2_scheme
                     && hdr_stream->h2_authority) {
                     hdr_stream->is_tunnel = 1;
+                    if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)
+                        hdr_stream->tunnel_pending_shutdown = 1;
                     struct feer_conn *pc = h2_dispatch_stream(aTHX_ hdr_stream);
                     if (unlikely(!pc)) {
                         h2_submit_rst(session, frame->hd.stream_id,
@@ -547,30 +651,20 @@ h2_on_frame_recv_cb(nghttp2_session *session,
     }
     case NGHTTP2_DATA:
     {
-        /* tunnel: DATA+END_STREAM is the client's half-close */
-        if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
-            struct feer_h2_stream *data_stream = nghttp2_session_get_stream_user_data(
-                session, frame->hd.stream_id);
-            if (data_stream && data_stream->is_tunnel) {
-                if (data_stream->tunnel_established) {
-                    if (data_stream->tunnel_sv0 >= 0) {
-                        shutdown(data_stream->tunnel_sv0, SHUT_WR);
-                        data_stream->tunnel_eof_sent = 1;
-                    }
-                } else {
-                    data_stream->tunnel_pending_shutdown = 1;
-                }
-                break;
-            }
-        }
-
         if (!(frame->hd.flags & NGHTTP2_FLAG_END_STREAM))
             break;
 
     end_stream_dispatch: ;
         struct feer_h2_stream *stream = nghttp2_session_get_stream_user_data(
             session, frame->hd.stream_id);
-        if (!stream || !stream->req) break;
+        if (!stream) break;
+        /* END_STREAM on DATA or trailing HEADERS is the client's half-close. */
+        if (stream->is_tunnel) {
+            stream->tunnel_pending_shutdown = 1;
+            h2_tunnel_maybe_send_eof(stream);
+            break;
+        }
+        if (!stream->req) break;
 
         if (unlikely(stream->body_overflow)) break;
 
@@ -618,6 +712,23 @@ h2_on_frame_recv_cb(nghttp2_session *session,
               c->fd, frame->goaway.last_stream_id, frame->goaway.error_code);
         break;
 
+    case NGHTTP2_RST_STREAM:
+        /* Any error code counts. The stream is still attached: nghttp2 calls
+         * frame_recv before closing it. */
+        if (nghttp2_session_get_stream_user_data(session, frame->hd.stream_id)) {
+            ev_tstamp now = ev_now(feersum_ev_loop);
+            if (now - c->h2_rst_window_start > FEER_H2_RST_FLOOD_WINDOW) {
+                c->h2_rst_window_start = now;
+                c->h2_rst_count = 0;
+            }
+            if (c->h2_rst_count < UINT32_MAX) c->h2_rst_count++;
+            if (c->h2_rst_count > FEER_H2_RST_FLOOD_THRESHOLD) {
+                trouble("H2 rapid reset flood fd=%d, closing\n", c->fd);
+                return NGHTTP2_ERR_CALLBACK_FAILURE;
+            }
+        }
+        break;
+
     default:
         break;
     }
@@ -643,9 +754,14 @@ h2_on_data_chunk_recv_cb(nghttp2_session *session, uint8_t flags,
         return 0;
     }
 
-    /* already answered from the header block: drop the payload before the
-     * overflow path below can RST over the status */
-    if (unlikely(stream->limit_status)) return 0;
+    /* already answered: reset once so a DATA dribble cannot hold the stream open */
+    if (unlikely(stream->limit_status)) {
+        if (!stream->limit_rst_sent) {
+            stream->limit_rst_sent = 1;
+            h2_submit_rst(session, stream_id, NGHTTP2_ENHANCE_YOUR_CALM);
+        }
+        return 0;
+    }
 
     if (!stream->body_buf) {
         stream->body_buf = newSV_buf(len + 256);
@@ -691,6 +807,7 @@ h2_on_stream_close_cb(nghttp2_session *session, int32_t stream_id,
 {
     struct feer_conn *c = (struct feer_conn *)user_data;
     dTHX;
+    PERL_UNUSED_VAR(error_code); /* otherwise only read by diagnostics */
     trace("H2 stream close stream=%d error=%u fd=%d\n",
           stream_id, error_code, c->fd);
     h2_diag("STREAM-CLOSE stream=%d error=%u fd=%d\n",
@@ -699,19 +816,6 @@ h2_on_stream_close_cb(nghttp2_session *session, int32_t stream_id,
     struct feer_h2_stream *stream = nghttp2_session_get_stream_user_data(
         session, stream_id);
 
-    /* rapid-reset guard; our own RSTs must not trip it */
-    if (error_code != 0 && (!stream || !stream->rst_by_us)) {
-        ev_tstamp now = ev_now(feersum_ev_loop);
-        if (now - c->h2_rst_window_start > FEER_H2_RST_FLOOD_WINDOW) {
-            c->h2_rst_window_start = now;
-            c->h2_rst_count = 0;
-        }
-        if (c->h2_rst_count < UINT32_MAX) c->h2_rst_count++;
-        if (c->h2_rst_count > FEER_H2_RST_FLOOD_THRESHOLD) {
-            trouble("H2 rapid reset flood fd=%d, closing\n", c->fd);
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
-        }
-    }
     if (!stream) return 0;
 
     /* the app sees EOF on sv[1] */
@@ -725,17 +829,43 @@ h2_on_stream_close_cb(nghttp2_session *session, int32_t stream_id,
     feer_h2_stream_free(aTHX_ stream);
 
     if (c->h2_streams == NULL) {
-        if (unlikely(c->server->shutting_down)) {
+        if (unlikely(c->server->shutting_down || c->tls_input_eof)) {
             /* Not here: this runs inside session_send with the last frames
              * still in tls_wbuf, and closing (fd = -1) would drop them.
              * Whoever empties the buffer closes. */
             c->h2_close_pending = 1;
         } else {
-            feer_conn_set_idle(c);
+            h2_update_conn_idle(c);
         }
     }
 
     return 0;
+}
+
+/* Undispatched requests cannot complete; dispatched ones may still reply. */
+static void
+feer_h2_input_eof(struct feer_conn *c)
+{
+    if (!c->h2_goaway_sent) {
+        int rv = nghttp2_submit_goaway(c->h2_session, NGHTTP2_FLAG_NONE,
+            nghttp2_session_get_last_proc_stream_id(c->h2_session),
+            NGHTTP2_NO_ERROR, NULL, 0);
+        if (rv != 0)
+            trouble("nghttp2_submit_goaway(input EOF) fd=%d: %s\n",
+                    c->fd, nghttp2_strerror(rv));
+        c->h2_goaway_sent = 1;
+    }
+    for (struct feer_h2_stream *s = c->h2_streams; s; s = s->next) {
+        if (s->is_tunnel) {
+            s->tunnel_pending_shutdown = 1;
+            h2_tunnel_maybe_send_eof(s);
+        } else if (!s->pseudo_conn) {
+            h2_submit_rst(c->h2_session, s->stream_id, NGHTTP2_CANCEL);
+        }
+    }
+    if (!c->h2_streams)
+        c->h2_close_pending = 1;
+    feer_h2_session_send(c);
 }
 
 static int
@@ -803,11 +933,11 @@ feer_h2_init_session(struct feer_conn *c)
         return;
     }
 
-    /* RECEIVE_BODY keeps the H1 header timeout off this conn */
+    /* the header timer stays armed: it bounds the client preface */
     change_receiving_state(c, RECEIVE_BODY);
-    stop_header_timer(c);
+    c->h2_rx_preface_left = NGHTTP2_CLIENT_MAGIC_LEN;
 
-    feer_conn_set_idle(c);
+    h2_update_conn_idle(c);
 
     trace("H2 session initialized fd=%d\n", c->fd);
 }
@@ -829,6 +959,50 @@ feer_h2_free_session(struct feer_conn *c)
         stream = next;
     }
     c->h2_streams = NULL;
+}
+
+/* nghttp2 callbacks can miss a header block's end, so the deadline follows raw
+ * frame boundaries; blocks cannot interleave, so one parent timer suffices. */
+static void
+h2_track_header_deadline(struct feer_conn *c, const uint8_t *data, size_t len)
+{
+    while (len > 0) {
+        if (c->h2_rx_preface_left > 0) {
+            size_t n = len < c->h2_rx_preface_left ? len : c->h2_rx_preface_left;
+            c->h2_rx_preface_left -= n;
+            data += n;
+            len -= n;
+            continue;
+        }
+        if (c->h2_rx_header_used < sizeof(c->h2_rx_header)) {
+            size_t need = sizeof(c->h2_rx_header) - c->h2_rx_header_used;
+            size_t n = len < need ? len : need;
+            memcpy(c->h2_rx_header + c->h2_rx_header_used, data, n);
+            c->h2_rx_header_used += n;
+            data += n;
+            len -= n;
+            if (c->h2_rx_header_used < sizeof(c->h2_rx_header))
+                return;
+            c->h2_rx_payload_left = ((uint32_t)c->h2_rx_header[0] << 16)
+                                 | ((uint32_t)c->h2_rx_header[1] << 8)
+                                 | c->h2_rx_header[2];
+            if (c->h2_rx_header[3] == NGHTTP2_HEADERS)
+                restart_header_timer(c);
+        }
+        size_t n = len < c->h2_rx_payload_left ? len : c->h2_rx_payload_left;
+        c->h2_rx_payload_left -= n;
+        data += n;
+        len -= n;
+        if (c->h2_rx_payload_left > 0)
+            return;
+
+        uint8_t type = c->h2_rx_header[3], flags = c->h2_rx_header[4];
+        if (type == NGHTTP2_SETTINGS
+            || ((type == NGHTTP2_HEADERS || type == NGHTTP2_CONTINUATION)
+                && (flags & NGHTTP2_FLAG_END_HEADERS)))
+            stop_header_timer(c);
+        c->h2_rx_header_used = 0;
+    }
 }
 
 static void
@@ -865,13 +1039,15 @@ feer_h2_session_recv(struct feer_conn *c, const uint8_t *data, size_t len)
         safe_close_conn(c, "H2 protocol error");
         return;
     }
+    if (c->fd >= 0 && !c->closing_linger && !c->h2_close_pending)
+        h2_track_header_deadline(c, data, (size_t)rv);
     trace("H2 session_recv consumed %zd of %zu bytes fd=%d\n", rv, len, c->fd);
 }
 
 static void
 feer_h2_session_send(struct feer_conn *c)
 {
-    if (!c->h2_session || c->fd < 0) return;
+    if (!c->h2_session || c->fd < 0 || c->closing_linger) return;
 
     /* session_send callbacks may drop the last ref through stop_all_watchers */
     SvREFCNT_inc_void_NN(c->self);
@@ -892,6 +1068,15 @@ feer_h2_session_send(struct feer_conn *c)
     h2_diag("POST-SEND fd=%d rv=%d want_w=%d want_r=%d\n",
             c->fd, rv, nghttp2_session_want_write(c->h2_session),
             nghttp2_session_want_read(c->h2_session));
+
+    /* Both wants zero: the session is terminal (e.g. after an error GOAWAY).
+     * Stop reading so ignored input cannot renew the idle clock. */
+    if (!nghttp2_session_want_read(c->h2_session)
+        && !nghttp2_session_want_write(c->h2_session)) {
+        c->h2_close_pending = 1;
+        stop_read_watcher(c);
+        stop_header_timer(c);
+    }
 
 #ifdef FEERSUM_HAS_TLS
     if (c->tls_wbuf.off > 0) {
@@ -919,10 +1104,11 @@ feer_h2_session_send(struct feer_conn *c)
         c->h2_close_pending = 0;
         /* linger: the response is only in the kernel, the client's WINDOW_UPDATE still unread */
         c->want_linger_close = 1;
-        feer_shutdown_conn(c, "last H2 stream closed during shutdown");
+        feer_shutdown_conn(c, "H2 final output drained");
     }
 
 send_done:
+    h2_update_conn_idle(c);
     SvREFCNT_dec(c->self);
 }
 
@@ -1045,6 +1231,9 @@ h2_streaming_read_cb(nghttp2_session *session, int32_t stream_id,
 
     memcpy(buf, ptr, to_copy);
     stream->resp_wbuf_pos += to_copy;
+    /* only real tail progress re-invites a declined source */
+    if (to_copy > 0)
+        stream->poll_declined = 0;
     /* refresh only, as in h2_body_read_cb: a tunnel stream must not acquire a deadline */
     if (to_copy > 0 && stream->pseudo_conn
         && ev_is_active(&stream->pseudo_conn->write_ev_timer))
@@ -1402,6 +1591,10 @@ feersum_h2_write_chunk(pTHX_ struct feer_conn *c, SV *body)
         SV *t = feer_bytes_mortal(ptr, len);
         ptr = SvPVX(t); len = SvCUR(t);
     }
+    /* app output un-parks the source */
+    if (c->poll_retry_pending)
+        stop_write_timer(c);
+    stream->poll_declined = 0;
     h2_resp_wbuf_append(stream, ptr, len);
 
     nghttp2_session_resume_data(stream->parent->h2_session, stream->stream_id);
@@ -1409,7 +1602,10 @@ feersum_h2_write_chunk(pTHX_ struct feer_conn *c, SV *body)
     /* in_callback: defer, or session_send drains resp_wbuf before the pump sees progress */
     if (!c->in_callback)
         h2_session_send_and_poll(aTHX_ stream->parent);
-    restart_write_timer(c);
+    /* send may have freed the stream, or re-parked its source: keep that
+     * retry timer rather than overwrite it with a write deadline */
+    if (likely(H2_STREAM_FROM_PC(c) != NULL) && !c->poll_retry_pending)
+        restart_write_timer(c);
 }
 
 /* Streaming write pump: the H2 twin of try_conn_write */
@@ -1436,6 +1632,7 @@ h2_try_stream_write(pTHX_ struct feer_conn *c)
 
         STRLEN before = avail;
         unsigned int writes_before = stream->writes_seen;
+        stream->poll_declined = 0;
         /* IO-handle bodies: one getline per iteration, paced like a poll_cb */
         if (c->poll_write_cb_is_io_handle) {
             if (!pump_h2_io_step(aTHX_ c)) break;
@@ -1450,6 +1647,7 @@ h2_try_stream_write(pTHX_ struct feer_conn *c)
         STRLEN after = h2_resp_wbuf_avail(stream);
         /* an empty write() is not a decline; only a silent app is */
         if (after == before && stream->writes_seen == writes_before) {
+            stream->poll_declined = 1;
             declined = 1;
             break;
         }
@@ -1484,22 +1682,47 @@ h2_try_stream_write(pTHX_ struct feer_conn *c)
     }
     /* Declined: paced re-invitation through h2_stream_write_timeout, but only
      * with an empty buffer; a sub-low-water tail keeps its write deadline and
-     * the peer's WINDOW_UPDATEs re-invite it */
+     * DATA progress re-invites it */
     else if (unlikely(declined) && c->responding == RESPOND_STREAMING
              && c->poll_write_cb) {
         struct feer_h2_stream *st = H2_STREAM_FROM_PC(c);
-        if (st && st->parent && h2_resp_wbuf_avail(st) == 0)
-            feersum_poll_retry_park(c);
+        if (st && st->parent && h2_resp_wbuf_avail(st) == 0) {
+            /* connection EOF only: every request carries a stream END_STREAM.
+             * Tunnels are exempt, as on H1. */
+            if (st->parent->tls_input_eof && !st->is_tunnel)
+                feer_latch_input_eof(c);
+            feersum_maybe_fire_on_eof(c);
+            /* user code may have closed, paused or fed it: re-fetch */
+            st = H2_STREAM_FROM_PC(c);
+            if (st && st->parent && c->responding == RESPOND_STREAMING
+                && c->poll_write_cb && h2_resp_wbuf_avail(st) == 0) {
+                if (unlikely(feer_eof_park_expired(c))) {
+                    trace("H2 EOF park expired stream=%d fd=%d\n",
+                          st->stream_id, st->parent->fd);
+                    /* poll_declined keeps send_and_poll's refill from re-entering here */
+                    if (st->parent->h2_session) {
+                        h2_submit_rst(st->parent->h2_session, st->stream_id,
+                                      NGHTTP2_CANCEL);
+                        h2_session_send_and_poll(aTHX_ st->parent);
+                    }
+                    change_responding_state(c, RESPOND_SHUTDOWN);
+                }
+                else
+                    feersum_poll_retry_park(c);
+            }
+        }
     }
 
     SvREFCNT_dec(c->self);
 }
 
-/* Refill starved poll_cbs; runs after every session_send, since a WINDOW_UPDATE
- * can drain resp_wbuf below low_water */
+/* Refill starved poll_cbs; run after every session_send, which can drain
+ * resp_wbuf below low_water */
 static void
 h2_check_stream_poll_cbs(pTHX_ struct feer_conn *c)
 {
+    if (c->fd < 0 || c->closing_linger || c->h2_close_pending)
+        return;
     /* ids, not pointers: h2_try_stream_write can free any sibling stream */
     int32_t candidates[FEER_H2_MAX_CONCURRENT_STREAMS];
     int n = 0;
@@ -1517,7 +1740,8 @@ h2_check_stream_poll_cbs(pTHX_ struct feer_conn *c)
             ev_io_start(feersum_ev_loop, &stream->tunnel_read_w);
 
         struct feer_conn *pc = stream->pseudo_conn;
-        if (!pc || pc->responding != RESPOND_STREAMING || !pc->poll_write_cb)
+        if (!pc || pc->responding != RESPOND_STREAMING || !pc->poll_write_cb
+            || pc->poll_retry_pending || stream->poll_declined)
             continue;
 
         STRLEN buffered = h2_resp_wbuf_avail(stream);
@@ -1535,7 +1759,8 @@ h2_check_stream_poll_cbs(pTHX_ struct feer_conn *c)
         if (!stream) continue;
 
         struct feer_conn *pc = stream->pseudo_conn;
-        if (!pc || pc->responding != RESPOND_STREAMING || !pc->poll_write_cb)
+        if (!pc || pc->responding != RESPOND_STREAMING || !pc->poll_write_cb
+            || pc->poll_retry_pending || stream->poll_declined)
             continue;
 
         h2_try_stream_write(aTHX_ pc);
@@ -1662,6 +1887,7 @@ h2_tunnel_sv0_write_cb(EV_P_ struct ev_io *w, int revents)
             SvCUR_set(stream->tunnel_wbuf, 0);
             stream->tunnel_wbuf_pos = 0;
         }
+        h2_tunnel_maybe_send_eof(stream);
         return;
     }
 
@@ -1687,6 +1913,7 @@ h2_tunnel_sv0_write_cb(EV_P_ struct ev_io *w, int revents)
         ev_io_stop(EV_A, &stream->tunnel_write_w);
         SvCUR_set(stream->tunnel_wbuf, 0);
         stream->tunnel_wbuf_pos = 0;
+        h2_tunnel_maybe_send_eof(stream);
     }
 }
 
@@ -1809,11 +2036,7 @@ feer_h2_setup_tunnel(pTHX_ struct feer_h2_stream *stream)
         }
     }
 
-    if (stream->tunnel_pending_shutdown) {
-        shutdown(stream->tunnel_sv0, SHUT_WR);
-        stream->tunnel_pending_shutdown = 0;
-        stream->tunnel_eof_sent = 1;
-    }
+    h2_tunnel_maybe_send_eof(stream);
 
     trace("H2 tunnel socketpair established stream=%d sv0=%d sv1=%d\n",
           stream->stream_id, sv[0], sv[1]);
@@ -1825,8 +2048,9 @@ feersum_h2_close_write(pTHX_ struct feer_conn *c)
     struct feer_h2_stream *stream = H2_STREAM_FROM_PC(c);
     if (!stream || !stream->parent || !stream->parent->h2_session) return;
 
-    /* a tunnel ends when the app closes sv[1], not on writer close */
-    if (stream->is_tunnel)
+    /* a relay ends when the app closes sv[1]; a CONNECT rejected without io()
+     * is an ordinary response */
+    if (stream->tunnel_established)
         return;
 
     stream->resp_eof = 1;

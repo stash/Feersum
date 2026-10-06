@@ -128,6 +128,9 @@ sub _create_socket { ## no critic (ProhibitExcessComplexity)
             . UNIX_PATH_MAX . ")"
             if length($path) > UNIX_PATH_MAX;
         if (-S $path) {
+            if (IO::Socket::UNIX->new(Peer => $path)) {
+                croak "listen path '$path' is already served by a live server";
+            }
             unlink $path or carp "unlink stale socket '$path': $!";
         }
         my $saved = umask(0);
@@ -476,6 +479,10 @@ sub run { ## no critic (ProhibitExcessComplexity)
     my $self = shift;
     weaken $self;
 
+    # the hot master's EV watcher still takes USR2 over this
+    local $SIG{USR1} = 'IGNORE';
+    local $SIG{USR2} = 'IGNORE';
+
     $self->{running} = 1;
     my $app = shift || $self->{app};
     $self->{quiet} or warn "Feersum [$$]: starting...\n";
@@ -609,6 +616,10 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
     my $gen_ready = 0;
     # Restart backoff for a crashed generation.
     my ($gen_ready_at, $gen_restart_fails, $gen_restart_timer);
+    my %retiring;
+    my $drain_deadline = ($self->{graceful_timeout}
+                      // $ENV{FEERSUM_GRACEFUL_TIMEOUT}
+                      // DEATH_TIMER) + 2 * DEATH_TIMER_INCR;
 
     # Only the master holds the write end, so a generation sees EOF when it dies.
     pipe(my $master_alive_r, my $master_alive_w)
@@ -627,6 +638,7 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
             # Drop the master's watchers before any loop iteration here.
             undef $hup; undef $quit; undef $int; undef $term; undef $reap;
             undef $usr2; undef $master_death; undef $gen_restart_timer;
+            %retiring = ();  # inherited master deadlines must not run in a generation
             # Inherited daemonize pipe end; held, it hides a master death from the parent.
             if (my $rdy = delete $self->{_daemon_ready_fh}) { close $rdy }
             $quiet or warn "Feersum [$$]: gen $gen loading app\n";
@@ -782,17 +794,15 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
         $quiet or warn "Feersum [$$]: master $why\n";
         kill 'QUIT', $current_pid if $current_pid;
         kill 'QUIT', $pending_pid if $pending_pid;
+        kill 'QUIT', keys %retiring if %retiring;
         # With nothing to reap the reap watcher never breaks the loop; break here.
-        EV::break unless $current_pid || $pending_pid;
+        EV::break unless $current_pid || $pending_pid || %retiring;
 
         # Backstop for a generation wedged in app code, whose own deadline never
         # runs; set later than that deadline so the graceful path goes first.
-        my $gt = ($self->{graceful_timeout}
-               // $ENV{FEERSUM_GRACEFUL_TIMEOUT}
-               // DEATH_TIMER) + 2 * DEATH_TIMER_INCR;
-        $master_death = EV::timer $gt, 0, sub {
+        $master_death = EV::timer $drain_deadline, 0, sub {
             $quiet or warn "Feersum [$$]: master shutdown timed out, forcing\n";
-            for my $p (grep { $_ } $current_pid, $pending_pid) {
+            for my $p (grep { $_ } $current_pid, $pending_pid, keys %retiring) {
                 kill 'KILL', $p;
                 # A pre-fork generation setsid()s; its workers are reachable only by group.
                 kill 'KILL', -$p;
@@ -831,7 +841,17 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
             my $retire = ($current_pid && $current_pid == $old_pid) ? $old_pid : undef;
             $current_pid = $pending_pid;
             $pending_pid = undef;
-            kill 'QUIT', $retire if $retire;
+            $gen_ready_at = EV::time();
+            if ($retire) {
+                $retiring{$retire} = EV::timer($drain_deadline, 0, sub {
+                    $retiring{$retire} = undef;
+                    $quiet or warn "Feersum [$$]: retired generation $retire "
+                                 . "drain timed out, forcing\n";
+                    kill 'KILL', $retire;
+                    kill 'KILL', -$retire;
+                });
+                kill 'QUIT', $retire;
+            }
         } else {
             kill 'KILL', $pending_pid if kill(0, $pending_pid);
             waitpid($pending_pid, 0);
@@ -841,7 +861,7 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
                 warn "Feersum [$$]: gen $gen failed, keeping old (pid $current_pid)\n";
             }
             elsif ($shutting_down) {
-                EV::break;
+                EV::break unless %retiring;
             }
             else {
                 warn "Feersum [$$]: gen $gen failed and the running generation "
@@ -902,13 +922,20 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
         $quiet or warn "Feersum [$$]: child $kid $how\n";
         # _wait_for_ready owns the pending generation.
         return if $pending_pid && $kid == $pending_pid;
+        if (exists $retiring{$kid}) {
+            delete $retiring{$kid};
+            EV::break if $shutting_down && !$current_pid && !$pending_pid && !%retiring;
+            return;
+        }
         if ($current_pid && $kid == $current_pid) {
             $current_pid = undef;
-            EV::break if $shutting_down;
+            EV::break if $shutting_down && !$pending_pid && !%retiring;
             unless ($shutting_down || $pending_pid) {
+                my $retired = ($rstatus & WSTATUS_SIGNAL_MASK) == 0
+                    && ($rstatus >> WSTATUS_EXIT_SHIFT) == EXIT_RETIRED;
                 my $lifetime = defined $gen_ready_at
                     ? EV::time() - $gen_ready_at : undef;
-                if (defined $lifetime && $lifetime < RESPAWN_INSTANT_DEATH) {
+                if (!$retired && defined $lifetime && $lifetime < RESPAWN_INSTANT_DEATH) {
                     my $n = ++$gen_restart_fails;
                     my $delay = $n > RESPAWN_MAX_FAILS ? RESPAWN_BACKOFF_MAX
                               : RESPAWN_BACKOFF_BASE * (2 ** ($n - 1));
@@ -965,6 +992,13 @@ sub _run_hot_restart_master { ## no critic (ProhibitExcessComplexity)
     $quiet or warn "Feersum [$$]: master ready (gen $gen, pid $current_pid)\n";
 
     EV::run;
+    # A failed replacement can end the loop while older generations still drain.
+    for my $pid (keys %retiring) {
+        kill 'KILL', $pid;
+        kill 'KILL', -$pid;
+        waitpid $pid, 0;
+    }
+    %retiring = ();
     # @socks is sparse under reuseport (indices line up with _listen_addrs).
     for my $sock (grep { defined } @socks) { close($sock) }
     waitpid(WAIT_ANY_PID, POSIX::WNOHANG()) for 1 .. FINAL_REAP_ATTEMPTS;
@@ -1566,7 +1600,8 @@ like a port is rejected as ambiguous.
 
 An entry beginning with C</> or C<.> is bound as a UNIX-domain socket, created
 world-accessible (mode C<0777>); restrict access through the directory's
-permissions.
+permissions.  A stale socket file is replaced; one a live server still
+answers on croaks.
 
 Alternatively, use C<host> and C<port>.
 
@@ -1602,6 +1637,10 @@ C<app_file> only names what each generation re-runs:
 
     plackup -s Feersum --app-file=app.psgi --hot-restart=1 --pre-fork=4 app.psgi
     kill -HUP <master-pid>
+
+C<SIGUSR1> and C<SIGUSR2> are ignored while running, except that the
+C<hot_restart> master receives each new generation's readiness as
+C<SIGUSR2>; do not send it to the master yourself.
 
 =item backlog
 
@@ -1762,11 +1801,10 @@ exits.
 
 =item access_log
 
-Code reference called after each response completes (native handler only).
-Receives C<($method, $uri, $elapsed_seconds)>.  Requests the server rejects
-before dispatch (malformed, over a limit, timed out) produce no line; see
-C<access_log> in L<Feersum>.  For PSGI apps, use
-L<Plack::Middleware::AccessLog> instead.
+Code reference called after each response completes, for native and PSGI
+handlers alike.  Receives C<($method, $uri, $elapsed_seconds)>.  Requests
+the server rejects before dispatch (malformed, over a limit, timed out)
+produce no line; see C<access_log> in L<Feersum>.
 
     access_log => sub {
         my ($method, $uri, $elapsed) = @_;

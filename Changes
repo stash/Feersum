@@ -1,5 +1,9 @@
 Revision history for Perl extension Feersum
 
+1.509 Tue Oct 20 14:54:11 2026 +0300
+        - security and robustness hardening across HTTP/1, HTTP/2 and TLS
+        - enforce retired generation drain deadlines through reload and shutdown
+
 1.507 Fri Sep 25 10:49:04 2026 +0300
         New:
         - multiple server instances (new_instance) and multiple listeners

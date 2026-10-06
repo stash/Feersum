@@ -11,7 +11,7 @@ use Feersum;
 use IO::Socket::UNIX;
 
 my $path = shift || '/tmp/feersum.sock';
-unlink $path if -e $path;
+unlink $path if -S $path;
 
 my $socket = IO::Socket::UNIX->new(
     Local    => $path,

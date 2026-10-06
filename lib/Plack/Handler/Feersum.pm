@@ -7,6 +7,7 @@ use base 'Feersum::Runner';
 sub assign_request_handler {
     my $self = shift;
     # no TERM watcher here: run() installs one right after this returns
+    $self->{endjinn}->access_log($self->{access_log});
     $self->{endjinn}->psgi_request_handler(shift);
     return;
 }

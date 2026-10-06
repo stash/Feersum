@@ -19,10 +19,35 @@ try_parse_http(struct feer_conn *c, size_t last_read)
 
 INLINE_UNLESS_DEBUG static void
 finish_receiving(struct feer_conn *c) {
+    /* error paths arm a lingering close first; it owns the read watcher/timer */
+    if (unlikely(c->closing_linger))
+        return;
     change_receiving_state(c, RECEIVE_SHUTDOWN);
     stop_read_watcher(c);
     stop_read_timer(c);
     stop_header_timer(c);
+}
+
+/* after a failed parse: an unsupported major version is a 505 (RFC 9112 2.6) */
+static int
+feer_request_major_too_new (SV *rbuf)
+{
+    dTHX;
+    STRLEN len;
+    const char *buf = SvPV(rbuf, len);
+    STRLEN scan = len > 16384 ? 16384 : len;
+    const char *lf = memchr(buf, '\n', scan);
+    const char *p;
+    if (!lf || lf - buf < 8)
+        return 0;
+    p = lf;
+    if (p[-1] == '\r')
+        p--;
+    if (p - buf >= 2 && p[-2] == '.' && p[-1] >= '0' && p[-1] <= '9')
+        p -= 2;
+    if (p - buf < 6 || p[-1] < '2' || p[-1] > '9')
+        return 0;
+    return memcmp(p - 6, "HTTP/", 5) == 0;
 }
 
 static void
@@ -227,6 +252,10 @@ try_read_bad:
      * only the cap leaves num_headers at MAX_HEADERS */
     if (unlikely(c->req && c->req->num_headers >= MAX_HEADERS))
         respond_with_server_error(c, "Too many header fields\n", 431);
+    else if (unlikely(c->rbuf && feer_request_major_too_new(c->rbuf))) {
+        c->is_http11 = 1;
+        respond_with_server_error(c, "HTTP Version Not Supported\n", 505);
+    }
     else
         respond_with_server_error(c, "Malformed request\n", 400);
 dont_read_again:
@@ -265,17 +294,39 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         /* H2 cannot stop these timers at tunnel takeover (sibling streams still
          * need the idle bound), so re-arm.  A dispatched stream is not idle, but
          * one owing bytes the peer will not take is stalled: strike it. */
-        int stalled = 0;
-        for (struct feer_h2_stream *s = c->h2_streams; s; s = s->next) {
+        /* once nghttp2 has terminated, app handles cannot excuse owed output */
+        int stalled = c->h2_close_pending || c->tls_wbuf.off > 0;
+        int app_waiting = 0;
+        int tunnel_live = 0;
+        int wire_progress = 0;
+#ifdef FEERSUM_HAS_OUTQ
+        /* a TCP send backlog is owed output; only a shrinking one is progress */
+        int outq = feer_sock_outq(c->fd);
+        if (outq > 0) {
+            stalled = 1;
+            wire_progress = c->prev_read_outq > 0 && outq < c->prev_read_outq;
+            c->prev_read_outq = outq;
+        } else
+            c->prev_read_outq = 0;
+#endif
+        for (struct feer_h2_stream *s = c->h2_close_pending ? NULL : c->h2_streams;
+             s; s = s->next) {
             if (!s->tunnel_established && !s->pseudo_conn)
                 continue;
-            if (s->tunnel_established || !h2_stream_send_pending(s)) {
-                trace("H2 idle timeout deferred, stream live fd=%d\n", c->fd);
-                c->h2_stall_strikes = 0;
-                restart_read_timer(c);
-                goto read_timeout_cleanup;
-            }
-            stalled = 1;
+            /* past transport EOF no WINDOW_UPDATE can unblock a tunnel */
+            if (s->tunnel_established && !c->tls_input_eof)
+                tunnel_live = 1;
+            else if (h2_stream_send_pending(s))
+                stalled = 1;
+            else
+                app_waiting = 1;
+        }
+        /* decide after scanning all siblings: a waiting app must not mask a stall */
+        if (tunnel_live || wire_progress || (app_waiting && !stalled)) {
+            trace("H2 idle timeout deferred, stream live fd=%d\n", c->fd);
+            c->h2_stall_strikes = 0;
+            restart_read_timer(c);
+            goto read_timeout_cleanup;
         }
         if (stalled && ++c->h2_stall_strikes < FEER_H2_STALL_STRIKES) {
             trace("H2 stall strike %d fd=%d\n", c->h2_stall_strikes, c->fd);
@@ -295,6 +346,10 @@ conn_read_timeout (EV_P_ ev_timer *w, int revents)
         goto read_timeout_cleanup;
     }
 #endif
+
+    /* a taken socket's deadline belongs to the app */
+    if (unlikely(c->io_taken))
+        goto read_timeout_cleanup;
 
     if (likely(c->responding == RESPOND_NOT_STARTED) && c->receiving >= RECEIVE_HEADERS) {
 #ifdef FEERSUM_HAS_TLS
@@ -343,6 +398,26 @@ conn_header_timeout (EV_P_ ev_timer *w, int revents)
                 c->fd, revents);
         goto header_timeout_cleanup;
     }
+
+#ifdef FEERSUM_HAS_H2
+    if (c->h2_session) {
+        /* an unfinished header block blocks every stream: a reset cannot recover */
+        trace("H2 header deadline fd=%d\n", c->fd);
+        if (!c->h2_goaway_sent) {
+            nghttp2_submit_goaway(c->h2_session, NGHTTP2_FLAG_NONE,
+                                  nghttp2_session_get_last_proc_stream_id(c->h2_session),
+                                  NGHTTP2_ENHANCE_YOUR_CALM, NULL, 0);
+            c->h2_goaway_sent = 1;
+            feer_h2_session_send(c);
+        }
+        feer_shutdown_conn(c, "H2 header timeout");
+        change_receiving_state(c, RECEIVE_SHUTDOWN);
+        goto header_timeout_cleanup;
+    }
+#endif
+
+    if (unlikely(c->io_taken))
+        goto header_timeout_cleanup;
 
     if ((c->receiving == RECEIVE_HEADERS || c->receiving == RECEIVE_PROXY_HEADER)
         && c->responding == RESPOND_NOT_STARTED) {
@@ -544,7 +619,7 @@ try_accept_one(EV_P_ struct feer_listen *lsnr, struct feer_server *srvr)
 #endif
     if (srvr->max_connections > 0 && socket_conns >= srvr->max_connections) {
         if (!feer_server_recycle_idle_conn(srvr)) {
-            /* pause rather than spin accepting-and-closing; DESTROY clears it */
+            /* resumed when a socket closes or turns idle/evictable */
             trace("max_connections limit reached (%d), pausing accept on fd=%d\n",
                   srvr->max_connections, lsnr->fd);
             close(fd);
@@ -674,8 +749,17 @@ try_parse_chunked (struct feer_conn *c)
                     }
                     chunk_size = (chunk_size << 4) | val;
                 }
-                else if (ch == ';' || ch == ' ' || ch == '\t') {
+                else if (ch == ';') {
                     break;
+                }
+                else if (ch == ' ' || ch == '\t') {
+                    char *q = p + 1;
+                    while (q < line_end && (*q == ' ' || *q == '\t'))
+                        q++;
+                    if (q >= line_end || *q == ';')
+                        break;
+                    trace("chunked: junk after chunk size\n");
+                    return -1;
                 }
                 else {
                     trace("chunked: invalid hex char '%c'\n", ch);
@@ -737,6 +821,10 @@ try_parse_chunked (struct feer_conn *c)
                             memmove(buf + write_pos, buf + read_pos, pipelined);
                         SvCUR_set(c->rbuf, write_pos + pipelined);
                         return 0;
+                    }
+                    if (!memchr(trailer_start, ':', i)) {
+                        trace("chunked: trailer without a colon\n");
+                        return -1;
                     }
                     if (unlikely(++c->trailer_count > MAX_TRAILER_HEADERS)) {
                         trace("chunked: too many trailer headers\n");
@@ -817,7 +905,15 @@ process_request_headers (struct feer_conn *c, int body_offset)
     bool body_is_required = 0;
     bool next_req_follows = 0;
     bool got_content_length = 0;
+    bool connection_close = 0;
     PERL_UNUSED_VAR(body_is_required); /* only read under DEBUG >= 2 */
+
+    if (unlikely(req->minor_version > 1)) {
+        c->is_http11 = 1;
+        err_code = 505;
+        err = "HTTP Version Not Supported\n";
+        goto got_bad_request;
+    }
 
     c->is_http11 = (req->minor_version == 1);
     c->is_keepalive = c->cached_keepalive_default && c->is_http11;
@@ -873,7 +969,7 @@ process_request_headers (struct feer_conn *c, int body_offset)
     default:
     unsupported_method:
         err = "Feersum doesn't support that method yet\n";
-        err_code = 405;
+        err_code = 501;
         goto got_bad_request;
     }
 
@@ -934,14 +1030,11 @@ process_request_headers (struct feer_conn *c, int body_offset)
                 goto got_bad_request;
             }
             UV new_expected = 0;
-            /* grok_number accepts a leading sign; Content-Length is 1*DIGIT and
-             * a "+4" an intermediary rejects is a smuggling desync.  OWS is legal */
-            const char *cl_p = hdr->value, *cl_end = hdr->value + hdr->value_len;
-            while (cl_p < cl_end && (*cl_p == ' ' || *cl_p == '\t')) cl_p++;
-            int g = (cl_p < cl_end && *cl_p >= '0' && *cl_p <= '9')
-                  ? grok_number(hdr->value, hdr->value_len, &new_expected) : 0;
-            if (likely(g == IS_NUMBER_IN_UV)) {
-                if (unlikely(new_expected > (UV)c->cached_max_body_len)) {
+            if (likely(feer_parse_content_length(hdr->value, hdr->value_len,
+                                                &new_expected))) {
+                /* expected_cl is ssize_t: past SSIZE_MAX the cast goes negative */
+                if (unlikely(new_expected > (UV)c->cached_max_body_len
+                             || new_expected > (UV)SSIZE_MAX)) {
                     err_code = 413;
                     err = "Content length exceeds maximum\n";
                     goto got_bad_request;
@@ -963,14 +1056,14 @@ process_request_headers (struct feer_conn *c, int body_offset)
         else if (unlikely(hdr->name_len == 10 &&
                 str_case_eq_fixed("connection", hdr->name, 10)))
         {
-            if (c->is_http11 && c->is_keepalive &&
-                hdr->value_len == 5 && str_case_eq_fixed("close", hdr->value, 5))
+            if (feer_header_has_token(hdr->value, hdr->value_len, "close", 5))
             {
+                connection_close = 1;
                 c->is_keepalive = 0;
                 trace("setting conn %d to close after response\n", c->fd);
             }
-            else if (!c->is_http11 && c->cached_keepalive_default &&
-                hdr->value_len == 10 && str_case_eq_fixed("keep-alive", hdr->value, 10))
+            else if (!c->is_http11 && c->cached_keepalive_default && !connection_close &&
+                feer_header_has_token(hdr->value, hdr->value_len, "keep-alive", 10))
             {
                 c->is_keepalive = 1;
                 trace("setting conn %d to keep after response\n", c->fd);
@@ -1010,12 +1103,23 @@ process_request_headers (struct feer_conn *c, int body_offset)
             }
             got_transfer_encoding = 1;
 
-            bool is_chunked = (hdr->value_len >= 7 &&
-                str_case_eq_fixed("chunked", hdr->value, 7) &&
-                (hdr->value_len == 7 ||
-                 hdr->value[7] == ';' ||
-                 hdr->value[7] == ' ' ||
-                 hdr->value[7] == '\t'));
+            if (unlikely(hdr->value_len == 0)) {
+                err_code = 400;
+                err = "Empty Transfer-Encoding\n";
+                goto got_bad_request;
+            }
+
+            /* transfer-coding = token *( OWS ";" OWS parameter ) (RFC 9112 6.1) */
+            bool is_chunked = 0;
+            if (hdr->value_len >= 7 &&
+                str_case_eq_fixed("chunked", hdr->value, 7))
+            {
+                STRLEN j = 7;
+                while (j < hdr->value_len &&
+                       (hdr->value[j] == ' ' || hdr->value[j] == '\t'))
+                    j++;
+                is_chunked = (j == hdr->value_len || hdr->value[j] == ';');
+            }
 
             bool is_identity = (hdr->value_len == 8 &&
                 str_case_eq_fixed("identity", hdr->value, 8));
@@ -1046,6 +1150,11 @@ process_request_headers (struct feer_conn *c, int body_offset)
                 err = "Duplicate Host header\n";
                 goto got_bad_request;
             }
+            if (unlikely(hdr->value_len == 0)) {
+                err_code = 400;
+                err = "Empty Host header\n";
+                goto got_bad_request;
+            }
             got_host = 1;
         }
     }
@@ -1068,7 +1177,8 @@ process_request_headers (struct feer_conn *c, int body_offset)
         goto got_bad_request;
     }
 
-    if (likely(next_req_follows) && !got_content_length && !c->receive_chunked) goto got_it_all;
+    /* implicit empty body takes the CL path: rbuf may hold the next request */
+    if (likely(next_req_follows) && !got_content_length && !c->receive_chunked) goto got_cl;
     else if (likely(got_content_length)) goto got_cl;
     else if (unlikely(c->receive_chunked)) goto got_chunked;
 
@@ -1268,21 +1378,17 @@ respond_with_server_error (struct feer_conn *c, const char *msg, int err_code)
     const bool no_body = c->req && c->req->method_len == 4
                       && memcmp(c->req->method, "HEAD", 4) == 0;
 
-    /* a 405 must carry Allow (RFC 9110 15.5.6) */
-    const char *allow = (err_code == 405)
-        ? "Allow: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS" CRLF : "";
-
     /* DATE_BUF already ends in CRLF */
     tmp = newSVpvf("HTTP/1.%d %d %s" CRLF
                    "Content-Type: text/plain" CRLF
                    "Connection: close" CRLF
                    "Cache-Control: no-cache, no-store" CRLF
-                   "%s%s"
+                   "%s"
                    "Content-Length: %"Ssz_df"" CRLFx2
                    "%.*s",
               c->is_http11 ? 1 : 0,
               err_code, http_code_to_msg(err_code),
-              DATE_BUF, allow,
+              DATE_BUF,
               (Ssz)msg_len,
               no_body ? 0 : (int)msg_len, msg);
     /* not a mortal: ev callbacks have no FREETMPS scope, so it would leak */

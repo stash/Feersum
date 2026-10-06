@@ -6,7 +6,7 @@ use EV ();
 use Carp ();
 use Socket ();
 
-our $VERSION = '1.507';
+our $VERSION = '1.509';
 
 require Feersum::Connection;
 require Feersum::Connection::Handle;
@@ -232,6 +232,10 @@ L</"psgix.input.buffered">.
 
 =head2 PSGI interface
 
+Feersum calls C<close()> on a PSGI body handle when reading finishes, when
+C<HEAD> or a no-content status suppresses the body, and after a read error or
+client cancellation. Use that method to release the body's resources.
+
 Response strings (body parts, C<write()> chunks, header values and the status
 message, native interface alike) are B<byte> strings.  A UTF8-flagged string
 whose characters are all C<< <= 255 >> is sent as those bytes, exactly as the
@@ -280,14 +284,14 @@ requires.
 
 B<Over HTTP/1.x only these request methods are accepted:> GET, HEAD, POST,
 PUT, PATCH, DELETE, OPTIONS.  Anything else (CONNECT, WebDAV verbs, TRACE,
-...) is answered with C<405 Method Not Allowed> plus an C<Allow> header
+...) is answered with C<501 Not Implemented>, without an C<Allow> header and
 without the handler running.  HTTP/2 passes every method through to the
 handler.
 
 C<psgi.input> always contains a valid handle.  For a request without a body,
 reads return 0 (end of file) whatever length is requested; C<undef>/C<EAGAIN>
-only occurs in streaming-input mode (after C<< $input->poll_cb(...) >>) when
-no data has arrived yet.
+only occurs when polling an input byte stream taken over with
+C<io()>/C<psgix.io> and no data has arrived yet.
 
     my $r = delete $env->{'psgi.input'};
     $r->read($body, $env->{CONTENT_LENGTH});
@@ -370,15 +374,18 @@ The reader handle also supports C<poll_cb()>.  On a normal request the
 handler runs only after the whole body has arrived, so the callback drains an
 already-complete buffer; it becomes an incremental reader only once the app
 takes over the byte stream with C<io()>/C<psgix.io>, where each socket read
-invokes it.
+invokes it.  On an ordinary request it sees the body and then EOF (also for
+empty bodies and pipelined requests), and is released after that; it does
+not carry over to the next request on the connection.
 
 =item psgix.output.guard
 
 The streaming responder has a C<response_guard()> method that attaches a
 guard (an object with a DESTROY/DEMOLISH method, e.g. L<Guard>) to the
-request.  The guard triggers when the request completes (all data written and
-the connection started its close): a cheaper alternative to a
-write-completion C<poll_cb()>, like C<on_drain> in L<AnyEvent::Handle>.
+response.  It is released when the HTTP/1 connection starts closing or the
+HTTP/2 stream closes (client cancellation included), not after each response
+on a keepalive connection; see
+L<Feersum::Connection::Handle/"$h-E<gt>response_guard($guard)">.
 
 =item psgix.io
 
@@ -402,6 +409,10 @@ C<TCP_NODELAY> set.  On TLS connections and HTTP/2 Extended CONNECT (RFC
 8441) streams it is a Unix socketpair relaying through the TLS/H2 layer.  On
 a regular HTTP/2 stream it is C<undef> (the native C<io()> croaks; see
 L<Feersum::Connection/"$req-E<gt>io">).
+
+A peer half-close (on TLS tunnels also C<close_notify>) delivers EOF once
+buffered input has reached the handle; the handle stays writable, so the
+application can finish its reply before closing it.
 
 If you take the socket while part of the request body is still unread, the
 bytes already buffered are pushed back into the handle.  On a plain
@@ -562,9 +573,9 @@ loop iteration, and a blocking C<accept()> would wedge the whole loop.
 =item C<< unlisten() >>
 
 Stop listening on all sockets added via C<use_socket()>/C<accept_on_fd()>.
-The descriptors are B<not> closed, so they can be handed to C<accept_on_fd()>
-again (how pre-fork worker respawn re-arms accept); C<graceful_shutdown()>
-closes them.
+The descriptors are B<not> closed, so they can be handed to
+C<use_socket()>/C<accept_on_fd()> again (how pre-fork worker respawn
+re-arms accept); C<graceful_shutdown()> closes them.
 
 A connection reads C<SERVER_NAME>/C<SERVER_PORT> from its listener slot at
 request time, so if a keep-alive connection is still open when you unlisten
@@ -620,6 +631,10 @@ flow-control window and goes silent with response bytes pending is reaped
 after a few consecutive silent intervals.  A peer that keeps reading, however
 slowly, is bounded by C<write_timeout> instead.
 
+Write progress renews the watchdog, but a quiet stream no longer exempts the
+connection while any output is stalled; after TLS input closes this also
+applies to tunnels.
+
 =item C<< header_timeout() >>
 
 =item C<< header_timeout($seconds) >>
@@ -631,6 +646,11 @@ A connection must complete its request headers within this many seconds of
 being accepted or gets C<408 Request Timeout> (a TLS connection still in its
 handshake is closed silently).  This is a hard deadline that does not reset
 when data arrives, unlike C<read_timeout>.
+
+On HTTP/2 it also bounds the client preface and each request or trailer
+header block including its CONTINUATION frames, even after a field in it was
+rejected.  Expiry sends GOAWAY and closes the connection.  Between header
+blocks an idle connection has no header deadline.
 
 It bounds the header phase only: the request body is governed by
 C<read_timeout>, which resets on every read, so a client trickling one body
@@ -839,9 +859,11 @@ current callback.
 
 Only requests that reached the handler are reported; one the server rejects
 itself (malformed, over a limit, timed out) produces no call.  C<$elapsed>
-runs from dispatch to the handler until the response is fully flushed.  An
-exception from the callback is warned about and does not affect the
-response.  L<Feersum::Runner>'s C<access_log> option uses this.
+runs from dispatch to the handler until the response is fully flushed.  A
+response cut short by a client disconnect is reported when its connection
+object is destroyed, with C<$elapsed> up to that point.  An exception from
+the callback is warned about and does not affect the response.
+L<Feersum::Runner>'s C<access_log> option uses this.
 
 =item C<< max_requests_per_worker() >>
 
@@ -866,17 +888,21 @@ its timer there.  An exception from it is warned about.
 Get or set the maximum number of concurrent connections.  Default 10000; 0
 disables the limit.
 
+Changes apply immediately: raising or disabling the limit resumes a listener
+paused at capacity, but not one paused with C<pause_accept()>.
+
 At the limit Feersum first closes the oldest idle keep-alive connection to
 make room; failing that the new connection is closed right after C<accept()>
-and accepting pauses on that listener until a slot frees.  A connection whose
-client vanished mid-stream is neither idle nor freeing itself and is never
-evicted; see L</"PSGI interface"> for why a streaming app needs a heartbeat
-before relying on this limit.
+and accepting pauses on that listener until a slot frees or an idle
+connection can be evicted.  A connection whose client vanished mid-stream is
+neither idle nor freeing itself and is never evicted; see L</"PSGI interface">
+for why a streaming app needs a heartbeat before relying on this limit.
 
 HTTP/2 streams count toward C<active_conns()> in addition to their TCP
-connection, so open streams consume the budget for accepting further TCP
-connections, but stream creation itself is B<not> checked against this
-limit; use C<max_h2_concurrent_streams()>.
+connection, but C<max_connections()> counts only accepted sockets; streams
+are limited by C<max_h2_concurrent_streams()>.  An HTTP/2 connection is idle,
+and so evictable, once its streams have closed and its queued output
+(including replies to SETTINGS and PING) has drained.
 
 =item C<< max_read_buf() >>
 
@@ -891,7 +917,7 @@ The limit is approximate: on a plain connection the check precedes the
 growth (rejected slightly below), on TLS it follows decryption (accepted
 slightly above), a difference of a few tens of KiB.  It does not apply to
 HTTP/2, which is bounded by C<max_body_len>, C<max_h2_concurrent_streams>
-and the advertised SETTINGS_MAX_HEADER_LIST_SIZE.
+and the enforced SETTINGS_MAX_HEADER_LIST_SIZE.
 
 =item C<< max_body_len() >>
 
@@ -924,6 +950,9 @@ connection's outbound buffer, and progress on either refreshes it.  HTTP/2
 tunnels are exempt like C<psgix.io>, until the connection's queued ciphertext
 reaches 16MB.
 
+An HTTP/2 stream waiting only behind the connection's queued output follows
+that output's progress; one stalled on its own flow-control window does not.
+
 "Progress" includes the peer draining the kernel send buffer: at each
 deadline Feersum asks the kernel (C<SIOCOUTQ>/C<SO_NWRITE>/C<FIONWRITE>; see
 C<has_outq_probe()>) whether queued bytes have left, and a peer that drains
@@ -942,7 +971,9 @@ bounds the gap between an application's own writes>: once a streaming
 response has called write (a zero-length write counts), it must write again
 within this many seconds or the stream is reset.  An SSE or long-poll app
 that pushes an event and goes quiet needs C<write_timeout> off or above its
-heartbeat interval.  HTTP/1.x stops the timer once the data is gone.
+heartbeat interval.  HTTP/1.x stops the timer once the data is gone.  A
+C<poll_cb> writer that declines to write with an empty buffer parks without a
+write deadline instead; see L<Feersum::Connection::Handle>.
 
 Independently, an HTTP/2 connection's pending ciphertext is capped at 16MB:
 past that Feersum stops draining nghttp2's output queue, so nghttp2's own
@@ -962,11 +993,29 @@ response, then the server reads and discards until the peer closes, 256 KB
 have been drained, or this many seconds pass.  Otherwise a byte arriving
 after a plain C<close()> (a pipelined request, a speculative write) would
 make the kernel answer RST and discard the queued response.  TLS and HTTP/2
-connections, write-timeout teardowns, graceful-shutdown closes and
-C<max_connections> evictions close immediately.
+connections close immediately, except that a completed HTTP/2 session or a
+graceful TLS/HTTP/2 shutdown discards input for up to 0.5 seconds so its final
+frames arrive.  Write-timeout teardowns and C<max_connections> evictions
+always close immediately.
 
 A lingering connection holds its descriptor and its C<max_connections> slot
 for at most this long; with keepalive disabled every response pays it.
+
+=item C<< eof_park_timeout() >>
+
+=item C<< eof_park_timeout($seconds) >>
+
+Get or set how long a parked streaming response (see C<poll_cb> in
+L<Feersum::Connection::Handle>) may stay quiet after input EOF (a peer FIN or
+TLS close_notify).  Default 60 seconds; C<0> disables the reap but not the
+C<on_eof> signal.  New connections only.
+
+EOF does not end the reply, since the peer may still read it, but a park with
+no app engagement this long after the EOF is reaped, releasing
+C<response_guard> (on HTTP/2 the stream is reset).  Any write restarts the
+interval; C<on_eof> fires at the EOF so a quiet source can finish first.
+Taken-over sockets (C<psgix.io>), TLS tunnels and HTTP/2 tunnels are exempt,
+and an HTTP/2 stream's END_STREAM is not connection EOF.
 
 =item C<< wbuf_low_water() >>
 
@@ -1017,13 +1066,19 @@ C<use_socket()>/C<accept_on_fd()> order, default the last-added.  Call it
 after adding the listener; croaks with no listeners or an out-of-range index.
 Listeners can have different TLS configurations or none.
 
+After a peer C<close_notify> or TCP input half-close, complete requests still
+get their replies: HTTP/1 serves those already buffered, discards an
+incomplete one and closes; HTTP/2 sends GOAWAY, resets incomplete regular
+requests and closes once the rest are answered.  Input after C<close_notify>
+is ignored.
+
     my $ngn = Feersum->endjinn;
     $ngn->use_socket($tls_socket);
     $ngn->set_tls(cert_file => 'default.crt', key_file => 'default.key');
 
 For virtual hosting, add SNI entries (up to 32 per listener, matched
-case-insensitively) after the default certificate; non-matching clients get
-the default:
+case-insensitively with one trailing dot on the client name ignored) after
+the default certificate; non-matching clients get the default:
 
     $ngn->set_tls(sni => 'example.com', cert_file => 'ex.crt', key_file => 'ex.key');
 
@@ -1130,7 +1185,10 @@ Default 100.  Default and ceiling for C<max_h2_concurrent_streams()>.
 
 =item FEER_H2_MAX_HEADER_LIST_SIZE
 
-Maximum header list size per HTTP/2 request (64 KB).
+Maximum decoded size of each HTTP/2 request header or trailer block (64 KiB),
+pseudo-headers included plus 32 bytes per field.  An oversized block gets 431
+before dispatch; oversized trailers on an already dispatched tunnel reset its
+stream.
 
 =item FEERSUM_STEAL
 
@@ -1184,8 +1242,13 @@ B<TLS-only>: cleartext HTTP/2 (h2c) is not supported.
 =item *
 
 B<Request methods>: all methods pass through to the handler (HTTP/1.1
-rejects non-standard ones with 405).  Request bodies are fully buffered
-before the handler runs, as with HTTP/1.x.
+rejects non-standard ones with 501, without an C<Allow> header).  Request
+bodies are fully buffered before the handler runs, as with HTTP/1.x.
+
+=item *
+
+B<Request authority>: C<HTTP_HOST> (PSGI and native) comes from
+C<:authority>, or from C<Host> only when C<:authority> is absent.
 
 =item *
 
@@ -1199,10 +1262,19 @@ per connection.
 
 =item *
 
+B<Client cancellation>: a request whose stream is reset before dispatch
+never reaches the handler and does not count toward
+C<max_requests_per_worker>.  A handler already running may finish its
+response, which is discarded.  A fatal connection error likewise discards
+queued requests; an ordinary GOAWAY or input half-close lets accepted
+requests finish and their replies go out.
+
+=item *
+
 B<Rapid-reset protection (CVE-2023-44487)>: a connection that opens and
 resets more than C<FEER_H2_RST_FLOOD_THRESHOLD> (200) streams within
-C<FEER_H2_RST_FLOOD_WINDOW> (10) seconds is closed.  Server-initiated resets
-are not counted.
+C<FEER_H2_RST_FLOOD_WINDOW> (10) seconds is closed.  Only peer resets count,
+whatever their error code (C<NO_ERROR> included).
 
 =item *
 
@@ -1238,6 +1310,13 @@ an C<HTTP/1.1 101> response with C<Upgrade:>/C<Connection:> headers to
 C<psgix.io> (or C<< $req->io() >>) exactly as for HTTP/1.1; Feersum sends
 the 200 HEADERS itself, swallows the 101, and relays the rest as DATA frames.
 The handle is a Unix socketpair bridged to the stream in both directions.
+Client END_STREAM (on any HEADERS or DATA frame), TLS C<close_notify> or TCP
+input closure delivers EOF on it once buffered input drains; it stays
+writable so the application can finish its reply.
+
+An application can reject an Extended CONNECT with an ordinary PSGI response,
+which completes as for any other request; only an established tunnel waits
+for its handle to close.
 
 =back
 
@@ -1394,11 +1473,15 @@ whitespace is still accepted.
 =item * A PROXY protocol v2 TLV block ending in a 1 or 2 byte remainder:
 rejected as malformed.
 
+=item * An unknown HTTP/1 method: C<501 Not Implemented> (was C<405>), with
+no C<Allow> header.
+
 =back
 
 An absolute-form request target (C<GET http://host/path HTTP/1.1>) now
 yields the B<path> in C<PATH_INFO>; C<REQUEST_URI> still carries the raw
-target.
+target, and C<HTTP_HOST> comes from the target's authority, overriding any
+C<Host> field.  On HTTP/2 C<:authority> likewise overrides C<Host>.
 
 =head2 Response behaviour
 
@@ -1436,6 +1519,10 @@ PSGI) still go out in the internal encoding.
 or C<"; "> for C<Cookie>) instead of returning only the first.  In the PSGI
 env and C<headers()>, which already joined with C<", ">, duplicate C<Cookie>
 headers are now joined with C<"; ">.
+
+=item * A parked streaming response is reaped C<eof_park_timeout> (default
+60 seconds) after input EOF instead of waiting indefinitely.  Install
+C<on_eof> to finish early, or disable the reap with C<eof_park_timeout(0)>.
 
 =back
 

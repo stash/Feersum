@@ -230,18 +230,22 @@ about to be sent:
         $w->write(sprintf("line %d\n", $i));
     }
 
-Expressions and literals are always safe; only scalars you still hold are at
-risk, and they are yours again once the data has gone out (from
-C<< $w->close() >> onwards, or inside a C<poll_cb> that fires after the buffer
-drained past them).  The same applies to C<< $w->write(\$scalar) >>,
+Expressions and literals are always safe.  A scalar you passed in must not be
+modified or reassigned (assignment reuses the same scalar) until its bytes
+have reached the wire, and C<close()> does not mark that point: inside a
+handler or callback it only queues, outside one it may flush only part.  So
+use a fresh scalar per write.  The only drain signal is a C<poll_cb> call at
+the default C<wbuf_low_water> of 0, which fires only once the buffer is empty.
+The same applies to C<< $w->write(\$scalar) >>,
 C<< $w->write_array >> and scalar-ref bodies passed to
 C<< $req->send_response >>.
 
 =item C<< $w->write(\"scalar ref") >>
 
 Works just like C<write("scalar")> above, including the zero-copy contract:
-the referenced scalar must not be modified until the response completes.  This
-extension is indicated by C<psgix.body.scalar_refs> in the PSGI env hash.
+the referenced scalar must not be modified or reassigned until its bytes
+have reached the wire (see above).  This extension is indicated by
+C<psgix.body.scalar_refs> in the PSGI env hash.
 
 =item C<< $w->write_array(\@array) >>
 
@@ -249,7 +253,7 @@ Pass in an array-ref and it works much like the two C<write()> calls above,
 except it's way more efficient than calling C<write()> over and over.
 Undefined elements of the array are ignored.  The zero-copy contract applies
 to every element: neither the array nor the scalars in it may be modified
-until the response completes.
+or reassigned until their bytes have reached the wire (see above).
 
 =item C<< $w->close() >>
 
@@ -274,15 +278,41 @@ a backoff (roughly 1ms doubling to 100ms, reset by any write).  Writing from
 another event source resumes the stream immediately, which is the recommended
 shape for relays and SSE.  A zero-length C<< $w->write("") >> counts as
 engagement and requests an immediate re-invitation, so use it only when data
-really is imminent.  A parked response has no write deadline; a disconnected
-client is normally noticed at the next paced retry (on TLS only for an abrupt
-close; a graceful close_notify is noticed on the next write).  These rules
-apply identically to HTTP/1.x and HTTP/2.
+really is imminent.  A parked response has no write deadline; a hard socket
+error found at a paced retry cancels it.  Input EOF (TCP half-close, TLS
+close_notify, HTTP/2 END_STREAM) does not, since the peer may still read the
+reply.  After connection-level EOF the re-invitations slow to roughly 1ms
+doubling to 1s, C<on_eof> fires, and a park with no further writes is reaped
+after C<eof_park_timeout> (on HTTP/2 by resetting the stream); see
+C<on_eof> below.  An HTTP/2 stream reset cancels the reply.
+
+On HTTP/2, control frames and other streams' replies do not re-invite a
+parked callback early.  One that declines with data still buffered (below a
+positive C<wbuf_low_water>) waits for that data to progress and keeps its
+write deadline; a decline with an empty buffer parks without one.
 
 Something else must keep the writer alive: dropping the last reference closes
 it (and clears the poll callback), so a writer held only by a lexical in the
 handler is closed the moment the handler returns and sends an empty response.
 Stash it for as long as the response is meant to last.
+
+=item C<< $w->on_eof(sub { .... }) >>
+
+Register a callback fired once when input EOF is observed (the peer
+half-closed TCP or sent TLS close_notify) while this response is still
+streaming.  Pass C<undef> to unset.  Returns the installed callback, or
+C<undef>.
+
+The writer is passed as the first and only argument, with the same lifetime
+rules as C<poll_cb>.  Installing after EOF was already observed fires
+immediately; reinstalling from inside the callback itself does not refire.
+On HTTP/2 only connection-level EOF fires it, not a stream's END_STREAM.
+Taken-over sockets (C<psgix.io>) and TLS and HTTP/2 tunnels are exempt.
+
+The signal does not end the response, since the peer may still read it, but
+a parked response with no further writes is reaped C<eof_park_timeout> after
+the EOF (default 60 seconds), releasing C<response_guard>.  Treat the signal
+as the cue to finish up; any write restarts the quiet interval.
 
 =item C<< $w->sendfile($fh [, $offset, $length]) >>
 
@@ -326,17 +356,22 @@ See L<Feersum::Connection/"$req-E<gt>return_from_io($io)">.
 
 =item C<< $h->response_guard($guard) >>
 
-Register a guard to be triggered when the response is completely sent and the
-socket is closed.  A "guard" in this context is some object that will do
-something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
+Register a guard to be released when Feersum starts closing the response's
+HTTP/1 connection or closes its HTTP/2 stream (the connection may stay open
+for other streams).  A "guard" is an object that does something interesting in
+its DESTROY/DEMOLISH method. For example, L<Guard>.
 
-B<On a keepalive connection this is not when the response finishes.>  The guard
-is released at whichever comes first: the next C<response_guard()> call on the
-same connection, which replaces it, or the connection closing.  So an app that
-registers one on every request sees request N's guard fire during request N+1's
-handler, and the last one only at close.  Do not use a guard to release a
-per-request resource (a database handle, a rate-limit slot) unless keepalive is
-off, or it stays held for the life of the connection.
+B<On an HTTP/1 keepalive connection this is not when the response finishes.>
+The guard is released at whichever comes first: the next C<response_guard()>
+call on the same connection, which replaces it, or the connection closing.  So
+an app that registers one on every request sees request N's guard fire during
+request N+1's handler, and the last one only at close.  Do not use a guard to
+release a per-request resource (a database handle, a rate-limit slot) unless
+keepalive is off, or it stays held for the life of the connection.
+
+Guards are also released when the client disconnects or resets the stream.  A
+guard may capture the request environment; Feersum breaks that reference
+cycle at cleanup, so the application need not.
 
 The guard is *not* attached to this handle object; the guard is attached to
 the response.

@@ -273,11 +273,27 @@ feersum_env(pTHX_ struct feer_conn *c)
         }
     }
 
+    /* absolute-form authority overrides Host (RFC 9112 3.2.2) */
+    {
+        STRLEN authority_len;
+        const char *authority = feer_absolute_authority(r->uri, r->uri_len, &authority_len);
+        if (unlikely(authority != NULL) && authority_len > 0) {
+            /* strip userinfo (RFC 3986 3.2) */
+            for (STRLEN i = authority_len; i > 0; i--) {
+                if (authority[i - 1] == '@') {
+                    authority += i; authority_len -= i; break;
+                }
+            }
+            if (authority_len > 0)
+                hv_stores(e, "HTTP_HOST", newSVpvn(authority, authority_len));
+        }
+    }
+
 #ifdef FEERSUM_HAS_H2
-    /* :authority becomes HTTP_HOST unless a Host header was sent (RFC 9113 8.3.1). */
+    /* :authority overrides Host (RFC 9113 8.3.1) */
     if (unlikely(c->is_h2_stream)) {
         struct feer_h2_stream *stream = H2_STREAM_FROM_PC(c);
-        if (stream && stream->h2_authority && !hv_exists(e, "HTTP_HOST", 9)) {
+        if (stream && stream->h2_authority) {
             STRLEN alen;
             const char *aval = SvPV(stream->h2_authority, alen);
             hv_stores(e, "HTTP_HOST", newSVpvn(aval, alen));
@@ -755,25 +771,6 @@ feer_skip_response_header(const char *hp, STRLEN hlen)
     }
 }
 
-static bool
-feer_header_has_token(const char *vp, STRLEN vlen, const char *tok, STRLEN tlen)
-{
-    STRLEN i = 0;
-    while (i < vlen) {
-        while (i < vlen && (vp[i] == ',' || vp[i] == ' ' || vp[i] == '\t'))
-            i++;
-        STRLEN start = i;
-        while (i < vlen && vp[i] != ',')
-            i++;
-        STRLEN end = i;
-        while (end > start && (vp[end-1] == ' ' || vp[end-1] == '\t'))
-            end--;
-        if (end - start == tlen && str_case_eq_fixed(tok, vp + start, tlen))
-            return true;
-    }
-    return false;
-}
-
 /* close and keep-alive are absorbed (the tail emits the canonical header);
  * anything else, Upgrade included, passes through.  Returns 1 to drop. */
 INLINE_UNLESS_DEBUG static int
@@ -956,11 +953,9 @@ feersum_start_response (pTHX_ struct feer_conn *c, SV *message, AV *headers,
                 has_content_length = 1;
                 /* as for a request: 1*DIGIT, OWS allowed, duplicates must agree */
                 STRLEN clen;
-                const char *clp = SvPV(val, clen), *q = clp;
-                while (q < clp + clen && (*q == ' ' || *q == '\t')) q++;
+                const char *clp = SvPV(val, clen);
                 UV v = 0;
-                if (q < clp + clen && *q >= '0' && *q <= '9'
-                    && grok_number(clp, clen, &v) == IS_NUMBER_IN_UV
+                if (feer_parse_content_length(clp, clen, &v)
                     && v <= (UV)(~(size_t)0) && (!cl_seen || v == cl_val))
                     cl_val = v;
                 else
@@ -1360,6 +1355,67 @@ feersum_start_psgi_streaming(pTHX_ struct feer_conn *c, SV *streamer)
 }
 
 static void
+feersum_close_psgi_body(pTHX_ SV *body)
+{
+    dSP;
+    ENTER;
+    SAVETMPS;
+    PUSHMARK(SP);
+    mXPUSHs(newSVsv(body));
+    PUTBACK;
+    call_method("close", G_VOID|G_DISCARD|G_EVAL);
+    SPAGAIN;
+    if (unlikely(SvTRUE(ERRSV))) {
+        trouble("Couldn't close body IO handle: %-p\n", ERRSV);
+        sv_setsv(ERRSV, &PL_sv_undef);
+    }
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+}
+
+static void
+feersum_release_io_body(pTHX_ struct feer_conn *c)
+{
+    if (!c->poll_write_cb_is_io_handle || !c->poll_write_cb) return;
+    SV *body = c->poll_write_cb;
+    c->poll_write_cb = NULL;
+    c->poll_write_cb_is_io_handle = 0;
+    feersum_close_psgi_body(aTHX_ body);
+    SvREFCNT_dec(body);
+}
+
+static void
+feersum_queue_response_cleanup(struct feer_conn *c)
+{
+    if (c->response_cleanup_queued
+        || (!c->ext_guard
+            && (!c->poll_write_cb_is_io_handle || !c->poll_write_cb))) return;
+    rinq_push(&c->server->response_cleanup_rinq, c);
+    c->response_cleanup_queued = 1;
+    SvREFCNT_inc_void_NN(c->self);
+    /* a quiet loop would otherwise never drain the queue */
+    if (!ev_is_active(&c->server->ei))
+        ev_idle_start(feersum_ev_loop, &c->server->ei);
+}
+
+static void
+feersum_drain_response_cleanup(pTHX_ struct feer_server *server)
+{
+    struct feer_conn *c;
+    while ((c = rinq_shift(&server->response_cleanup_rinq)) != NULL) {
+        c->response_cleanup_queued = 0;
+        feersum_release_io_body(aTHX_ c);
+        /* a guard can pin an env -> psgi.input -> c cycle; NULL before dec:
+         * its DESTROY may touch the connection */
+        SV *guard = c->ext_guard;
+        c->ext_guard = NULL;
+        SvREFCNT_dec(guard);
+        SvREFCNT_dec(c->self); /* queue ref; c may be freed here */
+    }
+}
+
+static void
 feersum_handle_psgi_response(
     pTHX_ struct feer_conn *c, SV *ret, bool can_recurse)
 {
@@ -1477,7 +1533,11 @@ feersum_handle_psgi_response(
                         || SvTYPE(SvRV(body)) == SVt_PVGV
                         || SvTYPE(SvRV(body)) == SVt_PVIO))) {
         feersum_start_response(aTHX_ c, msg, headers, 1, 1);
-        if (unlikely(c->responding >= RESPOND_SHUTDOWN)) return;
+        if (unlikely(c->responding >= RESPOND_SHUTDOWN)) {
+            /* H2 HEAD/no-content ends at HEADERS; still close the body */
+            feersum_close_psgi_body(aTHX_ body);
+            return;
+        }
         c->poll_write_cb = newSVsv(body);
         c->poll_write_cb_is_io_handle = 1;
         conn_write_ready(c);
@@ -1495,10 +1555,16 @@ feersum_close_handle (pTHX_ struct feer_conn *c, bool is_writer)
     int RETVAL;
     if (is_writer) {
         trace("close writer fd=%d, c=%p, refcnt=%d\n", c->fd, c, SvREFCNT(c->self));
+        feersum_release_io_body(aTHX_ c);
         if (c->poll_write_cb) {
             SV *tmp = c->poll_write_cb;
             c->poll_write_cb = NULL;  // NULL before dec: DESTROY can re-enter
             c->poll_write_cb_is_io_handle = 0;
+            SvREFCNT_dec(tmp);
+        }
+        if (c->on_eof_cb) {
+            SV *tmp = c->on_eof_cb;
+            c->on_eof_cb = NULL;  // NULL before dec: DESTROY can re-enter
             SvREFCNT_dec(tmp);
         }
 #ifdef FEERSUM_HAS_H2
@@ -1559,6 +1625,9 @@ feersum_conn_guard(pTHX_ struct feer_conn *c, SV *guard)
         SV *old = c->ext_guard;
         c->ext_guard = SvOK(guard) ? newSVsv(guard) : NULL;
         SvREFCNT_dec(old);
+        /* H2 HEAD/no-content can close the stream before the guard is set */
+        if (unlikely(c->fd < 0 && c->ext_guard))
+            feersum_queue_response_cleanup(c);
     }
     return c->ext_guard ? newSVsv(c->ext_guard) : &PL_sv_undef;
 }
@@ -1659,6 +1728,9 @@ call_poll_callback (struct feer_conn *c, bool is_write)
 
     if (unlikely(cb == NULL)) return;
 
+    /* the callback can drop the installing handle's last ref; hold the conn */
+    SvREFCNT_inc_void_NN(c->self);
+
     c->in_callback++;
 
     trace("%s poll callback c=%p cbrv=%p\n",
@@ -1710,6 +1782,72 @@ call_poll_callback (struct feer_conn *c, bool is_write)
     LEAVE;
 
     c->in_callback--;
+
+    SvREFCNT_dec(c->self);
+}
+
+static void
+call_on_eof_callback (struct feer_conn *c)
+{
+    dTHX;
+    dSP;
+
+    SV *cb = c->on_eof_cb;
+
+    if (unlikely(cb == NULL)) return;
+
+    /* the callback can drop the installing handle's last ref; hold the conn */
+    SvREFCNT_inc_void_NN(c->self);
+
+    c->in_callback++;
+    c->in_on_eof = 1;
+
+    trace("on_eof callback c=%p cbrv=%p\n", c, cb);
+
+    ENTER;
+    SAVETMPS;
+    PUSHMARK(SP);
+    SV *hdl = new_feer_conn_handle(aTHX_ c, 1);
+    mXPUSHs(hdl);
+    PUTBACK;
+    call_sv(cb, G_DISCARD|G_EVAL|G_VOID);
+    SPAGAIN;
+
+    if (unlikely(SvTRUE(ERRSV))) {
+        /* left installed, a dead callback would refire on the next install */
+        if (c->on_eof_cb) {
+            SV *tmp = c->on_eof_cb;
+            c->on_eof_cb = NULL;
+            SvREFCNT_dec(tmp);
+        }
+        call_died(aTHX_ c, "on_eof");
+        /* call_died cannot 500 mid-response; end it rather than hang. */
+        if (c->responding > RESPOND_NOT_STARTED
+            && c->responding < RESPOND_SHUTDOWN) {
+            c->is_keepalive = 0;
+            change_responding_state(c, RESPOND_SHUTDOWN);
+        }
+    }
+
+    // Neutralise the mortal handle before FREETMPS, or its DESTROY closes the
+    // connection.  SvUVX is already 0 if the callback called close().
+    {
+        SV *inner = SvRV(hdl);
+        if (SvUVX(inner)) {
+            SvUVX(inner) = 0;
+            SvREFCNT_dec(c->self);  // balance new_feer_conn_handle's inc
+        }
+    }
+
+    trace("leaving on_eof callback\n");
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+
+    c->in_callback--;
+    c->in_on_eof = 0;
+
+    SvREFCNT_dec(c->self);
 }
 
 static void
@@ -1753,17 +1891,17 @@ pump_io_handle (struct feer_conn *c)
 
     /* pop before the error exit, which would otherwise leave it on the stack */
     SV *ret = (returned > 0) ? POPs : NULL;
+    PUTBACK;
 
     if (unlikely(SvTRUE(ERRSV))) {
         /* Restore PL_rs first: Feersum::DIED is Perl code that may read $/ */
         PL_rs = old_rs;
         sv_setsv(get_sv("/", GV_ADD), old_rs);
         call_died(aTHX_ c, "getline on io handle");
-        if (c->poll_write_cb) {
-            SvREFCNT_dec(c->poll_write_cb);
-            c->poll_write_cb = NULL;
-        }
-        c->poll_write_cb_is_io_handle = 0;
+        feersum_release_io_body(aTHX_ c);
+        SPAGAIN;
+        /* no finish_wbuf: a died body must not look like a clean EOF */
+        change_responding_state(c, RESPOND_SHUTDOWN);
         goto done_pump_io;
     }
 
@@ -1771,20 +1909,9 @@ pump_io_handle (struct feer_conn *c)
         ret = sv_2mortal(newSVsv(ret));
 
     if (unlikely(!ret || !SvOK(ret))) {
-        PUSHMARK(SP);
-        XPUSHs(c->poll_write_cb);
         PUTBACK;
-        call_method("close", G_VOID|G_DISCARD|G_EVAL);
+        feersum_release_io_body(aTHX_ c);
         SPAGAIN;
-
-        if (unlikely(SvTRUE(ERRSV))) {
-            trouble("Couldn't close body IO handle: %-p\n", ERRSV);
-            sv_setsv(ERRSV, &PL_sv_undef);
-        }
-
-        SvREFCNT_dec(c->poll_write_cb);
-        c->poll_write_cb = NULL;
-        c->poll_write_cb_is_io_handle = 0;
         finish_wbuf(c);
         change_responding_state(c, RESPOND_SHUTDOWN);
 
@@ -1820,6 +1947,23 @@ psgix_io_svt_get (pTHX_ SV *sv, MAGIC *mg)
     trace("invoking psgix.io magic for fd=%d\n", c->fd);
 
     sv_unmagic(sv, PERL_MAGIC_ext);
+
+    /* io() croaks on these, but magic-get also fires on innocent env reads
+     * (dumps): decline with undef; only a second takeover warns */
+    if (unlikely(c->io_taken)) {
+        trouble("psgix.io: socket already taken on fd=%d\n", c->fd);
+        sv_setsv(sv, &PL_sv_undef);
+        return 0;
+    }
+    /* H2 Extended CONNECT responds 200 before the app reads psgix.io */
+    if (
+#ifdef FEERSUM_HAS_H2
+        !c->is_h2_stream &&
+#endif
+        unlikely(c->responding != RESPOND_NOT_STARTED)) {
+        sv_setsv(sv, &PL_sv_undef);
+        return 0;
+    }
 
 #ifdef FEERSUM_HAS_H2
     if (c->is_h2_stream) {
@@ -1991,14 +2135,14 @@ pump_h2_io_step(pTHX_ struct feer_conn *c)
 
     /* pop before the error exit, which would otherwise leave it on the stack */
     SV *ret = (returned > 0) ? POPs : NULL;
+    PUTBACK;
 
     if (unlikely(SvTRUE(ERRSV))) {
         PL_rs = old_rs;
         sv_setsv(get_sv("/", GV_ADD), old_rs);
         call_died(aTHX_ c, "getline on H2 io handle");
-        SvREFCNT_dec(c->poll_write_cb);
-        c->poll_write_cb = NULL;
-        c->poll_write_cb_is_io_handle = 0;
+        feersum_release_io_body(aTHX_ c);
+        SPAGAIN;
         PUTBACK; FREETMPS; LEAVE;
         SvREFCNT_dec(old_rs);
         c->in_callback--;
@@ -2010,18 +2154,9 @@ pump_h2_io_step(pTHX_ struct feer_conn *c)
 
     int more = 1;
     if (unlikely(!ret || !SvOK(ret))) {   /* undef is EOF; q{} is not */
-        PUSHMARK(SP);
-        XPUSHs(c->poll_write_cb);
         PUTBACK;
-        call_method("close", G_VOID|G_DISCARD|G_EVAL);
+        feersum_release_io_body(aTHX_ c);
         SPAGAIN;
-        if (unlikely(SvTRUE(ERRSV))) {
-            trouble("Couldn't close body IO handle: %-p\n", ERRSV);
-            sv_setsv(ERRSV, &PL_sv_undef);
-        }
-        SvREFCNT_dec(c->poll_write_cb);
-        c->poll_write_cb = NULL;
-        c->poll_write_cb_is_io_handle = 0;
         more = 0;
     }
     else {

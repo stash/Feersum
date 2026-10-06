@@ -1,6 +1,5 @@
 package H2Utils;
 # Shared H2 frame helpers for Feersum test suite.
-# Used by t/44, t/46, t/47, t/48, xt/60, xt/61, xt/62.
 use strict;
 use warnings;
 
@@ -8,6 +7,7 @@ use warnings;
 # the core whole-second time() a 0.2s read budget resolved to anywhere between
 # ~0 and ~1 second.
 use Time::HiRes qw(time);
+use POSIX ();
 
 use Exporter 'import';
 
@@ -272,13 +272,33 @@ sub h2_connect {
     my $timeout = $opts{timeout} || 5 * TIMEOUT_MULT;
 
     require IO::Socket::SSL;
-    my $sock = IO::Socket::SSL->new(
-        PeerAddr           => '127.0.0.1',
-        PeerPort           => $port,
-        SSL_verify_mode    => IO::Socket::SSL::SSL_VERIFY_NONE(),
-        SSL_alpn_protocols => ['h2'],
-        Timeout            => $timeout,
-    );
+    my $sock;
+    if (my $rb = $opts{rcvbuf}) {
+        # SO_RCVBUF before connect pins a fixed receive buffer and clears
+        # autosizing (macOS doautorcvbuf), which a post-connect set does not:
+        # an autotuned buffer swallows a whole stalled reply and hides the
+        # server-side backlog these tests rely on.
+        require IO::Socket::INET;
+        require Socket;
+        my $tcp = IO::Socket::INET->new(Proto => 'tcp', Blocking => 1) or return ();
+        setsockopt($tcp, Socket::SOL_SOCKET(), Socket::SO_RCVBUF(), pack('i', $rb))
+            or return ();
+        connect($tcp, Socket::pack_sockaddr_in($port, Socket::inet_aton('127.0.0.1')))
+            or return ();
+        $sock = IO::Socket::SSL->start_SSL($tcp,
+            SSL_verify_mode    => IO::Socket::SSL::SSL_VERIFY_NONE(),
+            SSL_alpn_protocols => ['h2'],
+            Timeout            => $timeout,
+        );
+    } else {
+        $sock = IO::Socket::SSL->new(
+            PeerAddr           => '127.0.0.1',
+            PeerPort           => $port,
+            SSL_verify_mode    => IO::Socket::SSL::SSL_VERIFY_NONE(),
+            SSL_alpn_protocols => ['h2'],
+            Timeout            => $timeout,
+        );
+    }
     return () unless $sock;
 
     my $settings_payload = h2_handshake($sock, timeout => $timeout);
@@ -343,6 +363,10 @@ sub h2_fork_test {
     my $t = AE::timer($timeout, 0, sub {
         Test::More::diag("timeout: $label");
         kill 'QUIT', $pid;
+        select(undef, undef, undef, 1.0 * $tmult);
+        # an inherited SIGQUIT=IGNORE makes QUIT a no-op
+        kill 'KILL', $pid;
+        waitpid($pid, POSIX::WNOHANG());
         $cv->send('timeout');
     });
     my $cw = AE::child($pid, sub {

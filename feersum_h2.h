@@ -46,13 +46,15 @@ struct feer_h2_stream {
     SV *h2_path;
     SV *h2_scheme;
     SV *h2_authority;
+    size_t header_list_size;       /* decoded name/value bytes plus 32 per field */
+    unsigned int request_is_head:1; /* preserved even after a header limit */
 
     /* Extended CONNECT tunnel (RFC 8441) */
     SV *h2_protocol;
     unsigned int is_tunnel:1;
     unsigned int tunnel_established:1;
     unsigned int tunnel_swallow_response:1; /* swallow HTTP/1.1 response for PSGI transparency */
-    unsigned int tunnel_pending_shutdown:1; /* DATA+END_STREAM arrived before tunnel_established */
+    unsigned int tunnel_pending_shutdown:1; /* END_STREAM waits for setup and queued input */
     unsigned int tunnel_eof_sent:1;        /* shutdown(SHUT_WR) already done on sv[0] */
 
     int tunnel_sv0;                 /* internal end (Feersum ev_io) */
@@ -69,12 +71,14 @@ struct feer_h2_stream {
     SV                    *resp_message;    /* saved for deferred submit */
     SV                    *resp_headers;    /* saved for deferred submit */
     unsigned int           resp_eof:1;      /* streaming close() called */
+    unsigned int           poll_declined:1; /* wait for retry, output, or buffered DATA progress */
     /* write() calls from poll_cb, zero-length ones included: the pump must tell
      * "wrote nothing" from "wrote an empty string" */
     unsigned int           writes_seen;
-    unsigned int           rst_by_us:1;     /* server-initiated RST; exempt from the rapid-reset guard */
     unsigned int           body_overflow:1; /* body exceeded max_body_len; never dispatch */
     int                    limit_status;    /* nonzero: answer with this status instead of dispatching */
+    unsigned int           limit_response_sent:1;
+    unsigned int           limit_rst_sent:1;
 };
 
 /* Prototypes taking struct feer_conn * live in feersum_core.h, after the struct */

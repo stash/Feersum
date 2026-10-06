@@ -9,7 +9,7 @@ use AnyEvent;
 use AnyEvent::Handle;
 
 #######################################################################
-# Test HTTP error responses: 400, 405, 411, 501, and related edge cases
+# Test HTTP error responses: 400, 411, 501, 505, and related edge cases
 #######################################################################
 
 my ($socket, $port) = get_listen_socket();
@@ -228,14 +228,14 @@ sub raw_request {
 }
 
 #######################################################################
-# Test: Custom/unknown method - Feersum returns 405 Method Not Allowed
+# Test: Custom/unknown method - Feersum returns 501 Not Implemented
 #######################################################################
 
 {
     my $response = raw_request(
         "CUSTOM /test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     );
-    like($response, qr/HTTP\/1\.1 405/, '405: Unknown method gets Method Not Allowed');
+    like($response, qr/HTTP\/1\.1 501/, '501: Unknown method gets Not Implemented');
 }
 
 #######################################################################

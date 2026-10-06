@@ -81,6 +81,9 @@ isnt $first, $sup, 'the responder is a worker, not the supervisor itself';
 # Kill the worker: the reaper fires _respawn_worker, whose first fork attempt
 # dies inside the EV callback.
 kill 'TERM', $first if defined $first;
+# a TERMed worker drains first and can still answer the next probe
+my $gone = time + 10 * TIMEOUT_MULT;
+select undef, undef, undef, 0.05 while defined $first && kill(0, $first) && time < $gone;
 
 # The slot must come back on its own through the backoff retry.
 my $second = wait_for_serving(25 * TIMEOUT_MULT);

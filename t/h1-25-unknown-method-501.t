@@ -1,5 +1,5 @@
 #!perl
-# RFC 9110 15.5.6: a 405 carries an Allow header naming the supported methods,
+# RFC 9110 15.6.2: an unrecognized method gets a 501 without an Allow header,
 # on both the plain and the TLS read path.
 use warnings;
 use strict;
@@ -17,7 +17,7 @@ my ($cert, $key) = ('t/certs/alpha.crt', 't/certs/alpha.key');
 my $tls_ok = $has_tls && -f $cert && -f $key
           && eval { require IO::Socket::SSL; 1 } && tls_client_ok();
 
-plan tests => $tls_ok ? 10 : 8;
+plan tests => $tls_ok ? 9 : 7;
 
 my ($plain_sock, $plain_port) = get_listen_socket();
 ok $plain_sock, "plain listen socket on port $plain_port";
@@ -74,21 +74,10 @@ sub fetch {
     return ($st // 'none', (defined $al && length $al) ? $al : undef);
 }
 
-my @EXPECTED = qw(GET HEAD POST PUT PATCH DELETE OPTIONS);
-
 my ($st, $allow) = fetch($plain_port, 'PROPFIND /a', 0);
-is $st, '405', 'plain: unknown method gets 405';
-ok defined($allow), 'plain: 405 carries an Allow header' or diag 'no Allow header';
-if (defined $allow) {
-    my @got = grep { length } map { s/^\s+|\s+$//gr } split /,/, $allow;
-    is_deeply [sort @got], [sort @EXPECTED],
-        "plain: Allow lists the supported methods ($allow)";
-}
-else {
-    fail 'plain: Allow lists the supported methods';
-}
+is $st, '501', 'plain: unknown method gets 501';
+ok !defined($allow), 'plain: a 501 names no method set';
 
-# A 405 is the only status that should name a method set.
 my ($st200, $allow200) = fetch($plain_port, 'GET /a', 0);
 is $st200, '200', 'plain: a normal request still succeeds';
 ok !defined($allow200), 'plain: a 200 carries no Allow header';
@@ -99,11 +88,8 @@ ok !defined($allow414), 'plain: a 414 carries no Allow header';
 
 if ($tls_ok) {
     my ($tst, $tallow) = fetch($tls_port, 'PROPFIND /a', 1);
-    is $tst, '405', 'TLS twin: unknown method gets 405';
-    ok defined($tallow) && $tallow eq ($allow // q{}),
-        'TLS twin: same Allow header as the plain transport'
-        or diag 'tls=' . (defined $tallow ? $tallow : '(none)')
-              . ' plain=' . (defined $allow ? $allow : '(none)');
+    is $tst, '501', 'TLS twin: unknown method gets 501';
+    ok !defined($tallow), 'TLS twin: no Allow header over TLS either';
 }
 
 reap_server($server);

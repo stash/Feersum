@@ -46,7 +46,7 @@ use warnings;
 
 # ========================================================================
 # Test 1: Non-standard method (PROPFIND) reaches H2 handler
-# (H1 would reject with 405; H2 passes through)
+# (H1 would reject with 501; H2 passes through)
 # ========================================================================
 my $got_method = '';
 $evh->request_handler(sub {

@@ -44,7 +44,11 @@ void
 set_server_name_and_port(struct feer_server *server, SV *name, SV *port)
     PPCODE:
 {
-    struct feer_listen *lsnr = &server->listeners[server->n_listeners > 0 ? server->n_listeners - 1 : 0];
+    /* unlisten() zeroes n_listeners but leaves last_listener_idx stale */
+    int idx = server->last_listener_idx;
+    if (idx < 0 || idx >= server->n_listeners)
+        idx = server->n_listeners > 0 ? server->n_listeners - 1 : 0;
+    struct feer_listen *lsnr = &server->listeners[idx];
     SvREFCNT_dec(lsnr->server_name);
     lsnr->server_name = newSVsv(name);
     SvREADONLY_on(lsnr->server_name);
@@ -105,6 +109,8 @@ accept_on_fd(struct feer_server *server, int fd)
             }
         }
     }
+
+    server->last_listener_idx = (int)(lsnr - server->listeners);
 
     Zero(&addr, 1, struct sockaddr_storage);
     if (getsockname(fd, (struct sockaddr*)&addr, &addr_len) == -1) {
@@ -368,7 +374,7 @@ header_timeout (struct feer_server *server, ...)
 {
     if (items > 1) {
         double val = SvNV(ST(1));
-        if (val < 0.0)
+        if (!(val >= 0.0))
             croak("header_timeout must be non-negative (0 to disable)");
         trace("set header_timeout %f\n", val);
         server->header_timeout = val;
@@ -385,7 +391,7 @@ write_timeout (struct feer_server *server, ...)
 {
     if (items > 1) {
         double val = SvNV(ST(1));
-        if (val < 0.0)
+        if (!(val >= 0.0))
             croak("write_timeout must be non-negative (0 to disable)");
         trace("set write_timeout %f\n", val);
         server->write_timeout = val;
@@ -402,12 +408,29 @@ linger_timeout (struct feer_server *server, ...)
 {
     if (items > 1) {
         double val = SvNV(ST(1));
-        if (val < 0.0)
+        if (!(val >= 0.0))
             croak("linger_timeout must be non-negative (0 to disable)");
         trace("set linger_timeout %f\n", val);
         server->linger_timeout = val;
     }
     RETVAL = server->linger_timeout;
+}
+    OUTPUT:
+        RETVAL
+
+double
+eof_park_timeout (struct feer_server *server, ...)
+    PROTOTYPE: $;$
+    CODE:
+{
+    if (items > 1) {
+        double val = SvNV(ST(1));
+        if (!(val >= 0.0))
+            croak("eof_park_timeout must be non-negative (0 to disable)");
+        trace("set eof_park_timeout %f\n", val);
+        server->eof_park_timeout = val;
+    }
+    RETVAL = server->eof_park_timeout;
 }
     OUTPUT:
         RETVAL
@@ -572,6 +595,7 @@ max_connections (struct feer_server *server, ...)
                     :                       (int)want;
         trace("set max_connections %d\n", new_max);
         server->max_connections = new_max;
+        feer_server_resume_capacity(server);
     }
     RETVAL = server->max_connections;
 }

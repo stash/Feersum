@@ -181,16 +181,21 @@ connections and HTTP/2 streams, neither of which can be handed back.
 
 =item C<< $req->response_guard($guard) >>
 
-Register a guard to be triggered when the response is completely sent and the
-socket is closed.  A "guard" in this context is some object that will do
-something interesting in its DESTROY/DEMOLISH method. For example, L<Guard>.
+Register a guard to be released when Feersum starts closing the response's
+HTTP/1 connection or closes its HTTP/2 stream.  A "guard" is an object that
+does something interesting in its DESTROY/DEMOLISH method. For example,
+L<Guard>.
 
-B<On a keepalive connection this is not when the response finishes.>  The guard
-is released at whichever comes first: the next C<response_guard()> call on the
-same connection, which replaces it, or the connection closing.  So an app that
-registers one on every request sees request N's guard fire during request N+1's
-handler, and the last one only at close.  Do not use a guard to release a
-per-request resource unless keepalive is off.
+B<On an HTTP/1 keepalive connection this is not when the response finishes.>
+The guard is released at whichever comes first: the next C<response_guard()>
+call on the same connection, which replaces it, or the connection closing.  So
+an app that registers one on every request sees request N's guard fire during
+request N+1's handler, and the last one only at close.  Do not use a guard to
+release a per-request resource unless keepalive is off.
+
+Guards are also released on client disconnect or HTTP/2 stream reset, and a
+guard may capture the request environment without keeping a completed
+connection alive.  See L<Feersum::Connection::Handle/"$h-E<gt>response_guard($guard)">.
 
 =item C<< my $method = $req->method >>
 

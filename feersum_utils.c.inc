@@ -141,6 +141,45 @@ str_case_eq_fixed(const char *a, const char *b, size_t len)
     return 1;
 }
 
+/* Strict 1*DIGIT with OWS; grok_number would accept "0 but true" */
+static bool
+feer_parse_content_length(const char *p, size_t len, UV *out)
+{
+    const char *end = p + len;
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    while (end > p && (end[-1] == ' ' || end[-1] == '\t')) end--;
+    if (p == end) return false;
+
+    UV value = 0;
+    for (; p < end; p++) {
+        if (*p < '0' || *p > '9') return false;
+        UV digit = (UV)(*p - '0');
+        if (value > (UV_MAX - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    *out = value;
+    return true;
+}
+
+static bool
+feer_header_has_token(const char *vp, STRLEN vlen, const char *tok, STRLEN tlen)
+{
+    STRLEN i = 0;
+    while (i < vlen) {
+        while (i < vlen && (vp[i] == ',' || vp[i] == ' ' || vp[i] == '\t'))
+            i++;
+        STRLEN start = i;
+        while (i < vlen && vp[i] != ',')
+            i++;
+        STRLEN end = i;
+        while (end > start && (vp[end-1] == ' ' || vp[end-1] == '\t'))
+            end--;
+        if (end - start == tlen && str_case_eq_fixed(tok, vp + start, tlen))
+            return true;
+    }
+    return false;
+}
+
 /* memmem(3) is not portable and core ninstr is not public API on every perl */
 static const char *
 feer_memfind(const char *hay, size_t hay_len, const char *needle, size_t n_len)
@@ -282,6 +321,24 @@ feersum_env_protocol(pTHX_ struct feer_req *r)
     return (r->minor_version == 1) ? psgi_serv11 : psgi_serv10;
 }
 
+static const char *
+feer_absolute_authority(const char *uri, STRLEN uri_len, STRLEN *authority_len)
+{
+    if (!uri_len || uri[0] == '/') return NULL;
+    const char *p = uri, *end = uri + uri_len;
+    /* scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) */
+    while (p < end && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')
+                    || (*p >= '0' && *p <= '9')
+                    || *p == '+' || *p == '-' || *p == '.')) p++;
+    if (p == uri || end - p < 3 || p[0] != ':' || p[1] != '/' || p[2] != '/')
+        return NULL;
+    const char *authority = p + 3;
+    p = authority;
+    while (p < end && *p != '/' && *p != '?') p++;
+    *authority_len = p - authority;
+    return authority;
+}
+
 INLINE_UNLESS_DEBUG static void
 feersum_set_path_and_query(pTHX_ struct feer_req *r)
 {
@@ -290,26 +347,20 @@ feersum_set_path_and_query(pTHX_ struct feer_req *r)
 
     /* absolute-form (RFC 9112 3.2.2): drop scheme://authority so PATH_INFO
      * is the path; REQUEST_URI keeps the raw target */
-    if (unlikely(uri_len && uri[0] != '/')) {
-        const char *p = uri, *end = uri + uri_len;
-        /* scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) */
-        while (p < end && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')
-                        || (*p >= '0' && *p <= '9')
-                        || *p == '+' || *p == '-' || *p == '.')) p++;
-        if (p > uri && end - p >= 3 && p[0] == ':' && p[1] == '/' && p[2] == '/') {
-            const char *q = p + 3;   /* start of authority */
-            while (q < end && *q != '/' && *q != '?') q++;
-            if (q < end && *q == '/') {
-                uri = q;
-                uri_len = end - q;
-            }
-            else {
-                /* no path segment: "http://h" -> "/", "http://h?x" -> "/?x" */
-                r->path = newSVpvs("/");
-                r->query = (q < end) ? newSVpvn(q + 1, end - (q + 1))
-                                     : SvREFCNT_inc_simple_NN(empty_query_sv);
-                return;
-            }
+    STRLEN authority_len;
+    const char *authority = feer_absolute_authority(uri, uri_len, &authority_len);
+    if (unlikely(authority != NULL)) {
+        const char *q = authority + authority_len, *end = uri + uri_len;
+        if (q < end && *q == '/') {
+            uri = q;
+            uri_len = end - q;
+        }
+        else {
+            /* no path segment: "http://h" -> "/", "http://h?x" -> "/?x" */
+            r->path = newSVpvs("/");
+            r->query = (q < end) ? newSVpvn(q + 1, end - (q + 1))
+                                 : SvREFCNT_inc_simple_NN(empty_query_sv);
+            return;
         }
     }
 

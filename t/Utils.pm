@@ -364,7 +364,14 @@ sub run_client {
     }
     my $cv = AE::cv;
     my $child_status;
-    my $t = AE::timer(15 * $tmult, 0, sub { kill 'QUIT', $pid; $cv->send('timeout') });
+    my $t = AE::timer(15 * $tmult, 0, sub {
+        kill 'QUIT', $pid;
+        select(undef, undef, undef, 1.0 * $tmult);
+        # an inherited SIGQUIT=IGNORE makes QUIT a no-op
+        kill 'KILL', $pid;
+        waitpid($pid, POSIX::WNOHANG());
+        $cv->send('timeout');
+    });
     my $w = AE::child($pid, sub { $child_status = $_[1] >> 8; $cv->send('done') });
     my $reason = $cv->recv;
     Test::More::isnt($reason, 'timeout', "$label: did not timeout");

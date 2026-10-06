@@ -13,7 +13,7 @@ use IO::Socket::INET;
 use POSIX ();
 use Feersum;
 
-plan tests => 4;
+plan tests => 6;
 
 my $dir = tempdir(CLEANUP => 1);
 my ($sock, $port) = get_listen_socket();
@@ -86,3 +86,46 @@ if (open my $h, '<', "$dir/srv.err") { local $/; $err = <$h> // ''; close $h }
 unlike $err, qr/close\(listen fd\).*Bad file descriptor/,
     'the listen descriptor is closed once, not once per slot'
     or diag "server stderr:\n$err";
+
+# re-registering one listener must not move another's SERVER_PORT identity
+{
+    my ($sock_a, $port_a) = get_listen_socket();
+    my ($sock_b, $port_b) = get_listen_socket();
+    my $want_b = (eval { $sock_b->sockhost() } || 'localhost') . "|$port_b";
+    my $server2 = fork();
+    die "fork: $!" unless defined $server2;
+    if (!$server2) {
+        $SIG{QUIT} = 'DEFAULT';
+        my $f = Feersum->new_instance();
+        $f->use_socket($sock_a);
+        $f->use_socket($sock_b);
+        $f->use_socket($sock_a); # re-register the first descriptor
+        $f->psgi_request_handler(sub {
+            my $env = shift;
+            my $body = "$env->{SERVER_NAME}|$env->{SERVER_PORT}";
+            [200, ['Content-Type' => 'text/plain',
+                   'Content-Length' => length($body)], [$body]];
+        });
+        my $life = EV::timer(30 * TIMEOUT_MULT, 0, sub { POSIX::_exit(2) });
+        EV::run();
+        POSIX::_exit(3);
+    }
+    close $sock_a;
+    close $sock_b;
+    select undef, undef, undef, 0.8 * TIMEOUT_MULT;
+
+    my $body = '';
+    my $s = IO::Socket::INET->new(PeerAddr => "127.0.0.1:$port_b",
+                                  Timeout => 10 * TIMEOUT_MULT);
+    ok $s, 'connected to the second listener';
+    if ($s) {
+        syswrite $s, "GET / HTTP/1.0\r\nHost: x\r\n\r\n";
+        my $raw = '';
+        while (1) { my $n = sysread $s, my $z, 4096; last if !$n; $raw .= $z }
+        close $s;
+        ($body) = $raw =~ /\r\n\r\n(.*)$/s;
+    }
+    is $body, $want_b,
+        're-registering listener A leaves listener B identity alone';
+    reap_server($server2);
+}

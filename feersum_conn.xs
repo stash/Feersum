@@ -157,6 +157,25 @@ getline (feer_conn_handle *hdl)
     if (unlikely(c->receiving <= RECEIVE_HEADERS))
         croak("can't call getline() until the body begins to arrive");
 
+    /* $/ as in core readline: separator, undef slurp, \N fixed, "" paragraph.
+     * Read it before snapshotting rbuf: FETCH can run app code that drains rbuf. */
+    STRLEN skip = 0, linelen = 0, trail = 0;
+    int have_record = 1;
+    SV *rs = PL_rs;
+    IV rs_rec = -1;
+    SV *rs_sep = NULL; /* a copy: FETCH may free $/ */
+    STRLEN rs_len = 0;
+    if (SvOK(rs)) {
+        if (SvROK(rs)) {
+            rs_rec = SvIV(SvRV(rs));
+            if (rs_rec < 1) rs_rec = 1; /* perl forbids \0 and negatives at assignment */
+        }
+        else {
+            const char *rs_ptr = SvPV_const(rs, rs_len);
+            rs_sep = sv_2mortal(newSVpvn(rs_ptr, rs_len));
+        }
+    }
+
     if (likely(c->rbuf))
         src_ptr = SvPV(c->rbuf, src_len);
 
@@ -178,21 +197,14 @@ getline (feer_conn_handle *hdl)
         XSRETURN_UNDEF;
     }
 
-    /* $/ as in core readline: separator, undef slurp, \N fixed, "" paragraph */
-    STRLEN skip = 0, linelen = 0, trail = 0;
-    int have_record = 1;
-    SV *rs = PL_rs;
-    if (!SvOK(rs)) {
+    if (rs_rec >= 0) {
+        linelen = (rs_rec < (IV)avail) ? (STRLEN)rs_rec : (STRLEN)avail;
+    }
+    else if (!rs_sep) {
         linelen = (STRLEN)avail;
     }
-    else if (SvROK(rs)) {
-        IV rec = SvIV(SvRV(rs));
-        if (rec < 1) rec = 1; /* perl forbids \0 and negatives at assignment */
-        linelen = (rec < (IV)avail) ? (STRLEN)rec : (STRLEN)avail;
-    }
     else {
-        STRLEN rs_len;
-        const char *rs_ptr = SvPV_const(rs, rs_len);
+        const char *rs_ptr = SvPVX(rs_sep);
         if (unlikely(rs_len == 0)) {
             /* paragraph mode: skip leading newlines, keep one "\n\n", eat the rest of the run */
             while ((ssize_t)skip < avail && src_ptr[skip] == '\n')
@@ -450,16 +462,28 @@ sendfile (feer_conn_handle *hdl, SV *fh, ...)
     if (c->resp_cl_enforced) {
         if (length > c->resp_cl_owed)
             length = c->resp_cl_owed;
-        c->resp_cl_owed -= length;
         if (length == 0)
             XSRETURN_EMPTY;
     }
 
     CLOSE_SENDFILE_FD(c);
     // dup: the caller may close its handle
+#ifdef F_DUPFD_CLOEXEC
+    c->sendfile_fd = fcntl(file_fd, F_DUPFD_CLOEXEC, 0);
+#else
     c->sendfile_fd = dup(file_fd);
+    if (c->sendfile_fd >= 0 && fcntl(c->sendfile_fd, F_SETFD, FD_CLOEXEC) < 0) {
+        int saved_errno = errno;
+        CLOSE_SENDFILE_FD(c);
+        errno = saved_errno;
+    }
+#endif
     if (c->sendfile_fd < 0)
         croak("sendfile: dup failed: %s", strerror(errno));
+
+    // only once the dup succeeded: a failed one queues no body bytes
+    if (c->resp_cl_enforced)
+        c->resp_cl_owed -= length;
 
     c->sendfile_off = offset;
     c->sendfile_remain = length;
@@ -601,25 +625,27 @@ _poll_cb (feer_conn_handle *hdl, SV *cb)
 
     *cb_slot = newSVsv(cb);
 
+    // the callback can drop the installing handle's last ref; hold the conn
+    SvREFCNT_inc_void_NN(c->self);
+
     if (is_read) {
-        // from RECEIVE_SHUTDOWN too: after an upgrade (101) reading was stopped
-        if (c->receiving == RECEIVE_BODY || c->receiving == RECEIVE_SHUTDOWN) {
+        // only a socket takeover streams bytes beyond the HTTP body
+        if (c->io_taken && (c->receiving == RECEIVE_BODY
+                           || c->receiving == RECEIVE_SHUTDOWN)) {
             // the app owns the byte stream now; unsetting the reader drops back
             // to RECEIVE_SHUTDOWN, where the read clamp would strand rbuf bytes
             c->body_framed = 0;
             change_receiving_state(c, RECEIVE_STREAMING);
         }
-        // on H1 the handler runs after the body is complete, so this is all
-        // the data there will be and no read watcher is armed: pump while the
-        // cb makes progress (SvCUR < prev stops a no-op cb spinning)
-        if (c->rbuf && SvCUR(c->rbuf) > 0) {
+        // body already complete: call even at EOF, pump while the cb progresses
+        if (!c->io_taken || (c->rbuf && SvCUR(c->rbuf) > 0)) {
             STRLEN prev;
             do {
                 prev = c->rbuf ? SvCUR(c->rbuf) : 0;
                 call_poll_callback(c, 0);  // 0 = read callback
             } while (c->poll_read_cb && c->rbuf && SvCUR(c->rbuf) > 0
                      && SvCUR(c->rbuf) < prev
-                     && c->receiving < RECEIVE_SHUTDOWN);
+                     && (!c->io_taken || c->receiving < RECEIVE_SHUTDOWN));
         }
         else {
 #ifdef FEERSUM_HAS_H2
@@ -629,11 +655,56 @@ _poll_cb (feer_conn_handle *hdl, SV *cb)
 #endif
                 start_read_watcher(c);
         }
+        /* no more input; a retained cb can pin the conn in a cycle
+         * c -> cb -> env -> psgi.input -> c */
+        if (!c->io_taken && c->poll_read_cb) {
+            SV *done_cb = c->poll_read_cb;
+            c->poll_read_cb = NULL;
+            SvREFCNT_dec(done_cb);
+        }
     }
     else {
         conn_write_ready(c);
     }
+
+    SvREFCNT_dec(c->self);
 }
+
+SV*
+on_eof (feer_conn_handle *hdl, ...)
+    PROTOTYPE: $;$
+    ALIAS:
+        Feersum::Connection::Writer::on_eof = 1
+    CODE:
+{
+    if (unlikely(ix != 1))
+        croak("on_eof is a writer method");
+
+    if (items == 2) {
+        SV *cb = ST(1);
+        if (c->on_eof_cb != NULL) {
+            SvREFCNT_dec(c->on_eof_cb);
+            c->on_eof_cb = NULL;
+        }
+        /* a reinstall from the callback stays inert: refiring could only recurse */
+        if (!c->in_on_eof)
+            c->on_eof_fired = 0;
+        if (SvOK(cb)) {
+            if (unlikely(!IsCodeRef(cb)))
+                croak("must supply a code reference to on_eof");
+            c->on_eof_cb = newSVsv(cb);
+            /* EOF may predate the install (a coalesced close_notify) */
+            if (!c->in_on_eof)
+                feersum_maybe_fire_on_eof(c);
+        }
+        else {
+            trace("unset on_eof\n");
+        }
+    }
+    RETVAL = c->on_eof_cb ? newSVsv(c->on_eof_cb) : &PL_sv_undef;
+}
+    OUTPUT:
+        RETVAL
 
 SV*
 response_guard (feer_conn_handle *hdl, ...)
@@ -759,6 +830,19 @@ _continue_streaming_psgi (struct feer_conn *c, SV *psgi_response)
                 call_died(aTHX_ c, "PSGI request");
                 XSRETURN_UNDEF;
             }
+        }
+        /* no G_EVAL above a responder: route through call_died, never croak */
+        if (unlikely(c->responding != RESPOND_NOT_STARTED)) {
+            sv_setpvs(ERRSV, "PSGI responder called after the response "
+                             "had already started");
+            call_died(aTHX_ c, "PSGI request");
+            XSRETURN_UNDEF;
+        }
+        if (unlikely(c->io_taken)) {
+            sv_setpvs(ERRSV, "PSGI app took psgix.io and then used the "
+                             "responder; call return_from_psgix_io first");
+            call_died(aTHX_ c, "PSGI request");
+            XSRETURN_UNDEF;
         }
         feersum_start_response(aTHX_ c, message, hdr_av, 1, 1);
         RETVAL = new_feer_conn_handle(aTHX_ c, 1); // RETVAL gets mortalized
@@ -1050,8 +1134,10 @@ DESTROY (struct feer_conn *c)
 
     safe_close_conn(c, "close at destruction");
 
+    feersum_release_io_body(aTHX_ c);
     SvREFCNT_dec(c->poll_write_cb);
     SvREFCNT_dec(c->poll_read_cb);
+    SvREFCNT_dec(c->on_eof_cb);
     /* NULL before dec: the guard's DESTROY may touch the connection */
     { SV *g = c->ext_guard; c->ext_guard = NULL; SvREFCNT_dec(g); }
     /* logs a response that never completed and always releases the captured SVs */
@@ -1065,25 +1151,7 @@ DESTROY (struct feer_conn *c)
 #endif
         SvREFCNT_dec(server->self); // release server ref held since new_feer_conn
 
-        /* count what admission counts: an H2 stream holds no socket, and
-         * counting it here left a capacity-paused listener paused for good */
-        int socket_conns = server->active_conns;
-#ifdef FEERSUM_HAS_H2
-        socket_conns -= server->active_h2_streams;
-#endif
-        if (unlikely(server->max_connections > 0
-                     && socket_conns < server->max_connections
-                     && !server->shutting_down)) {
-            int i;
-            for (i = 0; i < server->n_listeners; i++) {
-                struct feer_listen *lsnr = &server->listeners[i];
-                if (lsnr->pause_flags & FEER_PAUSE_CAP) {
-                    lsnr->pause_flags &= ~FEER_PAUSE_CAP;
-                    if (!lsnr->pause_flags && lsnr->fd >= 0)
-                        ev_io_start(feersum_ev_loop, &lsnr->accept_w);
-                }
-            }
-        }
+        feer_server_resume_capacity(server);
 
         if (unlikely(server->shutting_down && server->active_conns <= 0)) {
             ev_idle_stop(feersum_ev_loop, &server->ei);

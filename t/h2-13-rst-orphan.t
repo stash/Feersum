@@ -1,7 +1,6 @@
 #!perl
-# HEADERS+RST_STREAM for one stream in a single write: the app then answers an
-# orphaned stream, which must be a no-op rather than a croak that unwinds
-# through the libev callback and kills the worker.
+# HEADERS+RST_STREAM for one stream in a single write must leave the worker
+# serving other requests; the cancelled queue entry never reaches the app.
 use strict;
 use warnings;
 use constant TMULT => $ENV{PERL_TEST_TIME_OUT_FACTOR} || ($ENV{AUTOMATED_TESTING} ? 2 : 1);

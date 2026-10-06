@@ -85,15 +85,18 @@
 #define READ_TIMEOUT 5.0
 #define HEADER_TIMEOUT 10.0
 #define WRITE_TIMEOUT 0.0
+#define EOF_PARK_TIMEOUT 60.0
 /* Lingering-close bounds: seconds total, bytes drained. */
 #define LINGER_TIMEOUT 5.0
 #define LINGER_MAX_BYTES (256 * 1024)
 /* Linger cap on the shutdown path; a retiring worker waits on it. */
 #define FEER_SHUTDOWN_LINGER_MAX 0.5
-/* Pacing for a write poll_cb that declined: MIN * 2^backoff, clamped to MAX. */
+/* Pacing for a write poll_cb that declined: MIN * 2^backoff, clamped to MAX,
+ * or to EOF_MAX past input EOF. */
 #define FEER_POLL_RETRY_MIN 0.001
 #define FEER_POLL_RETRY_MAX 0.1
-#define FEER_POLL_RETRY_BACKOFF_CAP 7
+#define FEER_POLL_RETRY_EOF_MAX 1.0
+#define FEER_POLL_RETRY_BACKOFF_CAP 10
 #define DEFAULT_MAX_ACCEPT_PER_LOOP 64
 #define MAX_PIPELINE_DEPTH 15
 #define FEERSUM_IOMATRIX_SIZE 64
@@ -359,6 +362,7 @@ struct feer_conn {
 
     double       cached_read_timeout;
     double       cached_write_timeout;
+    double       cached_eof_park_timeout;
     unsigned int cached_max_conn_reqs;
     bool         cached_is_tcp;
     bool         cached_keepalive_default;
@@ -376,14 +380,21 @@ struct feer_conn {
     /* Bumped by every Writer write, zero-length included; only change is
      * compared around a poll_cb, so wrap is fine. */
     unsigned int poll_writes_seen;
+    /* Peer FIN or TLS close_notify; arms the eof_park_timeout bound */
+    unsigned int input_eof_seen:1;
+    unsigned int on_eof_fired:1;
+    unsigned int in_on_eof:1;
+    double eof_quiet_since;
+    unsigned int eof_writes_seen;
     unsigned int is_http11:1;
     unsigned int poll_write_cb_is_io_handle:1;
+    unsigned int response_cleanup_queued:1;
     unsigned int auto_cl:1;
     unsigned int no_resp_body:1;   /* HEAD: emit headers, suppress body bytes */
     /* HEAD: the app's own Content-Length, not to be replaced by the measured one */
     unsigned int app_content_length:1;
-    /* Request declared a body length (Content-Length or chunked); only then
-     * may reads be clamped at expected_cl in RECEIVE_SHUTDOWN. */
+    /* HTTP request body has a definite length, including an implicit zero;
+     * clamp reads at expected_cl in RECEIVE_SHUTDOWN. */
     unsigned int body_framed:1;
     unsigned int use_chunked:1;
     /* raw streaming body held to the app's Content-Length: resp_cl_owed */
@@ -428,6 +439,7 @@ struct feer_conn {
 
     SV *poll_write_cb;
     SV *poll_read_cb;
+    SV *on_eof_cb;
     SV *ext_guard;
     /* Extra ref on the writer created inside a guarded callback: a die there
      * unwinds the app's lexicals before the G_EVAL catch, and the writer's
@@ -466,6 +478,7 @@ struct feer_conn {
     uint8_t        *tls_rbuf;
     size_t          tls_rbuf_len;
     unsigned int    tls_handshake_done:1;
+    unsigned int    tls_input_eof:1; /* peer FIN or close_notify */
     /* Alert owed for an undecryptable record; sent fatal in place of close_notify */
     uint8_t         tls_fatal_alert;
 
@@ -476,6 +489,8 @@ struct feer_conn {
     SV             *tls_tunnel_wbuf;
     size_t          tls_tunnel_wbuf_pos;
     unsigned int    tls_tunnel:1;
+    unsigned int    tls_tunnel_ref_held:1;
+    unsigned int    tls_tunnel_input_eof_sent:1;
     /* App closed its tunnel end; flush the queued ciphertext before shutting down */
     unsigned int    tls_tunnel_eof:1;
 #endif
@@ -487,9 +502,15 @@ struct feer_conn {
     /* On the parent: a stream's write pump stopped on its iteration budget,
      * so the write watcher must stay armed to re-enter it. */
     unsigned int           h2_pump_pending:1;
-    /* Last stream closed during shutdown; close once tls_wbuf is flushed, not
-     * in the nghttp2 callback */
+    /* Last stream closed during shutdown/input EOF, or nghttp2 terminated;
+     * close once tls_wbuf is flushed, not in the nghttp2 callback. */
     unsigned int           h2_close_pending:1;
+    /* Wire boundaries for the header deadline, including rejected blocks for
+     * which nghttp2 does not issue a frame-completion callback. */
+    uint8_t                h2_rx_header[9];
+    uint8_t                h2_rx_header_used;
+    uint8_t                h2_rx_preface_left;
+    uint32_t               h2_rx_payload_left;
     uint8_t                h2_invalid_frames;
     /* Peer-silent intervals in a row with response bytes the peer would not take */
     uint8_t                h2_stall_strikes;
@@ -539,6 +560,7 @@ struct feer_server {
     SV *self;
     struct feer_listen listeners[FEER_MAX_LISTENERS];
     int                n_listeners;
+    int                last_listener_idx;
     SV   *request_cb_cv;
     bool  request_cb_is_psgi;
     SV   *shutdown_cb_cv;
@@ -559,6 +581,7 @@ struct feer_server {
     double       header_timeout;
     double       write_timeout;
     double       linger_timeout;
+    double       eof_park_timeout;
     unsigned int max_connection_reqs;
     bool         is_keepalive;
     int          read_priority;
@@ -587,6 +610,7 @@ struct feer_server {
     struct ev_idle   ei;
     struct rinq     *request_ready_rinq;
     struct rinq     *idle_keepalive_rinq;
+    struct rinq     *response_cleanup_rinq;
 };
 
 typedef struct feer_conn feer_conn_handle;
@@ -636,6 +660,7 @@ static void feersum_h2_close_write(pTHX_ struct feer_conn *c);
 static void feersum_h2_write_chunk(pTHX_ struct feer_conn *c, SV *body);
 static void h2_check_stream_poll_cbs(pTHX_ struct feer_conn *c);
 static inline int h2_stream_send_pending(const struct feer_h2_stream *stream);
+static void h2_refresh_stream_write_timers(struct feer_conn *c);
 static inline void h2_submit_rst(nghttp2_session *session, int32_t stream_id, uint32_t error_code);
 static size_t feersum_h2_write_whole_body(pTHX_ struct feer_conn *c, SV *body_sv);
 static void feer_h2_setup_tunnel(pTHX_ struct feer_h2_stream *stream);
@@ -643,6 +668,8 @@ static void feer_h2_init_session(struct feer_conn *c);
 static void feer_h2_free_session(struct feer_conn *c);
 static void feer_h2_session_recv(struct feer_conn *c, const uint8_t *data, size_t len);
 static void feer_h2_session_send(struct feer_conn *c);
+static void h2_update_conn_idle(struct feer_conn *c);
+static void feer_h2_input_eof(struct feer_conn *c);
 static inline void h2_session_send_and_poll(pTHX_ struct feer_conn *parent);
 static void feersum_h2_start_response(pTHX_ struct feer_conn *c, SV *message, AV *headers, int streaming);
 static void feersum_h2_respond_error(struct feer_conn *c, int err_code,
@@ -671,6 +698,8 @@ static void feersum_start_response(pTHX_ struct feer_conn *c, SV *message, AV *h
 static size_t feersum_write_whole_body (pTHX_ struct feer_conn *c, SV *body);
 static void feersum_handle_psgi_response(pTHX_ struct feer_conn *c, SV *ret, bool can_recurse);
 static int feersum_close_handle(pTHX_ struct feer_conn *c, bool is_writer);
+static void feersum_queue_response_cleanup(struct feer_conn *c);
+static void feersum_drain_response_cleanup(pTHX_ struct feer_server *server);
 static SV* feersum_conn_guard(pTHX_ struct feer_conn *c, SV *guard);
 
 static void start_read_watcher(struct feer_conn *c);
@@ -682,6 +711,7 @@ static void stop_write_watcher(struct feer_conn *c);
 static void stop_all_watchers(struct feer_conn *c);
 static void feer_conn_set_idle(struct feer_conn *c);
 static void feer_conn_set_busy(struct feer_conn *c);
+static void feer_server_resume_capacity(struct feer_server *server);
 static int feer_server_recycle_idle_conn(struct feer_server *srvr);
 
 static void try_conn_write(EV_P_ struct ev_io *w, int revents);
@@ -707,6 +737,7 @@ static void feersum_writer_unpin (pTHX_ struct feer_conn *c, bool errored);
 static void feersum_poll_retry_park (struct feer_conn *c);
 static void call_request_callback(struct feer_conn *c);
 static void call_poll_callback (struct feer_conn *c, bool is_write);
+static void call_on_eof_callback (struct feer_conn *c);
 static void pump_io_handle (struct feer_conn *c);
 
 static int parse_proxy_v1(struct feer_conn *c);

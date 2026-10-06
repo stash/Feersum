@@ -188,6 +188,15 @@ $feer->request_handler(sub {
 
     # Clean up
     $_->destroy for @handles;
+
+    # without TCP_DEFER_ACCEPT (BSD) these still hold slots; wait until reaped
+    my ($quiet, $settled) = (0, AE::cv);
+    my $poll = AE::timer 0.05, 0.05, sub {
+        $quiet = $feer->active_conns ? 0 : $quiet + 1;
+        $settled->send if $quiet >= 3;
+    };
+    my $give_up = AE::timer 3 * TIMEOUT_MULT, 0, sub { $settled->send };
+    $settled->recv;
 }
 
 # Test 6: max_connections getter

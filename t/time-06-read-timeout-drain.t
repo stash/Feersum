@@ -94,13 +94,30 @@ if ($pid == 0) {
 }
 
 my ($cv, $status) = (AE::cv, undef);
+# The server's own idle clock is wall-clock: if the box descheduled the EV loop
+# for a whole read_timeout, libev reaps the keepalive on the next tick though no
+# real idle time passed - and the client, reading fine, never sees the gap the
+# existing exit-9 guard looks for.  Watch the loop's own scheduling to tell an
+# overloaded box apart from a reap the fix should have prevented.
+my ($srv_gap, $srv_last) = (0, Time::HiRes::time());
+my $srv_watch = AE::timer(0.1, 0.1, sub {
+    my $now = Time::HiRes::time();
+    $srv_gap = $now - $srv_last if $now - $srv_last > $srv_gap;
+    $srv_last = $now;
+});
 my $tmo = AE::timer(30 * TIMEOUT_MULT, 0, sub { $cv->send('timeout') });
 my $cw = AE::child($pid, sub { $status = $_[1] >> 8; $cv->send('done') });
 isnt $cv->recv, 'timeout', 'slow reader did not timeout';
+undef $srv_watch;
 isnt $status, 2, 'slow reader received the whole response';
 SKIP: {
     skip 'client was descheduled for a whole read_timeout (overloaded box)', 1
         if (($status // 0) == 9);
+    if (($status // 0) != 0 && $srv_gap > $RTO) {
+        warn sprintf "server EV loop was descheduled %.1fs (read_timeout %ss)\n",
+            $srv_gap, $RTO;
+        skip 'server EV loop was descheduled for a whole read_timeout (overloaded box)', 1;
+    }
     is $status, 0, 'keepalive survived a drain longer than read_timeout';
 }
 

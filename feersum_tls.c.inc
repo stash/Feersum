@@ -47,6 +47,10 @@ sni_lookup(ptls_t *tls, ptls_on_client_hello_parameters_t *params)
 
     /* hostname is pre-lowered at registration; ASCII-only per RFC 6066 */
     size_t name_len = params->server_name.len;
+    /* a trailing dot names the same host */
+    if (name_len > 0 &&
+        ((const char *)params->server_name.base)[name_len - 1] == '.')
+        name_len--;
     for (int i = 0; i < lsnr->n_sni_entries; i++) {
         struct feer_sni_entry *e = &lsnr->sni_entries[i];
         if (strlen(e->hostname) == name_len &&
@@ -315,6 +319,17 @@ feer_tls_flush_wbuf(struct feer_conn *c)
         return -2;
     }
 
+#ifdef FEERSUM_HAS_H2
+    if (written > 0 && c->h2_session)
+        h2_refresh_stream_write_timers(c);
+    /* only a live timer: safe_close_conn flushes here after stopping watchers */
+    if (written > 0 && c->h2_session && ev_is_active(&c->read_ev_timer)) {
+        c->h2_stall_strikes = 0;
+        c->prev_read_outq = 0;
+        restart_read_timer(c);
+    }
+#endif
+
     if ((size_t)written < c->tls_wbuf.off) {
         memmove(c->tls_wbuf.base, c->tls_wbuf.base + written,
                 c->tls_wbuf.off - written);
@@ -328,6 +343,31 @@ feer_tls_flush_wbuf(struct feer_conn *c)
 
 
 /* TLS tunnel for io()/psgix.io: a socketpair, sv0 Feersum's end, sv1 the app's */
+
+static void
+tls_tunnel_maybe_send_input_eof(struct feer_conn *c)
+{
+    if (!c->tls_tunnel || !c->tls_input_eof || c->tls_tunnel_sv0 < 0
+        || c->tls_tunnel_input_eof_sent || c->tls_rbuf_len > 0)
+        return;
+    if (c->tls_tunnel_wbuf
+        && SvCUR(c->tls_tunnel_wbuf) > c->tls_tunnel_wbuf_pos)
+        return;
+    shutdown(c->tls_tunnel_sv0, SHUT_WR);
+    c->tls_tunnel_input_eof_sent = 1;
+}
+
+static void
+tls_tunnel_note_input_eof(struct feer_conn *c)
+{
+    c->tls_input_eof = 1;
+    /* every TLS input EOF funnels here, not only a tunnel's; repeats are no-ops */
+    feersum_note_input_eof(c);
+    if (c->tls_tunnel) {
+        stop_read_watcher(c);
+        tls_tunnel_maybe_send_input_eof(c);
+    }
+}
 
 static int
 tls_tunnel_write_or_buffer(struct feer_conn *c, const char *data, size_t len)
@@ -400,6 +440,7 @@ drain_tls_tunnel_rbuf(struct feer_conn *c)
         }
         ptls_buffer_dispose(&db);
     }
+    tls_tunnel_maybe_send_input_eof(c);
 }
 
 /* Stop the watchers (a readable-at-EOF sv0 spins the loop) and close sv0 so
@@ -413,6 +454,12 @@ feer_tls_tunnel_shutdown(struct feer_conn *c)
     if (c->tls_tunnel_sv0 >= 0) {
         close(c->tls_tunnel_sv0);
         c->tls_tunnel_sv0 = -1;
+    }
+    /* cannot free c: callers hold their own reference through teardown */
+    if (c->tls_tunnel_ref_held) {
+        c->tls_tunnel_ref_held = 0;
+        if (PL_phase != PERL_PHASE_DESTRUCT)
+            SvREFCNT_dec(c->self);
     }
 }
 
@@ -490,6 +537,7 @@ tls_tunnel_sv0_write_cb(EV_P_ struct ev_io *w, int revents)
             SvCUR_set(c->tls_tunnel_wbuf, 0);
             c->tls_tunnel_wbuf_pos = 0;
         }
+        tls_tunnel_maybe_send_input_eof(c);
         goto cleanup;
     }
 
@@ -512,6 +560,8 @@ tls_tunnel_sv0_write_cb(EV_P_ struct ev_io *w, int revents)
 
         if (c->tls_rbuf_len > 0)
             drain_tls_tunnel_rbuf(c);
+        else
+            tls_tunnel_maybe_send_input_eof(c);
     }
 
 cleanup:
@@ -541,6 +591,8 @@ feer_tls_setup_tunnel(struct feer_conn *c)
     c->tls_tunnel_write_w.data = (void *)c;
 
     c->tls_tunnel = 1;
+    c->tls_tunnel_ref_held = 1;
+    SvREFCNT_inc_void_NN(c->self);
 
     if (c->rbuf && SvOK(c->rbuf) && SvCUR(c->rbuf) > 0) {
         dTHX;
@@ -550,7 +602,10 @@ feer_tls_setup_tunnel(struct feer_conn *c)
         SvCUR_set(c->rbuf, 0);
     }
 
-    start_read_watcher(c);
+    if (c->tls_input_eof)
+        tls_tunnel_note_input_eof(c);
+    else
+        start_read_watcher(c);
 
     trace("TLS tunnel socketpair established fd=%d sv0=%d sv1=%d\n",
           c->fd, sv[0], sv[1]);
@@ -598,8 +653,11 @@ feer_tls_drain_one_record(struct feer_conn *c, ptls_buffer_t *decbuf)
         ptls_buffer_dispose(decbuf);
         /* close_notify arrives as an error but must not tear down here: a
          * request coalesced ahead of it is decrypted and still owed a response */
-        if (ret == PTLS_ERROR_CLASS_PEER_ALERT + PTLS_ALERT_CLOSE_NOTIFY)
+        if (ret == PTLS_ERROR_CLASS_PEER_ALERT + PTLS_ALERT_CLOSE_NOTIFY) {
+            tls_tunnel_note_input_eof(c);
+            feersum_note_input_eof(c);
             return -1;
+        }
         feer_tls_note_alert(c, ret);
         return -2;
     }
@@ -644,7 +702,8 @@ static void
 drain_h2_tls_records(struct feer_conn *c)
 {
     dTHX;
-    while (c->h2_session) {
+    while (c->h2_session && c->fd >= 0
+           && !c->closing_linger && !c->h2_close_pending) {
         ptls_buffer_t db;
         int drain_rv = feer_tls_drain_one_record(c, &db);
         if (unlikely(drain_rv == -2)) {
@@ -663,6 +722,35 @@ drain_h2_tls_records(struct feer_conn *c)
 }
 #endif
 
+/* call after parsing all decrypted bytes: retires only an incomplete request */
+static void
+tls_http_input_eof(struct feer_conn *c)
+{
+    if (!c->tls_input_eof || c->fd < 0 || c->closing_linger || c->tls_tunnel)
+        return;
+    stop_read_watcher(c);
+    stop_header_timer(c);
+#ifdef FEERSUM_HAS_H2
+    if (c->h2_session) {
+        feer_h2_input_eof(c);
+        return;
+    }
+#endif
+    if (c->receiving != RECEIVE_SHUTDOWN) {
+        change_receiving_state(c, RECEIVE_SHUTDOWN);
+        feer_shutdown_conn(c, "TLS EOF before complete request");
+        return;
+    }
+
+    /* only the last buffered request is answered with Connection: close */
+    STRLEN buffered = c->rbuf ? SvCUR(c->rbuf) : 0;
+    ssize_t consumed = c->received_cl - (ssize_t)buffered;
+    ssize_t body_left = c->expected_cl - consumed;
+    if (body_left < 0) body_left = 0;
+    if (buffered <= (STRLEN)body_left)
+        c->is_keepalive = 0;
+}
+
 static void
 try_tls_conn_read(EV_P_ ev_io *w, int revents)
 {
@@ -678,6 +766,7 @@ try_tls_conn_read(EV_P_ ev_io *w, int revents)
     ssize_t got_n = 0;
 
     if (unlikely(c->pipelined)) goto tls_pipelined;
+    if (unlikely(c->tls_input_eof)) goto tls_read_cleanup;
 
     if (unlikely(!c->tls)) {
         trouble("tls_conn_read: no TLS context fd=%d\n", c->fd);
@@ -696,13 +785,11 @@ try_tls_conn_read(EV_P_ ev_io *w, int revents)
          * keep the write side alive; closing here drops what the app still
          * owes the peer */
         if (c->tls_tunnel && c->tls_tunnel_sv0 >= 0 && !c->tls_tunnel_eof) {
-            ev_io_stop(feersum_ev_loop, &c->read_ev_io);
-            shutdown(c->tls_tunnel_sv0, SHUT_WR);
+            tls_tunnel_note_input_eof(c);
+            drain_tls_tunnel_rbuf(c);
             goto tls_read_cleanup;
         }
-        change_receiving_state(c, RECEIVE_SHUTDOWN);
-        stop_all_watchers(c);
-        safe_close_conn(c, "TLS EOF");
+        tls_tunnel_note_input_eof(c);
         goto tls_read_cleanup;
     }
 
@@ -729,7 +816,10 @@ try_tls_conn_read(EV_P_ ev_io *w, int revents)
             change_receiving_state(c, RECEIVE_SHUTDOWN);
             goto tls_read_cleanup;
         }
-        if (ret == -2) goto tls_read_cleanup; /* need more data */
+        if (ret == -2) {
+            restart_read_timer(c); /* need more data, but this was progress */
+            goto tls_read_cleanup;
+        }
 
         STRLEN remaining = SvCUR(c->rbuf) - ret;
 
@@ -872,6 +962,7 @@ try_tls_conn_read(EV_P_ ev_io *w, int revents)
             }
         } else if (ret == PTLS_ERROR_IN_PROGRESS) {
             trace("TLS handshake in progress fd=%d\n", c->fd);
+            restart_read_timer(c);
             if (consumed < inlen)
                 feer_tls_save_rbuf(c, inbuf + consumed, inlen - consumed);
         } else {
@@ -897,6 +988,10 @@ try_tls_conn_read(EV_P_ ev_io *w, int revents)
         if (ret != 0) {
             trace("TLS receive error fd=%d ret=%d\n", c->fd, ret);
             ptls_buffer_dispose(&decbuf);
+            if (ret == PTLS_ERROR_CLASS_PEER_ALERT + PTLS_ALERT_CLOSE_NOTIFY) {
+                tls_tunnel_note_input_eof(c);
+                goto tls_read_cleanup;
+            }
             feer_tls_note_alert(c, ret);
             change_receiving_state(c, RECEIVE_SHUTDOWN);
             stop_all_watchers(c);
@@ -1035,7 +1130,74 @@ tls_parse:
     }
 
 tls_read_cleanup:
+    tls_http_input_eof(c);
+#ifdef FEERSUM_HAS_H2
+    /* a partial or non-data record may never reach session_send */
+    if (c->h2_session)
+        h2_update_conn_idle(c);
+#endif
     SvREFCNT_dec(c->self);
+}
+
+/* With the read watcher stopped a close_notify can hide in pending ciphertext.
+ * Buffers app data without parsing; returns 1 when the peer is gone. */
+static int
+feer_tls_decline_drain(struct feer_conn *c)
+{
+    uint8_t rawbuf[TLS_RAW_BUFSZ];
+    ssize_t n;
+    do {
+        n = recv(c->fd, rawbuf, sizeof(rawbuf), MSG_DONTWAIT);
+    } while (n < 0 && errno == EINTR);
+    if (n <= 0) {
+        /* FIN is left to the peer_is_gone peek */
+        return n < 0 && errno != EAGAIN && errno != EWOULDBLOCK;
+    }
+
+    uint8_t *inbuf = rawbuf;
+    size_t inlen = (size_t)n;
+    uint8_t *merged = NULL;
+    if (c->tls_rbuf_len > 0) {
+        inlen = c->tls_rbuf_len + (size_t)n;
+        Newx(merged, inlen, uint8_t);
+        memcpy(merged, c->tls_rbuf, c->tls_rbuf_len);
+        memcpy(merged + c->tls_rbuf_len, rawbuf, (size_t)n);
+        inbuf = merged;
+        Safefree(c->tls_rbuf);
+        c->tls_rbuf = NULL;
+        c->tls_rbuf_len = 0;
+    }
+
+    trace("TLS decline drain fd=%d bytes=%"Sz_uf"\n", c->fd, (Sz)inlen);
+    ptls_buffer_t decbuf;
+    ptls_buffer_init(&decbuf, "", 0);
+    size_t consumed = inlen;
+    int ret = ptls_receive(c->tls, &decbuf, inbuf, &consumed);
+    if (ret == 0 && consumed < inlen)
+        feer_tls_save_rbuf(c, inbuf + consumed, inlen - consumed);
+    if (merged) Safefree(merged);
+
+    if (ret != 0) {
+        ptls_buffer_dispose(&decbuf);
+        if (ret == PTLS_ERROR_CLASS_PEER_ALERT + PTLS_ALERT_CLOSE_NOTIFY) {
+            tls_tunnel_note_input_eof(c);
+            feersum_note_input_eof(c);
+            return 0;
+        }
+        if (ret == PTLS_ERROR_IN_PROGRESS)
+            return 0;
+        feer_tls_note_alert(c, ret);
+        return 1;
+    }
+    int drain_failed = 0;
+    feer_tls_rbuf_append_drain(c, &decbuf, &drain_failed);
+    if (drain_failed)
+        return 1;
+    /* The read watcher is stopped while parked, so the read path's rbuf cap
+     * never runs here; enforce it or a declining streamer buffers unbounded. */
+    if (unlikely(c->rbuf && SvCUR(c->rbuf) > c->cached_max_read_buf))
+        return 1;
+    return 0;
 }
 
 static void
@@ -1066,12 +1228,12 @@ try_tls_conn_write(EV_P_ ev_io *w, int revents)
     }
 
 #ifdef FEERSUM_HAS_H2
-    /* The last H2 stream closed during shutdown and its response has only now
+    /* The last H2 stream closed during shutdown/EOF and its response has only now
      * reached the wire; linger so it is delivered before the close */
     if (unlikely(c->h2_close_pending) && c->tls_wbuf.off == 0) {
         c->h2_close_pending = 0;
         c->want_linger_close = 1;
-        feer_shutdown_conn(c, "last H2 stream closed during shutdown");
+        feer_shutdown_conn(c, "H2 final output drained");
         goto tls_write_cleanup;
     }
 #endif
@@ -1111,6 +1273,7 @@ try_tls_conn_write(EV_P_ ev_io *w, int revents)
             }
         } else
             goto tls_write_again;
+        h2_update_conn_idle(c);
         goto tls_write_cleanup;
     }
 #endif
@@ -1242,12 +1405,33 @@ tls_write_finished:
             if (!c->wbuf_rinq && c->tls_wbuf.off == 0
                 && c->responding == RESPOND_STREAMING && c->poll_write_cb
                 && c->poll_writes_seen == writes_before) {
-                if (unlikely(peer_is_gone(c))) {
+                /* drain first so a pending close_notify latches before the
+                 * peek and the EOF bound; tunnel/takeover input is the app's */
+                bool derr = !c->tls_tunnel && !c->io_taken
+                    && feer_tls_decline_drain(c);
+                bool gone = peer_is_gone(c);
+                feersum_maybe_fire_on_eof(c);
+                if (unlikely(gone)) {
                     trace("TLS poll_cb declined and the peer is gone %d\n", c->fd);
                     feer_shutdown_conn(c, "poll_cb decline, peer gone");
                 }
-                else
+                else if (unlikely(derr)) {
+                    trace("TLS input error at poll_cb decline %d\n", c->fd);
+                    feer_shutdown_conn(c, "TLS input error at decline");
+                }
+                else if (unlikely(feer_eof_park_expired(c))) {
+                    trace("TLS poll_cb declined and the EOF park expired %d\n", c->fd);
+                    feer_shutdown_conn(c, "poll_cb decline, EOF park expired");
+                }
+                else if (c->responding == RESPOND_STREAMING && c->poll_write_cb
+                         && c->poll_writes_seen == writes_before) {
                     feersum_poll_retry_park(c);
+                }
+                else {
+                    /* on_eof (also fired by the drain) may have finished,
+                     * paused or fed the response: re-enter, do not park */
+                    goto tls_write_again;
+                }
             }
             else {
                 /* a paced-retry entry has no watcher armed, and pump_io_handle
